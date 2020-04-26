@@ -1,0 +1,27 @@
+From 96ac09c507a663b853235c29a607aca2c1edfc10 Mon Sep 17 00:00:00 2001
+Date: Mon, 2 Dec 2019 17:42:17 +0000
+Subject: [PATCH] 8225648: [TESTBUG]java/lang/annotation/loaderLeak/Main.java
+ fails with -Xcomp
+
+Summary: <loaderLeak>: annotations cause memory leak
+LLT: NA
+Bug url: https://bugs.openjdk.java.net/browse/JDK-8225648
+---
+ test/jdk/java/lang/annotation/loaderLeak/Main.java | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/test/jdk/java/lang/annotation/loaderLeak/Main.java b/test/jdk/java/lang/annotation/loaderLeak/Main.java
+index 7e249ebc1..4245008f8 100644
+--- a/test/jdk/java/lang/annotation/loaderLeak/Main.java
++++ b/test/jdk/java/lang/annotation/loaderLeak/Main.java
+@@ -54,6 +54,7 @@ public class Main {
+         System.gc();
+         System.gc();
+         if (c.get() == null) throw new AssertionError();
++        Reference.reachabilityFence(loader);
+         System.gc();
+         System.gc();
+         loader = null;
+-- 
+2.12.3
+

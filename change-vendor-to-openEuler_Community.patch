@@ -1,0 +1,54 @@
+From 1ab27951c430bbe0820321c7194e89f63b9ac78b Mon Sep 17 00:00:00 2001
+Date: Tue, 30 Jul 2019 14:20:57 +0000
+Subject: [PATCH] change vendor to Huawei Technologies Co., LTD
+
+Summary: change VENDOR to openEuler Community, as
+		 well as VENDOR_URL & VENDOR_URL_BUG
+LLT: java -XshowSettings:properties
+Bug url: NA
+---
+ src/hotspot/share/runtime/vm_version.cpp    | 6 +-----
+ src/java.base/share/native/libjava/System.c | 6 +++---
+ 2 files changed, 4 insertions(+), 8 deletions(-)
+
+diff --git a/src/hotspot/share/runtime/vm_version.cpp b/src/hotspot/share/runtime/vm_version.cpp
+index eb05460ad..bb070895f 100644
+--- a/src/hotspot/share/runtime/vm_version.cpp
++++ b/src/hotspot/share/runtime/vm_version.cpp
+@@ -114,11 +114,7 @@ const char* Abstract_VM_Version::vm_name() {
+ 
+ 
+ const char* Abstract_VM_Version::vm_vendor() {
+-#ifdef VENDOR
+-  return VENDOR;
+-#else
+-  return "Oracle Corporation";
+-#endif
++  return "openEuler Community";
+ }
+ 
+ 
+diff --git a/src/java.base/share/native/libjava/System.c b/src/java.base/share/native/libjava/System.c
+index 3a33f1179..65a44d5a1 100644
+--- a/src/java.base/share/native/libjava/System.c
++++ b/src/java.base/share/native/libjava/System.c
+@@ -110,13 +110,13 @@ Java_java_lang_System_identityHashCode(JNIEnv *env, jobject this, jobject x)
+ 
+ /* Third party may overwrite these values. */
+ #ifndef VENDOR
+-#define VENDOR "Oracle Corporation"
++#define VENDOR "openEuler Community"
+ #endif
+ #ifndef VENDOR_URL
+-#define VENDOR_URL "http://java.oracle.com/"
++#define VENDOR_URL "https://openeuler.org/"
+ #endif
+ #ifndef VENDOR_URL_BUG
+-#define VENDOR_URL_BUG "http://bugreport.java.com/bugreport/"
++#define VENDOR_URL_BUG "https://openeuler.org/"
+ #endif
+ 
+ #ifdef JAVA_SPECIFICATION_VENDOR /* Third party may NOT overwrite this. */
+-- 
+2.19.0
+

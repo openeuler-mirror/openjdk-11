@@ -1,0 +1,472 @@
+From aa824cddc917b1fcac41a0efe5e8c794f2d5cff9 Mon Sep 17 00:00:00 2001
+Date: Thu, 26 Mar 2020 16:17:45 +0000
+Subject: [PATCH] 8233506:ZGC: the load for Reference.get() can be converted to
+ a load for strong refs Summary: <gc>: <ZGC: the load for Reference.get() can
+ be converted to a load for strong refs> LLT: JDK8233506 
+ Bug url: https://bugs.openjdk.java.net/browse/JDK-8233506
+
+---
+ src/hotspot/share/gc/shared/c2/barrierSetC2.cpp | 73 +++++++++++++++----------
+ src/hotspot/share/gc/shared/c2/barrierSetC2.hpp |  7 ++-
+ src/hotspot/share/gc/z/c2/zBarrierSetC2.cpp     | 42 +++++---------
+ src/hotspot/share/opto/graphKit.cpp             |  9 +--
+ src/hotspot/share/opto/graphKit.hpp             | 10 ++--
+ src/hotspot/share/opto/memnode.cpp              |  9 ++-
+ src/hotspot/share/opto/memnode.hpp              |  7 ++-
+ 7 files changed, 85 insertions(+), 72 deletions(-)
+
+diff --git a/src/hotspot/share/gc/shared/c2/barrierSetC2.cpp b/src/hotspot/share/gc/shared/c2/barrierSetC2.cpp
+index 545275644..48fe04b08 100644
+--- a/src/hotspot/share/gc/shared/c2/barrierSetC2.cpp
++++ b/src/hotspot/share/gc/shared/c2/barrierSetC2.cpp
+@@ -115,10 +115,13 @@ Node* BarrierSetC2::load_at_resolved(C2Access& access, const Type* val_type) con
+ 
+   Node* load;
+   if (in_native) {
+-    load = kit->make_load(control, adr, val_type, access.type(), mo);
++    load = kit->make_load(control, adr, val_type, access.type(), mo, dep,
++                          requires_atomic_access, unaligned,
++                          mismatched, unsafe, access.barrier_data());
+   } else {
+     load = kit->make_load(control, adr, val_type, access.type(), adr_type, mo,
+-                          dep, requires_atomic_access, unaligned, mismatched, unsafe);
++                          dep, requires_atomic_access, unaligned, mismatched, unsafe,
++                          access.barrier_data());
+   }
+ 
+   access.set_raw_access(load);
+@@ -348,28 +351,28 @@ Node* BarrierSetC2::atomic_cmpxchg_val_at_resolved(C2AtomicAccess& access, Node*
+     if (adr->bottom_type()->is_ptr_to_narrowoop()) {
+       Node *newval_enc = kit->gvn().transform(new EncodePNode(new_val, new_val->bottom_type()->make_narrowoop()));
+       Node *oldval_enc = kit->gvn().transform(new EncodePNode(expected_val, expected_val->bottom_type()->make_narrowoop()));
+-      load_store = kit->gvn().transform(new CompareAndExchangeNNode(kit->control(), mem, adr, newval_enc, oldval_enc, adr_type, value_type->make_narrowoop(), mo));
++      load_store = new CompareAndExchangeNNode(kit->control(), mem, adr, newval_enc, oldval_enc, adr_type, value_type->make_narrowoop(), mo);
+     } else
+ #endif
+     {
+-      load_store = kit->gvn().transform(new CompareAndExchangePNode(kit->control(), mem, adr, new_val, expected_val, adr_type, value_type->is_oopptr(), mo));
++      load_store = new CompareAndExchangePNode(kit->control(), mem, adr, new_val, expected_val, adr_type, value_type->is_oopptr(), mo);
+     }
+   } else {
+     switch (access.type()) {
+       case T_BYTE: {
+-        load_store = kit->gvn().transform(new CompareAndExchangeBNode(kit->control(), mem, adr, new_val, expected_val, adr_type, mo));
++        load_store = new CompareAndExchangeBNode(kit->control(), mem, adr, new_val, expected_val, adr_type, mo);
+         break;
+       }
+       case T_SHORT: {
+-        load_store = kit->gvn().transform(new CompareAndExchangeSNode(kit->control(), mem, adr, new_val, expected_val, adr_type, mo));
++        load_store = new CompareAndExchangeSNode(kit->control(), mem, adr, new_val, expected_val, adr_type, mo);
+         break;
+       }
+       case T_INT: {
+-        load_store = kit->gvn().transform(new CompareAndExchangeINode(kit->control(), mem, adr, new_val, expected_val, adr_type, mo));
++        load_store = new CompareAndExchangeINode(kit->control(), mem, adr, new_val, expected_val, adr_type, mo);
+         break;
+       }
+       case T_LONG: {
+-        load_store = kit->gvn().transform(new CompareAndExchangeLNode(kit->control(), mem, adr, new_val, expected_val, adr_type, mo));
++        load_store = new CompareAndExchangeLNode(kit->control(), mem, adr, new_val, expected_val, adr_type, mo);
+         break;
+       }
+       default:
+@@ -377,6 +380,9 @@ Node* BarrierSetC2::atomic_cmpxchg_val_at_resolved(C2AtomicAccess& access, Node*
+     }
+   }
+ 
++  load_store->as_LoadStore()->set_barrier_data(access.barrier_data());
++  load_store = kit->gvn().transform(load_store);
++
+   access.set_raw_access(load_store);
+   pin_atomic_op(access);
+ 
+@@ -405,50 +411,50 @@ Node* BarrierSetC2::atomic_cmpxchg_bool_at_resolved(C2AtomicAccess& access, Node
+       Node *newval_enc = kit->gvn().transform(new EncodePNode(new_val, new_val->bottom_type()->make_narrowoop()));
+       Node *oldval_enc = kit->gvn().transform(new EncodePNode(expected_val, expected_val->bottom_type()->make_narrowoop()));
+       if (is_weak_cas) {
+-        load_store = kit->gvn().transform(new WeakCompareAndSwapNNode(kit->control(), mem, adr, newval_enc, oldval_enc, mo));
++        load_store = new WeakCompareAndSwapNNode(kit->control(), mem, adr, newval_enc, oldval_enc, mo);
+       } else {
+-        load_store = kit->gvn().transform(new CompareAndSwapNNode(kit->control(), mem, adr, newval_enc, oldval_enc, mo));
++        load_store = new CompareAndSwapNNode(kit->control(), mem, adr, newval_enc, oldval_enc, mo);
+       }
+     } else
+ #endif
+     {
+       if (is_weak_cas) {
+-        load_store = kit->gvn().transform(new WeakCompareAndSwapPNode(kit->control(), mem, adr, new_val, expected_val, mo));
++        load_store = new WeakCompareAndSwapPNode(kit->control(), mem, adr, new_val, expected_val, mo);
+       } else {
+-        load_store = kit->gvn().transform(new CompareAndSwapPNode(kit->control(), mem, adr, new_val, expected_val, mo));
++        load_store = new CompareAndSwapPNode(kit->control(), mem, adr, new_val, expected_val, mo);
+       }
+     }
+   } else {
+     switch(access.type()) {
+       case T_BYTE: {
+         if (is_weak_cas) {
+-          load_store = kit->gvn().transform(new WeakCompareAndSwapBNode(kit->control(), mem, adr, new_val, expected_val, mo));
++          load_store = new WeakCompareAndSwapBNode(kit->control(), mem, adr, new_val, expected_val, mo);
+         } else {
+-          load_store = kit->gvn().transform(new CompareAndSwapBNode(kit->control(), mem, adr, new_val, expected_val, mo));
++          load_store = new CompareAndSwapBNode(kit->control(), mem, adr, new_val, expected_val, mo);
+         }
+         break;
+       }
+       case T_SHORT: {
+         if (is_weak_cas) {
+-          load_store = kit->gvn().transform(new WeakCompareAndSwapSNode(kit->control(), mem, adr, new_val, expected_val, mo));
++          load_store = new WeakCompareAndSwapSNode(kit->control(), mem, adr, new_val, expected_val, mo);
+         } else {
+-          load_store = kit->gvn().transform(new CompareAndSwapSNode(kit->control(), mem, adr, new_val, expected_val, mo));
++          load_store = new CompareAndSwapSNode(kit->control(), mem, adr, new_val, expected_val, mo);
+         }
+         break;
+       }
+       case T_INT: {
+         if (is_weak_cas) {
+-          load_store = kit->gvn().transform(new WeakCompareAndSwapINode(kit->control(), mem, adr, new_val, expected_val, mo));
++          load_store = new WeakCompareAndSwapINode(kit->control(), mem, adr, new_val, expected_val, mo);
+         } else {
+-          load_store = kit->gvn().transform(new CompareAndSwapINode(kit->control(), mem, adr, new_val, expected_val, mo));
++          load_store = new CompareAndSwapINode(kit->control(), mem, adr, new_val, expected_val, mo);
+         }
+         break;
+       }
+       case T_LONG: {
+         if (is_weak_cas) {
+-          load_store = kit->gvn().transform(new WeakCompareAndSwapLNode(kit->control(), mem, adr, new_val, expected_val, mo));
++          load_store = new WeakCompareAndSwapLNode(kit->control(), mem, adr, new_val, expected_val, mo);
+         } else {
+-          load_store = kit->gvn().transform(new CompareAndSwapLNode(kit->control(), mem, adr, new_val, expected_val, mo));
++          load_store = new CompareAndSwapLNode(kit->control(), mem, adr, new_val, expected_val, mo);
+         }
+         break;
+       }
+@@ -457,6 +463,9 @@ Node* BarrierSetC2::atomic_cmpxchg_bool_at_resolved(C2AtomicAccess& access, Node
+     }
+   }
+ 
++  load_store->as_LoadStore()->set_barrier_data(access.barrier_data());
++  load_store = kit->gvn().transform(load_store);
++
+   access.set_raw_access(load_store);
+   pin_atomic_op(access);
+ 
+@@ -478,27 +487,30 @@ Node* BarrierSetC2::atomic_xchg_at_resolved(C2AtomicAccess& access, Node* new_va
+     } else
+ #endif
+     {
+-      load_store = kit->gvn().transform(new GetAndSetPNode(kit->control(), mem, adr, new_val, adr_type, value_type->is_oopptr()));
++      load_store = new GetAndSetPNode(kit->control(), mem, adr, new_val, adr_type, value_type->is_oopptr());
+     }
+   } else  {
+     switch (access.type()) {
+       case T_BYTE:
+-        load_store = kit->gvn().transform(new GetAndSetBNode(kit->control(), mem, adr, new_val, adr_type));
++        load_store = new GetAndSetBNode(kit->control(), mem, adr, new_val, adr_type);
+         break;
+       case T_SHORT:
+-        load_store = kit->gvn().transform(new GetAndSetSNode(kit->control(), mem, adr, new_val, adr_type));
++        load_store = new GetAndSetSNode(kit->control(), mem, adr, new_val, adr_type);
+         break;
+       case T_INT:
+-        load_store = kit->gvn().transform(new GetAndSetINode(kit->control(), mem, adr, new_val, adr_type));
++        load_store = new GetAndSetINode(kit->control(), mem, adr, new_val, adr_type);
+         break;
+       case T_LONG:
+-        load_store = kit->gvn().transform(new GetAndSetLNode(kit->control(), mem, adr, new_val, adr_type));
++        load_store = new GetAndSetLNode(kit->control(), mem, adr, new_val, adr_type);
+         break;
+       default:
+         ShouldNotReachHere();
+     }
+   }
+ 
++  load_store->as_LoadStore()->set_barrier_data(access.barrier_data());
++  load_store = kit->gvn().transform(load_store);
++
+   access.set_raw_access(load_store);
+   pin_atomic_op(access);
+ 
+@@ -520,21 +532,24 @@ Node* BarrierSetC2::atomic_add_at_resolved(C2AtomicAccess& access, Node* new_val
+ 
+   switch(access.type()) {
+     case T_BYTE:
+-      load_store = kit->gvn().transform(new GetAndAddBNode(kit->control(), mem, adr, new_val, adr_type));
++      load_store = new GetAndAddBNode(kit->control(), mem, adr, new_val, adr_type);
+       break;
+     case T_SHORT:
+-      load_store = kit->gvn().transform(new GetAndAddSNode(kit->control(), mem, adr, new_val, adr_type));
++      load_store = new GetAndAddSNode(kit->control(), mem, adr, new_val, adr_type);
+       break;
+     case T_INT:
+-      load_store = kit->gvn().transform(new GetAndAddINode(kit->control(), mem, adr, new_val, adr_type));
++      load_store = new GetAndAddINode(kit->control(), mem, adr, new_val, adr_type);
+       break;
+     case T_LONG:
+-      load_store = kit->gvn().transform(new GetAndAddLNode(kit->control(), mem, adr, new_val, adr_type));
++      load_store = new GetAndAddLNode(kit->control(), mem, adr, new_val, adr_type);
+       break;
+     default:
+       ShouldNotReachHere();
+   }
+ 
++  load_store->as_LoadStore()->set_barrier_data(access.barrier_data());
++  load_store = kit->gvn().transform(load_store);
++
+   access.set_raw_access(load_store);
+   pin_atomic_op(access);
+ 
+diff --git a/src/hotspot/share/gc/shared/c2/barrierSetC2.hpp b/src/hotspot/share/gc/shared/c2/barrierSetC2.hpp
+index 487988bd8..8b4be7d11 100644
+--- a/src/hotspot/share/gc/shared/c2/barrierSetC2.hpp
++++ b/src/hotspot/share/gc/shared/c2/barrierSetC2.hpp
+@@ -96,6 +96,7 @@ protected:
+   Node*             _base;
+   C2AccessValuePtr& _addr;
+   Node*             _raw_access;
++  uint8_t           _barrier_data;
+ 
+   void fixup_decorators();
+   void* barrier_set_state() const;
+@@ -108,7 +109,8 @@ public:
+     _type(type),
+     _base(base),
+     _addr(addr),
+-    _raw_access(NULL)
++    _raw_access(NULL),
++    _barrier_data(0)
+   {
+     fixup_decorators();
+   }
+@@ -122,6 +124,9 @@ public:
+   bool is_raw() const             { return (_decorators & AS_RAW) != 0; }
+   Node* raw_access() const        { return _raw_access; }
+ 
++  uint8_t barrier_data() const        { return _barrier_data; }
++  void set_barrier_data(uint8_t data) { _barrier_data = data; }
++
+   void set_raw_access(Node* raw_access) { _raw_access = raw_access; }
+   virtual void set_memory() {} // no-op for normal accesses, but not for atomic accesses.
+ 
+diff --git a/src/hotspot/share/gc/z/c2/zBarrierSetC2.cpp b/src/hotspot/share/gc/z/c2/zBarrierSetC2.cpp
+index a12973464..e178761a0 100644
+--- a/src/hotspot/share/gc/z/c2/zBarrierSetC2.cpp
++++ b/src/hotspot/share/gc/z/c2/zBarrierSetC2.cpp
+@@ -174,48 +174,36 @@ int ZBarrierSetC2::estimate_stub_size() const {
+   return size;
+ }
+ 
+-static bool barrier_needed(C2Access access) {
+-  return ZBarrierSet::barrier_needed(access.decorators(), access.type());
+-}
+-
+-Node* ZBarrierSetC2::load_at_resolved(C2Access& access, const Type* val_type) const {
+-  Node* result = BarrierSetC2::load_at_resolved(access, val_type);
+-  if (barrier_needed(access) && access.raw_access()->is_Mem()) {
+-    if ((access.decorators() & ON_WEAK_OOP_REF) != 0) {
+-      access.raw_access()->as_Load()->set_barrier_data(ZLoadBarrierWeak);
++static void set_barrier_data(C2Access& access) {
++  if (ZBarrierSet::barrier_needed(access.decorators(), access.type())) {
++    if (access.decorators() & ON_WEAK_OOP_REF) {
++      access.set_barrier_data(ZLoadBarrierWeak);
+     } else {
+-      access.raw_access()->as_Load()->set_barrier_data(ZLoadBarrierStrong);
++      access.set_barrier_data(ZLoadBarrierStrong);
+     }
+   }
++}
+ 
+-  return result;
++Node* ZBarrierSetC2::load_at_resolved(C2Access& access, const Type* val_type) const {
++  set_barrier_data(access);
++  return BarrierSetC2::load_at_resolved(access, val_type);
+ }
+ 
+ Node* ZBarrierSetC2::atomic_cmpxchg_val_at_resolved(C2AtomicAccess& access, Node* expected_val,
+                                                     Node* new_val, const Type* val_type) const {
+-  Node* result = BarrierSetC2::atomic_cmpxchg_val_at_resolved(access, expected_val, new_val, val_type);
+-  if (barrier_needed(access)) {
+-    access.raw_access()->as_LoadStore()->set_barrier_data(ZLoadBarrierStrong);
+-  }
+-  return result;
++  set_barrier_data(access);
++  return BarrierSetC2::atomic_cmpxchg_val_at_resolved(access, expected_val, new_val, val_type);
+ }
+ 
+ Node* ZBarrierSetC2::atomic_cmpxchg_bool_at_resolved(C2AtomicAccess& access, Node* expected_val,
+                                                      Node* new_val, const Type* value_type) const {
+-  Node* result = BarrierSetC2::atomic_cmpxchg_bool_at_resolved(access, expected_val, new_val, value_type);
+-  if (barrier_needed(access)) {
+-    access.raw_access()->as_LoadStore()->set_barrier_data(ZLoadBarrierStrong);
+-  }
+-  return result;
+-
++  set_barrier_data(access);
++  return BarrierSetC2::atomic_cmpxchg_bool_at_resolved(access, expected_val, new_val, value_type);
+ }
+ 
+ Node* ZBarrierSetC2::atomic_xchg_at_resolved(C2AtomicAccess& access, Node* new_val, const Type* val_type) const {
+-  Node* result = BarrierSetC2::atomic_xchg_at_resolved(access, new_val, val_type);
+-  if (barrier_needed(access)) {
+-    access.raw_access()->as_LoadStore()->set_barrier_data(ZLoadBarrierStrong);
+-  }
+-  return result;
++  set_barrier_data(access);
++  return BarrierSetC2::atomic_xchg_at_resolved(access, new_val, val_type);
+ }
+ 
+ bool ZBarrierSetC2::array_copy_requires_gc_barriers(BasicType type) const {
+diff --git a/src/hotspot/share/opto/graphKit.cpp b/src/hotspot/share/opto/graphKit.cpp
+index 7bf2f6cfb..a1547b42f 100644
+--- a/src/hotspot/share/opto/graphKit.cpp
++++ b/src/hotspot/share/opto/graphKit.cpp
+@@ -1493,18 +1493,19 @@ Node* GraphKit::make_load(Node* ctl, Node* adr, const Type* t, BasicType bt,
+                           bool require_atomic_access,
+                           bool unaligned,
+                           bool mismatched,
+-                          bool unsafe) {
++                          bool unsafe,
++                          uint8_t barrier_data) {
+   assert(adr_idx != Compile::AliasIdxTop, "use other make_load factory" );
+   const TypePtr* adr_type = NULL; // debug-mode-only argument
+   debug_only(adr_type = C->get_adr_type(adr_idx));
+   Node* mem = memory(adr_idx);
+   Node* ld;
+   if (require_atomic_access && bt == T_LONG) {
+-    ld = LoadLNode::make_atomic(ctl, mem, adr, adr_type, t, mo, control_dependency, unaligned, mismatched, unsafe);
++    ld = LoadLNode::make_atomic(ctl, mem, adr, adr_type, t, mo, control_dependency, unaligned, mismatched, unsafe, barrier_data);
+   } else if (require_atomic_access && bt == T_DOUBLE) {
+-    ld = LoadDNode::make_atomic(ctl, mem, adr, adr_type, t, mo, control_dependency, unaligned, mismatched, unsafe);
++    ld = LoadDNode::make_atomic(ctl, mem, adr, adr_type, t, mo, control_dependency, unaligned, mismatched, unsafe, barrier_data);
+   } else {
+-    ld = LoadNode::make(_gvn, ctl, mem, adr, adr_type, t, bt, mo, control_dependency, unaligned, mismatched, unsafe);
++    ld = LoadNode::make(_gvn, ctl, mem, adr, adr_type, t, bt, mo, control_dependency, unaligned, mismatched, unsafe, barrier_data);
+   }
+   ld = _gvn.transform(ld);
+   if (((bt == T_OBJECT) && C->do_escape_analysis()) || C->eliminate_boxing()) {
+diff --git a/src/hotspot/share/opto/graphKit.hpp b/src/hotspot/share/opto/graphKit.hpp
+index 07c20bbd5..df5d18ccc 100644
+--- a/src/hotspot/share/opto/graphKit.hpp
++++ b/src/hotspot/share/opto/graphKit.hpp
+@@ -518,27 +518,27 @@ class GraphKit : public Phase {
+   Node* make_load(Node* ctl, Node* adr, const Type* t, BasicType bt,
+                   MemNode::MemOrd mo, LoadNode::ControlDependency control_dependency = LoadNode::DependsOnlyOnTest,
+                   bool require_atomic_access = false, bool unaligned = false,
+-                  bool mismatched = false, bool unsafe = false) {
++                  bool mismatched = false, bool unsafe = false, uint8_t barrier_data = 0) {
+     // This version computes alias_index from bottom_type
+     return make_load(ctl, adr, t, bt, adr->bottom_type()->is_ptr(),
+                      mo, control_dependency, require_atomic_access,
+-                     unaligned, mismatched, unsafe);
++                     unaligned, mismatched, unsafe, barrier_data);
+   }
+   Node* make_load(Node* ctl, Node* adr, const Type* t, BasicType bt, const TypePtr* adr_type,
+                   MemNode::MemOrd mo, LoadNode::ControlDependency control_dependency = LoadNode::DependsOnlyOnTest,
+                   bool require_atomic_access = false, bool unaligned = false,
+-                  bool mismatched = false, bool unsafe = false) {
++                  bool mismatched = false, bool unsafe = false, uint8_t barrier_data = 0) {
+     // This version computes alias_index from an address type
+     assert(adr_type != NULL, "use other make_load factory");
+     return make_load(ctl, adr, t, bt, C->get_alias_index(adr_type),
+                      mo, control_dependency, require_atomic_access,
+-                     unaligned, mismatched, unsafe);
++                     unaligned, mismatched, unsafe, barrier_data);
+   }
+   // This is the base version which is given an alias index.
+   Node* make_load(Node* ctl, Node* adr, const Type* t, BasicType bt, int adr_idx,
+                   MemNode::MemOrd mo, LoadNode::ControlDependency control_dependency = LoadNode::DependsOnlyOnTest,
+                   bool require_atomic_access = false, bool unaligned = false,
+-                  bool mismatched = false, bool unsafe = false);
++                  bool mismatched = false, bool unsafe = false, uint8_t barrier_data = 0);
+ 
+   // Create & transform a StoreNode and store the effect into the
+   // parser's memory state.
+diff --git a/src/hotspot/share/opto/memnode.cpp b/src/hotspot/share/opto/memnode.cpp
+index ee0f09e11..ff0a5726c 100644
+--- a/src/hotspot/share/opto/memnode.cpp
++++ b/src/hotspot/share/opto/memnode.cpp
+@@ -808,7 +808,7 @@ bool LoadNode::is_immutable_value(Node* adr) {
+ //----------------------------LoadNode::make-----------------------------------
+ // Polymorphic factory method:
+ Node *LoadNode::make(PhaseGVN& gvn, Node *ctl, Node *mem, Node *adr, const TypePtr* adr_type, const Type *rt, BasicType bt, MemOrd mo,
+-                     ControlDependency control_dependency, bool unaligned, bool mismatched, bool unsafe) {
++                     ControlDependency control_dependency, bool unaligned, bool mismatched, bool unsafe, uint8_t barrier_data) {
+   Compile* C = gvn.C;
+ 
+   // sanity check the alias category against the created node type
+@@ -859,6 +859,7 @@ Node *LoadNode::make(PhaseGVN& gvn, Node *ctl, Node *mem, Node *adr, const TypeP
+   if (unsafe) {
+     load->set_unsafe_access();
+   }
++  load->set_barrier_data(barrier_data);
+   if (load->Opcode() == Op_LoadN) {
+     Node* ld = gvn.transform(load);
+     return new DecodeNNode(ld, ld->bottom_type()->make_ptr());
+@@ -868,7 +869,7 @@ Node *LoadNode::make(PhaseGVN& gvn, Node *ctl, Node *mem, Node *adr, const TypeP
+ }
+ 
+ LoadLNode* LoadLNode::make_atomic(Node* ctl, Node* mem, Node* adr, const TypePtr* adr_type, const Type* rt, MemOrd mo,
+-                                  ControlDependency control_dependency, bool unaligned, bool mismatched, bool unsafe) {
++                                  ControlDependency control_dependency, bool unaligned, bool mismatched, bool unsafe, uint8_t barrier_data) {
+   bool require_atomic = true;
+   LoadLNode* load = new LoadLNode(ctl, mem, adr, adr_type, rt->is_long(), mo, control_dependency, require_atomic);
+   if (unaligned) {
+@@ -880,11 +881,12 @@ LoadLNode* LoadLNode::make_atomic(Node* ctl, Node* mem, Node* adr, const TypePtr
+   if (unsafe) {
+     load->set_unsafe_access();
+   }
++  load->set_barrier_data(barrier_data);
+   return load;
+ }
+ 
+ LoadDNode* LoadDNode::make_atomic(Node* ctl, Node* mem, Node* adr, const TypePtr* adr_type, const Type* rt, MemOrd mo,
+-                                  ControlDependency control_dependency, bool unaligned, bool mismatched, bool unsafe) {
++                                  ControlDependency control_dependency, bool unaligned, bool mismatched, bool unsafe, uint8_t barrier_data) {
+   bool require_atomic = true;
+   LoadDNode* load = new LoadDNode(ctl, mem, adr, adr_type, rt, mo, control_dependency, require_atomic);
+   if (unaligned) {
+@@ -896,6 +898,7 @@ LoadDNode* LoadDNode::make_atomic(Node* ctl, Node* mem, Node* adr, const TypePtr
+   if (unsafe) {
+     load->set_unsafe_access();
+   }
++  load->set_barrier_data(barrier_data);
+   return load;
+ }
+ 
+diff --git a/src/hotspot/share/opto/memnode.hpp b/src/hotspot/share/opto/memnode.hpp
+index 7468abdbc..14a4a67c6 100644
+--- a/src/hotspot/share/opto/memnode.hpp
++++ b/src/hotspot/share/opto/memnode.hpp
+@@ -227,7 +227,8 @@ public:
+   static Node* make(PhaseGVN& gvn, Node *c, Node *mem, Node *adr,
+                     const TypePtr* at, const Type *rt, BasicType bt,
+                     MemOrd mo, ControlDependency control_dependency = DependsOnlyOnTest,
+-                    bool unaligned = false, bool mismatched = false, bool unsafe = false);
++                    bool unaligned = false, bool mismatched = false, bool unsafe = false,
++                    uint8_t barrier_data = 0);
+ 
+   virtual uint hash()   const;  // Check the type
+ 
+@@ -408,7 +409,7 @@ public:
+   bool require_atomic_access() const { return _require_atomic_access; }
+   static LoadLNode* make_atomic(Node* ctl, Node* mem, Node* adr, const TypePtr* adr_type,
+                                 const Type* rt, MemOrd mo, ControlDependency control_dependency = DependsOnlyOnTest,
+-                                bool unaligned = false, bool mismatched = false, bool unsafe = false);
++                                bool unaligned = false, bool mismatched = false, bool unsafe = false, uint8_t barrier_data = 0);
+ #ifndef PRODUCT
+   virtual void dump_spec(outputStream *st) const {
+     LoadNode::dump_spec(st);
+@@ -460,7 +461,7 @@ public:
+   bool require_atomic_access() const { return _require_atomic_access; }
+   static LoadDNode* make_atomic(Node* ctl, Node* mem, Node* adr, const TypePtr* adr_type,
+                                 const Type* rt, MemOrd mo, ControlDependency control_dependency = DependsOnlyOnTest,
+-                                bool unaligned = false, bool mismatched = false, bool unsafe = false);
++                                bool unaligned = false, bool mismatched = false, bool unsafe = false, uint8_t barrier_data = 0);
+ #ifndef PRODUCT
+   virtual void dump_spec(outputStream *st) const {
+     LoadNode::dump_spec(st);
+-- 
+2.12.3
+

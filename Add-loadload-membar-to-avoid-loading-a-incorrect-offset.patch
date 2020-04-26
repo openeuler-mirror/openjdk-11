@@ -1,0 +1,37 @@
+From 954a4ad3a2a8bb54fb64a524b53f9c87c54cb7a1 Mon Sep 17 00:00:00 2001
+Date: Wed, 26 Feb 2020 09:47:33 +0800
+Subject: [PATCH] aarch64: add_loadload_membar_to_avoid_loading_a_incorrect_offset
+
+Summary: <interpreter>: <add loadload membar in fast_storefield and fast_accessfield to avoid loading a incorrect offset>
+LLT: jtreg
+Bug url: NA
+---
+ src/hotspot/cpu/aarch64/templateTable_aarch64.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/hotspot/cpu/aarch64/templateTable_aarch64.cpp b/src/hotspot/cpu/aarch64/templateTable_aarch64.cpp
+index b8a9a46a8..019a4aadd 100644
+--- a/src/hotspot/cpu/aarch64/templateTable_aarch64.cpp
++++ b/src/hotspot/cpu/aarch64/templateTable_aarch64.cpp
+@@ -2963,6 +2963,8 @@ void TemplateTable::fast_storefield(TosState state)
+   // access constant pool cache
+   __ get_cache_and_index_at_bcp(r2, r1, 1);
+ 
++  __ membar(MacroAssembler::LoadLoad);
++
+   // test for volatile with r3
+   __ ldrw(r3, Address(r2, in_bytes(base +
+                                    ConstantPoolCacheEntry::flags_offset())));
+@@ -3055,6 +3057,9 @@ void TemplateTable::fast_accessfield(TosState state)
+ 
+   // access constant pool cache
+   __ get_cache_and_index_at_bcp(r2, r1, 1);
++
++  __ membar(MacroAssembler::LoadLoad);
++
+   __ ldr(r1, Address(r2, in_bytes(ConstantPoolCache::base_offset() +
+                                   ConstantPoolCacheEntry::f2_offset())));
+   __ ldrw(r3, Address(r2, in_bytes(ConstantPoolCache::base_offset() +
+-- 
+2.12.3
+

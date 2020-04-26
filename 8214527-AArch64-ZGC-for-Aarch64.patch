@@ -1,0 +1,2691 @@
+From c759704261967595054d7ad928cb2cb13dc53356 Mon Sep 17 00:00:00 2001
+Date: Wed, 25 Dec 2019 14:21:26 +0800
+Subject: [PATCH] 8214527: AArch64: ZGC for Aarch64
+
+Summary: <gc>: <Implement ZGC for AArch64>
+LLT: jtreg
+Bug url: https://bugs.openjdk.java.net/browse/JDK-8214527
+---
+ make/autoconf/hotspot.m4                           |   3 +-
+ src/hotspot/cpu/aarch64/aarch64.ad                 | 486 +++++++++++++++++++++
+ .../cpu/aarch64/c1_LIRAssembler_aarch64.cpp        |  12 +-
+ .../gc/shared/barrierSetAssembler_aarch64.hpp      |   2 +-
+ .../shared/modRefBarrierSetAssembler_aarch64.cpp   |   4 +-
+ .../shared/modRefBarrierSetAssembler_aarch64.hpp   |   2 +-
+ .../aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp  | 408 +++++++++++++++++
+ .../aarch64/gc/z/zBarrierSetAssembler_aarch64.hpp  |  92 ++++
+ src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp  |  19 +-
+ .../cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp      |   8 +-
+ .../gc/z/zAddress_linux_aarch64.inline.hpp         |  31 ++
+ .../gc/z/zBackingFile_linux_aarch64.cpp            | 426 ++++++++++++++++++
+ .../gc/z/zBackingFile_linux_aarch64.hpp            |  63 +++
+ .../gc/z/zBackingPath_linux_aarch64.cpp            | 149 +++++++
+ .../gc/z/zBackingPath_linux_aarch64.hpp            |  52 +++
+ .../linux_aarch64/gc/z/zGlobals_linux_aarch64.cpp  |  33 ++
+ .../linux_aarch64/gc/z/zGlobals_linux_aarch64.hpp  |  88 ++++
+ .../gc/z/zLargePages_linux_aarch64.cpp             |  38 ++
+ .../linux_aarch64/gc/z/zNUMA_linux_aarch64.cpp     |  83 ++++
+ .../gc/z/zPhysicalMemoryBacking_linux_aarch64.cpp  | 270 ++++++++++++
+ .../gc/z/zPhysicalMemoryBacking_linux_aarch64.hpp  |  65 +++
+ .../gc/z/zVirtualMemory_linux_aarch64.cpp          |  41 ++
+ src/hotspot/share/gc/z/c1/zBarrierSetC1.cpp        |  20 +-
+ 23 files changed, 2368 insertions(+), 27 deletions(-)
+ create mode 100644 src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp
+ create mode 100644 src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.hpp
+ create mode 100644 src/hotspot/os_cpu/linux_aarch64/gc/z/zAddress_linux_aarch64.inline.hpp
+ create mode 100644 src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.cpp
+ create mode 100644 src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.hpp
+ create mode 100644 src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingPath_linux_aarch64.cpp
+ create mode 100644 src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingPath_linux_aarch64.hpp
+ create mode 100644 src/hotspot/os_cpu/linux_aarch64/gc/z/zGlobals_linux_aarch64.cpp
+ create mode 100644 src/hotspot/os_cpu/linux_aarch64/gc/z/zGlobals_linux_aarch64.hpp
+ create mode 100644 src/hotspot/os_cpu/linux_aarch64/gc/z/zLargePages_linux_aarch64.cpp
+ create mode 100644 src/hotspot/os_cpu/linux_aarch64/gc/z/zNUMA_linux_aarch64.cpp
+ create mode 100644 src/hotspot/os_cpu/linux_aarch64/gc/z/zPhysicalMemoryBacking_linux_aarch64.cpp
+ create mode 100644 src/hotspot/os_cpu/linux_aarch64/gc/z/zPhysicalMemoryBacking_linux_aarch64.hpp
+ create mode 100644 src/hotspot/os_cpu/linux_aarch64/gc/z/zVirtualMemory_linux_aarch64.cpp
+
+diff --git a/make/autoconf/hotspot.m4 b/make/autoconf/hotspot.m4
+index 1d4c710be..6bfda33da 100644
+--- a/make/autoconf/hotspot.m4
++++ b/make/autoconf/hotspot.m4
+@@ -340,7 +340,8 @@ AC_DEFUN_ONCE([HOTSPOT_SETUP_JVM_FEATURES],
+ 
+   # Only enable ZGC on supported platforms
+   AC_MSG_CHECKING([if zgc can be built])
+-  if test "x$OPENJDK_TARGET_OS" = "xlinux" && test "x$OPENJDK_TARGET_CPU" = "xx86_64"; then
++  if (test "x$OPENJDK_TARGET_OS" = "xlinux" && test "x$OPENJDK_TARGET_CPU" = "xx86_64") || \
++     (test "x$OPENJDK_TARGET_OS" = "xlinux" && test "x$OPENJDK_TARGET_CPU" = "xaarch64"); then
+     AC_MSG_RESULT([yes])
+   else
+     DISABLED_JVM_FEATURES="$DISABLED_JVM_FEATURES zgc"
+diff --git a/src/hotspot/cpu/aarch64/aarch64.ad b/src/hotspot/cpu/aarch64/aarch64.ad
+index bdef2a6d7..d0f3fc33d 100644
+--- a/src/hotspot/cpu/aarch64/aarch64.ad
++++ b/src/hotspot/cpu/aarch64/aarch64.ad
+@@ -957,6 +957,146 @@ reg_class v3_reg(
+     V3, V3_H
+ );
+ 
++// Class for 128 bit register v4
++reg_class v4_reg(
++    V4, V4_H
++);
++
++// Class for 128 bit register v5
++reg_class v5_reg(
++    V5, V5_H
++);
++
++// Class for 128 bit register v6
++reg_class v6_reg(
++    V6, V6_H
++);
++
++// Class for 128 bit register v7
++reg_class v7_reg(
++    V7, V7_H
++);
++
++// Class for 128 bit register v8
++reg_class v8_reg(
++    V8, V8_H
++);
++
++// Class for 128 bit register v9
++reg_class v9_reg(
++    V9, V9_H
++);
++
++// Class for 128 bit register v10
++reg_class v10_reg(
++    V10, V10_H
++);
++
++// Class for 128 bit register v11
++reg_class v11_reg(
++    V11, V11_H
++);
++
++// Class for 128 bit register v12
++reg_class v12_reg(
++    V12, V12_H
++);
++
++// Class for 128 bit register v13
++reg_class v13_reg(
++    V13, V13_H
++);
++
++// Class for 128 bit register v14
++reg_class v14_reg(
++    V14, V14_H
++);
++
++// Class for 128 bit register v15
++reg_class v15_reg(
++    V15, V15_H
++);
++
++// Class for 128 bit register v16
++reg_class v16_reg(
++    V16, V16_H
++);
++
++// Class for 128 bit register v17
++reg_class v17_reg(
++    V17, V17_H
++);
++
++// Class for 128 bit register v18
++reg_class v18_reg(
++    V18, V18_H
++);
++
++// Class for 128 bit register v19
++reg_class v19_reg(
++    V19, V19_H
++);
++
++// Class for 128 bit register v20
++reg_class v20_reg(
++    V20, V20_H
++);
++
++// Class for 128 bit register v21
++reg_class v21_reg(
++    V21, V21_H
++);
++
++// Class for 128 bit register v22
++reg_class v22_reg(
++    V22, V22_H
++);
++
++// Class for 128 bit register v23
++reg_class v23_reg(
++    V23, V23_H
++);
++
++// Class for 128 bit register v24
++reg_class v24_reg(
++    V24, V24_H
++);
++
++// Class for 128 bit register v25
++reg_class v25_reg(
++    V25, V25_H
++);
++
++// Class for 128 bit register v26
++reg_class v26_reg(
++    V26, V26_H
++);
++
++// Class for 128 bit register v27
++reg_class v27_reg(
++    V27, V27_H
++);
++
++// Class for 128 bit register v28
++reg_class v28_reg(
++    V28, V28_H
++);
++
++// Class for 128 bit register v29
++reg_class v29_reg(
++    V29, V29_H
++);
++
++// Class for 128 bit register v30
++reg_class v30_reg(
++    V30, V30_H
++);
++
++// Class for 128 bit register v31
++reg_class v31_reg(
++    V31, V31_H
++);
++
+ // Singleton class for condition codes
+ reg_class int_flags(RFLAGS);
+ 
+@@ -988,6 +1128,11 @@ definitions %{
+   int_def VOLATILE_REF_COST    (   1000,     10 * INSN_COST);
+ %}
+ 
++source_hpp %{
++
++#include "gc/z/c2/zBarrierSetC2.hpp"
++
++%}
+ 
+ //----------SOURCE BLOCK-------------------------------------------------------
+ // This is a block of C++ code which provides values, functions, and
+@@ -4732,6 +4877,258 @@ operand vRegD_V3()
+   interface(REG_INTER);
+ %}
+ 
++operand vRegD_V4()
++%{
++  constraint(ALLOC_IN_RC(v4_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V5()
++%{
++  constraint(ALLOC_IN_RC(v5_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V6()
++%{
++  constraint(ALLOC_IN_RC(v6_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V7()
++%{
++  constraint(ALLOC_IN_RC(v7_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V8()
++%{
++  constraint(ALLOC_IN_RC(v8_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V9()
++%{
++  constraint(ALLOC_IN_RC(v9_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V10()
++%{
++  constraint(ALLOC_IN_RC(v10_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V11()
++%{
++  constraint(ALLOC_IN_RC(v11_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V12()
++%{
++  constraint(ALLOC_IN_RC(v12_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V13()
++%{
++  constraint(ALLOC_IN_RC(v13_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V14()
++%{
++  constraint(ALLOC_IN_RC(v14_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V15()
++%{
++  constraint(ALLOC_IN_RC(v15_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V16()
++%{
++  constraint(ALLOC_IN_RC(v16_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V17()
++%{
++  constraint(ALLOC_IN_RC(v17_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V18()
++%{
++  constraint(ALLOC_IN_RC(v18_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V19()
++%{
++  constraint(ALLOC_IN_RC(v19_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V20()
++%{
++  constraint(ALLOC_IN_RC(v20_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V21()
++%{
++  constraint(ALLOC_IN_RC(v21_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V22()
++%{
++  constraint(ALLOC_IN_RC(v22_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V23()
++%{
++  constraint(ALLOC_IN_RC(v23_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V24()
++%{
++  constraint(ALLOC_IN_RC(v24_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V25()
++%{
++  constraint(ALLOC_IN_RC(v25_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V26()
++%{
++  constraint(ALLOC_IN_RC(v26_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V27()
++%{
++  constraint(ALLOC_IN_RC(v27_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V28()
++%{
++  constraint(ALLOC_IN_RC(v28_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V29()
++%{
++  constraint(ALLOC_IN_RC(v29_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V30()
++%{
++  constraint(ALLOC_IN_RC(v30_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
++operand vRegD_V31()
++%{
++  constraint(ALLOC_IN_RC(v31_reg));
++  match(RegD);
++  op_cost(0);
++  format %{ %}
++  interface(REG_INTER);
++%}
++
+ // Flags register, used as output of signed compare instructions
+ 
+ // note that on AArch64 we also use this register as the output for
+@@ -17077,6 +17474,95 @@ instruct vsrl2L_imm(vecX dst, vecX src, immI shift) %{
+   ins_pipe(vshift128_imm);
+ %}
+ 
++source %{
++
++#include "gc/z/zBarrierSetAssembler.hpp"
++
++static void z_load_barrier_slow_reg(MacroAssembler& _masm, Register dst, 
++                                    Register base, int index, int scale, 
++                                    int disp, bool weak) {
++  const address stub = weak ? ZBarrierSet::assembler()->load_barrier_weak_slow_stub(dst)
++                            : ZBarrierSet::assembler()->load_barrier_slow_stub(dst);
++
++  if (index == -1) {
++    if (disp != 0) {
++      __ lea(dst, Address(base, disp));
++    } else {
++       __ mov(dst, base);
++    }
++  } else {
++    Register index_reg = as_Register(index);
++    if (disp == 0) {
++      __ lea(dst, Address(base, index_reg, Address::lsl(scale)));
++    } else {
++      __ lea(dst, Address(base, disp));
++      __ lea(dst, Address(dst, index_reg, Address::lsl(scale)));
++    }
++  }
++
++  __ far_call(RuntimeAddress(stub));
++}
++
++%}
++
++//
++// Execute ZGC load barrier (strong) slow path
++//
++instruct loadBarrierSlowReg(iRegP dst, memory mem, rFlagsReg cr,
++    vRegD_V0 v0, vRegD_V1 v1, vRegD_V2 v2, vRegD_V3 v3, vRegD_V4 v4,
++    vRegD_V5 v5, vRegD_V6 v6, vRegD_V7 v7, vRegD_V8 v8, vRegD_V9 v9,
++    vRegD_V10 v10, vRegD_V11 v11, vRegD_V12 v12, vRegD_V13 v13, vRegD_V14 v14,
++    vRegD_V15 v15, vRegD_V16 v16, vRegD_V17 v17, vRegD_V18 v18, vRegD_V19 v19,
++    vRegD_V20 v20, vRegD_V21 v21, vRegD_V22 v22, vRegD_V23 v23, vRegD_V24 v24,
++    vRegD_V25 v25, vRegD_V26 v26, vRegD_V27 v27, vRegD_V28 v28, vRegD_V29 v29,
++    vRegD_V30 v30, vRegD_V31 v31) %{
++  match(Set dst (LoadBarrierSlowReg mem));
++  //predicate(!n->as_LoadBarrierSlowReg()->is_weak());
++
++  effect(DEF dst, KILL cr,
++     KILL v0, KILL v1, KILL v2, KILL v3, KILL v4, KILL v5, KILL v6, KILL v7,
++     KILL v8, KILL v9, KILL v10, KILL v11, KILL v12, KILL v13, KILL v14,
++     KILL v15, KILL v16, KILL v17, KILL v18, KILL v19, KILL v20, KILL v21,
++     KILL v22, KILL v23, KILL v24, KILL v25, KILL v26, KILL v27, KILL v28,
++     KILL v29, KILL v30, KILL v31);
++
++  format %{"LoadBarrierSlowReg $dst, $mem" %}
++  ins_encode %{
++    z_load_barrier_slow_reg(_masm, $dst$$Register, $mem$$base$$Register,
++                            $mem$$index, $mem$$scale, $mem$$disp, false);
++  %}
++  ins_pipe(pipe_slow);
++%}
++
++//
++// Execute ZGC load barrier (weak) slow path
++//
++instruct loadBarrierWeakSlowReg(iRegP dst, memory mem, rFlagsReg cr,
++    vRegD_V0 v0, vRegD_V1 v1, vRegD_V2 v2, vRegD_V3 v3, vRegD_V4 v4,
++    vRegD_V5 v5, vRegD_V6 v6, vRegD_V7 v7, vRegD_V8 v8, vRegD_V9 v9,
++    vRegD_V10 v10, vRegD_V11 v11, vRegD_V12 v12, vRegD_V13 v13, vRegD_V14 v14,
++    vRegD_V15 v15, vRegD_V16 v16, vRegD_V17 v17, vRegD_V18 v18, vRegD_V19 v19,
++    vRegD_V20 v20, vRegD_V21 v21, vRegD_V22 v22, vRegD_V23 v23, vRegD_V24 v24,
++    vRegD_V25 v25, vRegD_V26 v26, vRegD_V27 v27, vRegD_V28 v28, vRegD_V29 v29,
++    vRegD_V30 v30, vRegD_V31 v31) %{
++  match(Set dst (LoadBarrierSlowReg mem));
++  //predicate(n->as_LoadBarrierSlowReg()->is_weak());
++
++  effect(DEF dst, KILL cr,
++     KILL v0, KILL v1, KILL v2, KILL v3, KILL v4, KILL v5, KILL v6, KILL v7,
++     KILL v8, KILL v9, KILL v10, KILL v11, KILL v12, KILL v13, KILL v14,
++     KILL v15, KILL v16, KILL v17, KILL v18, KILL v19, KILL v20, KILL v21,
++     KILL v22, KILL v23, KILL v24, KILL v25, KILL v26, KILL v27, KILL v28,
++     KILL v29, KILL v30, KILL v31);
++
++  format %{"LoadBarrierWeakSlowReg $dst, $mem" %}
++  ins_encode %{
++    z_load_barrier_slow_reg(_masm, $dst$$Register, $mem$$base$$Register,
++                            $mem$$index, $mem$$scale, $mem$$disp, true);
++  %}
++  ins_pipe(pipe_slow);
++%}
++
+ //----------PEEPHOLE RULES-----------------------------------------------------
+ // These must follow all instruction definitions as they use the names
+ // defined in the instructions definitions.
+diff --git a/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp
+index ac91e87d2..e6601434b 100644
+--- a/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp
++++ b/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp
+@@ -1012,7 +1012,11 @@ void LIR_Assembler::mem2reg(LIR_Opr src, LIR_Opr dest, BasicType type, LIR_Patch
+     if (UseCompressedOops && !wide) {
+       __ decode_heap_oop(dest->as_register());
+     }
+-    __ verify_oop(dest->as_register());
++
++    if (!UseZGC) {
++      // Load barrier has not yet been applied, so ZGC can't verify the oop here
++      __ verify_oop(dest->as_register());
++    }
+   } else if (type == T_ADDRESS && addr->disp() == oopDesc::klass_offset_in_bytes()) {
+     if (UseCompressedClassPointers) {
+       __ decode_klass_not_null(dest->as_register());
+@@ -2811,7 +2815,11 @@ void LIR_Assembler::negate(LIR_Opr left, LIR_Opr dest, LIR_Opr tmp) {
+ 
+ 
+ void LIR_Assembler::leal(LIR_Opr addr, LIR_Opr dest, LIR_PatchCode patch_code, CodeEmitInfo* info) {
+-  assert(patch_code == lir_patch_none, "Patch code not supported");
++  if (patch_code != lir_patch_none) {
++    deoptimize_trap(info);
++    return;
++  }
++
+   __ lea(dest->as_register_lo(), as_Address(addr->as_address_ptr()));
+ }
+ 
+diff --git a/src/hotspot/cpu/aarch64/gc/shared/barrierSetAssembler_aarch64.hpp b/src/hotspot/cpu/aarch64/gc/shared/barrierSetAssembler_aarch64.hpp
+index 6bd6c6b89..68e287517 100644
+--- a/src/hotspot/cpu/aarch64/gc/shared/barrierSetAssembler_aarch64.hpp
++++ b/src/hotspot/cpu/aarch64/gc/shared/barrierSetAssembler_aarch64.hpp
+@@ -37,7 +37,7 @@ private:
+ 
+ public:
+   virtual void arraycopy_prologue(MacroAssembler* masm, DecoratorSet decorators, bool is_oop,
+-                                  Register addr, Register count, RegSet saved_regs) {}
++                                  Register src, Register dst, Register count, RegSet saved_regs) {}
+   virtual void arraycopy_epilogue(MacroAssembler* masm, DecoratorSet decorators, bool is_oop,
+                                   Register start, Register end, Register tmp, RegSet saved_regs) {}
+   virtual void load_at(MacroAssembler* masm, DecoratorSet decorators, BasicType type,
+diff --git a/src/hotspot/cpu/aarch64/gc/shared/modRefBarrierSetAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/gc/shared/modRefBarrierSetAssembler_aarch64.cpp
+index a28c50169..badd46d05 100644
+--- a/src/hotspot/cpu/aarch64/gc/shared/modRefBarrierSetAssembler_aarch64.cpp
++++ b/src/hotspot/cpu/aarch64/gc/shared/modRefBarrierSetAssembler_aarch64.cpp
+@@ -29,10 +29,10 @@
+ #define __ masm->
+ 
+ void ModRefBarrierSetAssembler::arraycopy_prologue(MacroAssembler* masm, DecoratorSet decorators, bool is_oop,
+-                                                   Register addr, Register count, RegSet saved_regs) {
++                                                   Register src, Register dst, Register count, RegSet saved_regs) {
+ 
+   if (is_oop) {
+-    gen_write_ref_array_pre_barrier(masm, decorators, addr, count, saved_regs);
++    gen_write_ref_array_pre_barrier(masm, decorators, dst, count, saved_regs);
+   }
+ }
+ 
+diff --git a/src/hotspot/cpu/aarch64/gc/shared/modRefBarrierSetAssembler_aarch64.hpp b/src/hotspot/cpu/aarch64/gc/shared/modRefBarrierSetAssembler_aarch64.hpp
+index e145b5d74..00e36b919 100644
+--- a/src/hotspot/cpu/aarch64/gc/shared/modRefBarrierSetAssembler_aarch64.hpp
++++ b/src/hotspot/cpu/aarch64/gc/shared/modRefBarrierSetAssembler_aarch64.hpp
+@@ -44,7 +44,7 @@ protected:
+ 
+ public:
+   virtual void arraycopy_prologue(MacroAssembler* masm, DecoratorSet decorators, bool is_oop,
+-                                  Register addr, Register count, RegSet saved_regs);
++                                  Register src, Register dst, Register count, RegSet saved_regs);
+   virtual void arraycopy_epilogue(MacroAssembler* masm, DecoratorSet decorators, bool is_oop,
+                                   Register start, Register count, Register tmp, RegSet saved_regs);
+   virtual void store_at(MacroAssembler* masm, DecoratorSet decorators, BasicType type,
+diff --git a/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp
+new file mode 100644
+index 000000000..90b2b4ca7
+--- /dev/null
++++ b/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp
+@@ -0,0 +1,408 @@
++/*
++ * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++#include "precompiled.hpp"
++#include "asm/macroAssembler.inline.hpp"
++#include "code/codeBlob.hpp"
++#include "gc/z/zBarrier.inline.hpp"
++#include "gc/z/zBarrierSet.hpp"
++#include "gc/z/zBarrierSetAssembler.hpp"
++#include "gc/z/zBarrierSetRuntime.hpp"
++#include "memory/resourceArea.hpp"
++#ifdef COMPILER1
++#include "c1/c1_LIRAssembler.hpp"
++#include "c1/c1_MacroAssembler.hpp"
++#include "gc/z/c1/zBarrierSetC1.hpp"
++#endif // COMPILER1
++
++#include "gc/z/zThreadLocalData.hpp"
++
++ZBarrierSetAssembler::ZBarrierSetAssembler() :
++    _load_barrier_slow_stub(),
++    _load_barrier_weak_slow_stub() {}
++
++#ifdef PRODUCT
++#define BLOCK_COMMENT(str) /* nothing */
++#else
++#define BLOCK_COMMENT(str) __ block_comment(str)
++#endif
++
++#undef __
++#define __ masm->
++
++void ZBarrierSetAssembler::load_at(MacroAssembler* masm,
++                                   DecoratorSet decorators,
++                                   BasicType type,
++                                   Register dst,
++                                   Address src,
++                                   Register tmp1,
++                                   Register tmp_thread) {
++  if (!ZBarrierSet::barrier_needed(decorators, type)) {
++    // Barrier not needed
++    BarrierSetAssembler::load_at(masm, decorators, type, dst, src, tmp1, tmp_thread);
++    return;
++  }
++
++  // rscratch1 can be passed as src or dst, so don't use it.
++  RegSet savedRegs = RegSet::of(rscratch2, rheapbase);
++
++  Label done;
++  assert_different_registers(rheapbase, rscratch2, dst);
++  assert_different_registers(rheapbase, rscratch2, src.base());
++
++  __ push(savedRegs, sp);
++
++  // Load bad mask into scratch register.
++  __ ldr(rheapbase, address_bad_mask_from_thread(rthread));
++  __ lea(rscratch2, src);
++  __ ldr(dst, src);
++
++  // Test reference against bad mask. If mask bad, then we need to fix it up.
++  __ tst(dst, rheapbase);
++  __ br(Assembler::EQ, done);
++
++  __ enter();
++
++  __ push(RegSet::range(r0,r28) - RegSet::of(dst), sp);
++
++  if (c_rarg0 != dst) {
++    __ mov(c_rarg0, dst);
++  }
++  __ mov(c_rarg1, rscratch2);
++
++  int step = 4 * wordSize;
++  __ mov(rscratch1, -step);
++  __ sub(sp, sp, step);
++
++  for (int i = 28; i >= 4; i -= 4) {
++    __ st1(as_FloatRegister(i), as_FloatRegister(i+1), as_FloatRegister(i+2),
++        as_FloatRegister(i+3), __ T1D, Address(__ post(sp, rscratch1)));
++  }
++
++  __ call_VM_leaf(ZBarrierSetRuntime::load_barrier_on_oop_field_preloaded_addr(decorators), 2);
++
++  for (int i = 0; i <= 28; i += 4) {
++    __ ld1(as_FloatRegister(i), as_FloatRegister(i+1), as_FloatRegister(i+2),
++        as_FloatRegister(i+3), __ T1D, Address(__ post(sp, step)));
++  }
++
++  // Make sure dst has the return value.
++  if (dst != r0) {
++    __ mov(dst, r0);
++  }
++
++  __ pop(RegSet::range(r0,r28) - RegSet::of(dst), sp);
++  __ leave();
++
++  __ bind(done);
++
++  // Restore tmps
++  __ pop(savedRegs, sp);
++}
++
++#ifdef ASSERT
++
++void ZBarrierSetAssembler::store_at(MacroAssembler* masm,
++                                        DecoratorSet decorators,
++                                        BasicType type,
++                                        Address dst,
++                                        Register val,
++                                        Register tmp1,
++                                        Register tmp2) {
++  // Verify value
++  if (type == T_OBJECT || type == T_ARRAY) {
++    // Note that src could be noreg, which means we
++    // are storing null and can skip verification.
++    if (val != noreg) {
++      Label done;
++
++      // tmp1 and tmp2 are often set to noreg.
++      RegSet savedRegs = RegSet::of(rscratch1);
++      __ push(savedRegs, sp);
++
++      __ ldr(rscratch1, address_bad_mask_from_thread(rthread));
++      __ tst(val, rscratch1);
++      __ br(Assembler::EQ, done);
++      __ stop("Verify oop store failed");
++      __ should_not_reach_here();
++      __ bind(done);
++      __ pop(savedRegs, sp);
++    }
++  }
++
++  // Store value
++  BarrierSetAssembler::store_at(masm, decorators, type, dst, val, tmp1, tmp2);
++}
++
++#endif // ASSERT
++
++void ZBarrierSetAssembler::arraycopy_prologue(MacroAssembler* masm,
++                                              DecoratorSet decorators,
++                                              bool is_oop,
++                                              Register src,
++                                              Register dst,
++                                              Register count,
++                                              RegSet saved_regs) {
++  if (!is_oop) {
++    // Barrier not needed
++    return;
++  }
++
++  BLOCK_COMMENT("ZBarrierSetAssembler::arraycopy_prologue {");
++
++  assert_different_registers(src, count, rscratch1);
++
++  __ pusha();
++
++  if (count == c_rarg0) {
++    if (src == c_rarg1) {
++      // exactly backwards!!
++      __ mov(rscratch1, c_rarg0);
++      __ mov(c_rarg0, c_rarg1);
++      __ mov(c_rarg1, rscratch1);
++    } else {
++      __ mov(c_rarg1, count);
++      __ mov(c_rarg0, src);
++    }
++  } else {
++    __ mov(c_rarg0, src);
++    __ mov(c_rarg1, count);
++  }
++
++  __ call_VM_leaf(ZBarrierSetRuntime::load_barrier_on_oop_array_addr(), 2);
++
++  __ popa();
++  BLOCK_COMMENT("} ZBarrierSetAssembler::arraycopy_prologue");
++}
++
++void ZBarrierSetAssembler::try_resolve_jobject_in_native(MacroAssembler* masm,
++                                                         Register jni_env,
++                                                         Register robj,
++                                                         Register tmp,
++                                                         Label& slowpath) {
++  BLOCK_COMMENT("ZBarrierSetAssembler::try_resolve_jobject_in_native {");
++
++  assert_different_registers(jni_env, robj, tmp);
++
++  // Resolve jobject
++  BarrierSetAssembler::try_resolve_jobject_in_native(masm, jni_env, robj, tmp, slowpath);
++
++  // The Address offset is too large to direct load - -784. Our range is +127, -128.
++  __ mov(tmp, (long int)(in_bytes(ZThreadLocalData::address_bad_mask_offset()) -
++      in_bytes(JavaThread::jni_environment_offset())));
++  // Load address bad mask
++  __ add(tmp, jni_env, tmp);
++  __ ldr(tmp, Address(tmp));
++
++  // Check address bad mask
++  __ tst(robj, tmp);
++  __ br(Assembler::NE, slowpath);
++
++  BLOCK_COMMENT("} ZBarrierSetAssembler::try_resolve_jobject_in_native");
++}
++
++#ifdef COMPILER1
++
++#undef __
++#define __ ce->masm()->
++
++void ZBarrierSetAssembler::generate_c1_load_barrier_test(LIR_Assembler* ce,
++                                                         LIR_Opr ref) const {
++  assert_different_registers(rheapbase, rthread, ref->as_register());
++
++  __ ldr(rheapbase, address_bad_mask_from_thread(rthread));
++  __ tst(ref->as_register(), rheapbase);
++}
++
++void ZBarrierSetAssembler::generate_c1_load_barrier_stub(LIR_Assembler* ce,
++                                                         ZLoadBarrierStubC1* stub) const {
++  // Stub entry
++  __ bind(*stub->entry());
++
++  Register ref = stub->ref()->as_register();
++  Register ref_addr = noreg;
++  Register tmp = noreg;
++
++  if (stub->tmp()->is_valid()) {
++    // Load address into tmp register
++    //ce->leal(stub->ref_addr(), stub->tmp());
++    ce->leal(stub->ref_addr(), stub->tmp(), lir_patch_none, NULL);
++    ref_addr = tmp = stub->tmp()->as_pointer_register();
++  } else {
++    // Address already in register
++    ref_addr = stub->ref_addr()->as_address_ptr()->base()->as_pointer_register();
++  }
++
++  assert_different_registers(ref, ref_addr, noreg);
++
++  // Save r0 unless it is the result or tmp register
++  // Set up SP to accomodate parameters and maybe r0..
++  if (ref != r0 && tmp != r0) {
++    __ sub(sp, sp, 32);
++    __ str(r0, Address(sp, 16));
++  } else {
++    __ sub(sp, sp, 16);
++  }
++
++  // Setup arguments and call runtime stub
++  ce->store_parameter(ref_addr, 1);
++  ce->store_parameter(ref, 0);
++
++  __ far_call(stub->runtime_stub());
++
++  // Verify result
++  __ verify_oop(r0, "Bad oop");
++
++  // Move result into place
++  if (ref != r0) {
++    __ mov(ref, r0);
++  }
++
++  // Restore r0 unless it is the result or tmp register
++  if (ref != r0 && tmp != r0) {
++    __ ldr(r0, Address(sp, 16));
++    __ add(sp, sp, 32);
++  } else {
++    __ add(sp, sp, 16);
++  }
++
++  // Stub exit
++  __ b(*stub->continuation());
++}
++
++#undef __
++#define __ sasm->
++
++void ZBarrierSetAssembler::generate_c1_load_barrier_runtime_stub(StubAssembler* sasm,
++                                                                 DecoratorSet decorators) const {
++  __ prologue("zgc_load_barrier stub", false);
++
++  // We don't use push/pop_clobbered_registers() - we need to pull out the result from r0.
++  for (int i = 0; i < 32; i +=2) {
++    __ stpd(as_FloatRegister(i), as_FloatRegister(i+1), Address(__ pre(sp,-16)));
++  }
++
++  RegSet saveRegs = RegSet::range(r0,r28) - RegSet::of(r0);
++  __ push(saveRegs, sp);
++
++  // Setup arguments
++  __ load_parameter(0, c_rarg0);
++  __ load_parameter(1, c_rarg1);
++
++  __ call_VM_leaf(ZBarrierSetRuntime::load_barrier_on_oop_field_preloaded_addr(decorators), 2);
++
++  __ pop(saveRegs, sp);
++
++  for (int i = 30; i >0; i -=2) {
++      __ ldpd(as_FloatRegister(i), as_FloatRegister(i+1), Address(__ post(sp, 16)));
++    }
++
++  __ epilogue();
++}
++#endif // COMPILER1
++
++#undef __
++#define __ cgen->assembler()->
++
++// Generates a register specific stub for calling
++// ZBarrierSetRuntime::load_barrier_on_oop_field_preloaded() or
++// ZBarrierSetRuntime::load_barrier_on_weak_oop_field_preloaded().
++//
++// The raddr register serves as both input and output for this stub. When the stub is
++// called the raddr register contains the object field address (oop*) where the bad oop
++// was loaded from, which caused the slow path to be taken. On return from the stub the
++// raddr register contains the good/healed oop returned from
++// ZBarrierSetRuntime::load_barrier_on_oop_field_preloaded() or
++// ZBarrierSetRuntime::load_barrier_on_weak_oop_field_preloaded().
++static address generate_load_barrier_stub(StubCodeGenerator* cgen, Register raddr, DecoratorSet decorators) {
++  // Don't generate stub for invalid registers
++  if (raddr == zr || raddr == r29 || raddr == r30) {
++    return NULL;
++  }
++
++  // Create stub name
++  char name[64];
++  const bool weak = (decorators & ON_WEAK_OOP_REF) != 0;
++  os::snprintf(name, sizeof(name), "zgc_load_barrier%s_stub_%s", weak ? "_weak" : "", raddr->name());
++
++  __ align(CodeEntryAlignment);
++  StubCodeMark mark(cgen, "StubRoutines", os::strdup(name, mtCode));
++  address start = __ pc();
++
++  // Save live registers
++  RegSet savedRegs = RegSet::range(r0,r18) - RegSet::of(raddr);
++
++  __ enter();
++  __ push(savedRegs, sp);
++
++  // Setup arguments
++  if (raddr != c_rarg1) {
++    __ mov(c_rarg1, raddr);
++  }
++
++  __ ldr(c_rarg0, Address(raddr));
++
++  // Call barrier function
++  __ call_VM_leaf(ZBarrierSetRuntime::load_barrier_on_oop_field_preloaded_addr(decorators), c_rarg0, c_rarg1);
++
++  // Move result returned in r0 to raddr, if needed
++  if (raddr != r0) {
++    __ mov(raddr, r0);
++  }
++
++  __ pop(savedRegs, sp);
++  __ leave();
++  __ ret(lr);
++
++  return start;
++}
++
++#undef __
++
++static void barrier_stubs_init_inner(const char* label, const DecoratorSet decorators, address* stub) {
++  const int nregs = 28;              // Exclude FP, XZR, SP from calculation.
++  const int code_size = nregs * 254; // Rough estimate of code size
++
++  ResourceMark rm;
++
++  CodeBuffer buf(BufferBlob::create(label, code_size));
++  StubCodeGenerator cgen(&buf);
++
++  for (int i = 0; i < nregs; i++) {
++    const Register reg = as_Register(i);
++    stub[i] = generate_load_barrier_stub(&cgen, reg, decorators);
++  }
++}
++
++void ZBarrierSetAssembler::barrier_stubs_init() {
++  barrier_stubs_init_inner("zgc_load_barrier_stubs", ON_STRONG_OOP_REF, _load_barrier_slow_stub);
++  barrier_stubs_init_inner("zgc_load_barrier_weak_stubs", ON_WEAK_OOP_REF, _load_barrier_weak_slow_stub);
++}
++
++address ZBarrierSetAssembler::load_barrier_slow_stub(Register reg) {
++  return _load_barrier_slow_stub[reg->encoding()];
++}
++
++address ZBarrierSetAssembler::load_barrier_weak_slow_stub(Register reg) {
++  return _load_barrier_weak_slow_stub[reg->encoding()];
++}
+diff --git a/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.hpp b/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.hpp
+new file mode 100644
+index 000000000..7e8be01cc
+--- /dev/null
++++ b/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.hpp
+@@ -0,0 +1,92 @@
++/*
++ * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++#ifndef CPU_AARCH64_GC_Z_ZBARRIERSETASSEMBLER_AARCH64_HPP
++#define CPU_AARCH64_GC_Z_ZBARRIERSETASSEMBLER_AARCH64_HPP
++
++#ifdef COMPILER1
++class LIR_Assembler;
++class LIR_OprDesc;
++typedef LIR_OprDesc* LIR_Opr;
++class StubAssembler;
++class ZLoadBarrierStubC1;
++#endif // COMPILER1
++
++class ZBarrierSetAssembler : public ZBarrierSetAssemblerBase {
++private:
++  address _load_barrier_slow_stub[RegisterImpl::number_of_registers];
++  address _load_barrier_weak_slow_stub[RegisterImpl::number_of_registers];
++
++public:
++  ZBarrierSetAssembler();
++
++  virtual void load_at(MacroAssembler* masm,
++                       DecoratorSet decorators,
++                       BasicType type,
++                       Register dst,
++                       Address src,
++                       Register tmp1,
++                       Register tmp_thread);
++
++#ifdef ASSERT
++  virtual void store_at(MacroAssembler* masm,
++                        DecoratorSet decorators,
++                        BasicType type,
++                        Address dst,
++                        Register val,
++                        Register tmp1,
++                        Register tmp2);
++#endif // ASSERT
++
++  virtual void arraycopy_prologue(MacroAssembler* masm,
++                                  DecoratorSet decorators,
++                                  bool is_oop,
++                                  Register src,
++                                  Register dst,
++                                  Register count,
++                                  RegSet saved_regs);
++
++  virtual void try_resolve_jobject_in_native(MacroAssembler* masm,
++                                             Register jni_env,
++                                             Register robj,
++                                             Register tmp,
++                                             Label& slowpath);
++
++#ifdef COMPILER1
++  void generate_c1_load_barrier_test(LIR_Assembler* ce,
++                                     LIR_Opr ref) const;
++
++  void generate_c1_load_barrier_stub(LIR_Assembler* ce,
++                                     ZLoadBarrierStubC1* stub) const;
++
++  void generate_c1_load_barrier_runtime_stub(StubAssembler* sasm,
++                                             DecoratorSet decorators) const;
++#endif // COMPILER1
++
++  virtual void barrier_stubs_init();
++
++  address load_barrier_slow_stub(Register reg);
++  address load_barrier_weak_slow_stub(Register reg);
++};
++
++#endif // CPU_AARCH64_GC_Z_ZBARRIERSETASSEMBLER_AARCH64_HPP
+diff --git a/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp b/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp
+index eff23b6ba..ac7eb8480 100644
+--- a/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp
++++ b/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp
+@@ -45,6 +45,9 @@
+ #ifdef COMPILER2
+ #include "opto/runtime.hpp"
+ #endif
++#if INCLUDE_ZGC
++#include "gc/z/zThreadLocalData.hpp"
++#endif
+ 
+ // Declaration and definition of StubGenerator (no .hpp file).
+ // For a more detailed description of the stub routine structure
+@@ -549,6 +552,16 @@ class StubGenerator: public StubCodeGenerator {
+     // make sure object is 'reasonable'
+     __ cbz(r0, exit); // if obj is NULL it is OK
+ 
++#if INCLUDE_ZGC
++    if (UseZGC) {
++      // Check if mask is good.
++      // verifies that ZAddressBadMask & r0 == 0
++      __ ldr(c_rarg3, Address(rthread, ZThreadLocalData::address_bad_mask_offset()));
++      __ andr(c_rarg2, r0, c_rarg3);
++      __ cbnz(c_rarg2, error);
++    }
++#endif
++
+     // Check if the oop is in the right area of memory
+     __ mov(c_rarg3, (intptr_t) Universe::verify_oop_mask());
+     __ andr(c_rarg2, r0, c_rarg3);
+@@ -1333,7 +1346,7 @@ class StubGenerator: public StubCodeGenerator {
+     }
+ 
+     BarrierSetAssembler *bs = BarrierSet::barrier_set()->barrier_set_assembler();
+-    bs->arraycopy_prologue(_masm, decorators, is_oop, d, count, saved_reg);
++    bs->arraycopy_prologue(_masm, decorators, is_oop, s, d, count, saved_reg);
+ 
+     if (is_oop) {
+       // save regs before copy_memory
+@@ -1399,7 +1412,7 @@ class StubGenerator: public StubCodeGenerator {
+     }
+ 
+     BarrierSetAssembler *bs = BarrierSet::barrier_set()->barrier_set_assembler();
+-    bs->arraycopy_prologue(_masm, decorators, is_oop, d, count, saved_regs);
++    bs->arraycopy_prologue(_masm, decorators, is_oop, s, d, count, saved_regs);
+ 
+     if (is_oop) {
+       // save regs before copy_memory
+@@ -1753,7 +1766,7 @@ class StubGenerator: public StubCodeGenerator {
+     }
+ 
+     BarrierSetAssembler *bs = BarrierSet::barrier_set()->barrier_set_assembler();
+-    bs->arraycopy_prologue(_masm, decorators, is_oop, to, count, wb_pre_saved_regs);
++    bs->arraycopy_prologue(_masm, decorators, is_oop, from, to, count, wb_pre_saved_regs);
+ 
+     // save the original count
+     __ mov(count_save, count);
+diff --git a/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp b/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp
+index e8b4b7414..3aa3f8579 100644
+--- a/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp
++++ b/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp
+@@ -273,13 +273,13 @@ void ZBarrierSetAssembler::generate_c1_load_barrier_stub(LIR_Assembler* ce,
+   Register ref = stub->ref()->as_register();
+   Register ref_addr = noreg;
+ 
+-  if (stub->ref_addr()->is_register()) {
+-    // Address already in register
+-    ref_addr = stub->ref_addr()->as_pointer_register();
+-  } else {
++  if (stub->tmp()->is_valid()) {
+     // Load address into tmp register
+     ce->leal(stub->ref_addr(), stub->tmp(), stub->patch_code(), stub->patch_info());
+     ref_addr = stub->tmp()->as_pointer_register();
++  } else {
++    // Address already in register
++    ref_addr = stub->ref_addr()->as_address_ptr()->base()->as_pointer_register(); 
+   }
+ 
+   assert_different_registers(ref, ref_addr, noreg);
+diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zAddress_linux_aarch64.inline.hpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zAddress_linux_aarch64.inline.hpp
+new file mode 100644
+index 000000000..936480cb5
+--- /dev/null
++++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zAddress_linux_aarch64.inline.hpp
+@@ -0,0 +1,31 @@
++/*
++ * Copyright (c) 2016, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++#ifndef OS_CPU_LINUX_AARCH64_ZADDRESS_LINUX_AARCH64_INLINE_HPP
++#define OS_CPU_LINUX_AARCH64_ZADDRESS_LINUX_AARCH64_INLINE_HPP
++
++inline uintptr_t ZAddress::address(uintptr_t value) {
++  return value;
++}
++
++#endif // OS_CPU_LINUX_AARCH64_ZADDRESS_LINUX_AARCH64_INLINE_HPP
+diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.cpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.cpp
+new file mode 100644
+index 000000000..47894b5c8
+--- /dev/null
++++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.cpp
+@@ -0,0 +1,426 @@
++/*
++ * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++#include "precompiled.hpp"
++#include "gc/z/zArray.inline.hpp"
++#include "gc/z/zBackingFile_linux_aarch64.hpp"
++#include "gc/z/zBackingPath_linux_aarch64.hpp"
++#include "gc/z/zErrno.hpp"
++#include "gc/z/zLargePages.inline.hpp"
++#include "logging/log.hpp"
++#include "runtime/os.hpp"
++#include "utilities/align.hpp"
++#include "utilities/debug.hpp"
++
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <sys/statfs.h>
++#include <sys/types.h>
++#include <unistd.h>
++
++// Filesystem names
++#define ZFILESYSTEM_TMPFS                "tmpfs"
++#define ZFILESYSTEM_HUGETLBFS            "hugetlbfs"
++
++// Sysfs file for transparent huge page on tmpfs
++#define ZFILENAME_SHMEM_ENABLED          "/sys/kernel/mm/transparent_hugepage/shmem_enabled"
++
++// Java heap filename
++#define ZFILENAME_HEAP                   "java_heap"
++
++// Support for building on older Linux systems
++#ifndef __NR_memfd_create
++#define __NR_memfd_create                319
++#endif
++#ifndef MFD_CLOEXEC
++#define MFD_CLOEXEC                      0x0001U
++#endif
++#ifndef MFD_HUGETLB
++#define MFD_HUGETLB                      0x0004U
++#endif
++#ifndef O_CLOEXEC
++#define O_CLOEXEC                        02000000
++#endif
++#ifndef O_TMPFILE
++#define O_TMPFILE                        (020000000 | O_DIRECTORY)
++#endif
++
++// Filesystem types, see statfs(2)
++#ifndef TMPFS_MAGIC
++#define TMPFS_MAGIC                      0x01021994
++#endif
++#ifndef HUGETLBFS_MAGIC
++#define HUGETLBFS_MAGIC                  0x958458f6
++#endif
++
++// Preferred tmpfs mount points, ordered by priority
++static const char* z_preferred_tmpfs_mountpoints[] = {
++  "/dev/shm",
++  "/run/shm",
++  NULL
++};
++
++// Preferred hugetlbfs mount points, ordered by priority
++static const char* z_preferred_hugetlbfs_mountpoints[] = {
++  "/dev/hugepages",
++  "/hugepages",
++  NULL
++};
++
++static int z_memfd_create(const char *name, unsigned int flags) {
++  return syscall(__NR_memfd_create, name, flags);
++}
++
++bool ZBackingFile::_hugetlbfs_mmap_retry = true;
++
++ZBackingFile::ZBackingFile() :
++    _fd(-1),
++    _filesystem(0),
++    _available(0),
++    _initialized(false) {
++
++  // Create backing file
++  _fd = create_fd(ZFILENAME_HEAP);
++  if (_fd == -1) {
++    return;
++  }
++
++  // Get filesystem statistics
++  struct statfs statfs_buf;
++  if (fstatfs(_fd, &statfs_buf) == -1) {
++    ZErrno err;
++    log_error(gc, init)("Failed to determine filesystem type for backing file (%s)",
++                        err.to_string());
++    return;
++  }
++
++  _filesystem = statfs_buf.f_type;
++  _available = statfs_buf.f_bavail * statfs_buf.f_bsize;
++
++  // Make sure we're on a supported filesystem
++  if (!is_tmpfs() && !is_hugetlbfs()) {
++    log_error(gc, init)("Backing file must be located on a %s or a %s filesystem",
++                        ZFILESYSTEM_TMPFS, ZFILESYSTEM_HUGETLBFS);
++    return;
++  }
++
++  // Make sure the filesystem type matches requested large page type
++  if (ZLargePages::is_transparent() && !is_tmpfs()) {
++    log_error(gc, init)("-XX:+UseTransparentHugePages can only be enable when using a %s filesystem",
++                        ZFILESYSTEM_TMPFS);
++    return;
++  }
++
++  if (ZLargePages::is_transparent() && !tmpfs_supports_transparent_huge_pages()) {
++    log_error(gc, init)("-XX:+UseTransparentHugePages on a %s filesystem not supported by kernel",
++                        ZFILESYSTEM_TMPFS);
++    return;
++  }
++
++  if (ZLargePages::is_explicit() && !is_hugetlbfs()) {
++    log_error(gc, init)("-XX:+UseLargePages (without -XX:+UseTransparentHugePages) can only be enabled when using a %s filesystem",
++                        ZFILESYSTEM_HUGETLBFS);
++    return;
++  }
++
++  if (!ZLargePages::is_explicit() && is_hugetlbfs()) {
++    log_error(gc, init)("-XX:+UseLargePages must be enabled when using a %s filesystem",
++                        ZFILESYSTEM_HUGETLBFS);
++    return;
++  }
++
++  // Successfully initialized
++  _initialized = true;
++}
++
++int ZBackingFile::create_mem_fd(const char* name) const {
++  // Create file name
++  char filename[PATH_MAX];
++  snprintf(filename, sizeof(filename), "%s%s", name, ZLargePages::is_explicit() ? ".hugetlb" : "");
++
++  // Create file
++  const int extra_flags = ZLargePages::is_explicit() ? MFD_HUGETLB : 0;
++  const int fd = z_memfd_create(filename, MFD_CLOEXEC | extra_flags);
++  if (fd == -1) {
++    ZErrno err;
++    log_debug(gc, init)("Failed to create memfd file (%s)",
++                        ((UseLargePages && err == EINVAL) ? "Hugepages not supported" : err.to_string()));
++    return -1;
++  }
++
++  log_info(gc, init)("Heap backed by file: /memfd:%s", filename);
++
++  return fd;
++}
++
++int ZBackingFile::create_file_fd(const char* name) const {
++  const char* const filesystem = ZLargePages::is_explicit()
++                                 ? ZFILESYSTEM_HUGETLBFS
++                                 : ZFILESYSTEM_TMPFS;
++  const char** const preferred_mountpoints = ZLargePages::is_explicit()
++                                             ? z_preferred_hugetlbfs_mountpoints
++                                             : z_preferred_tmpfs_mountpoints;
++
++  // Find mountpoint
++  ZBackingPath path(filesystem, preferred_mountpoints);
++  if (path.get() == NULL) {
++    log_error(gc, init)("Use -XX:ZPath to specify the path to a %s filesystem", filesystem);
++    return -1;
++  }
++
++  // Try to create an anonymous file using the O_TMPFILE flag. Note that this
++  // flag requires kernel >= 3.11. If this fails we fall back to open/unlink.
++  const int fd_anon = os::open(path.get(), O_TMPFILE|O_EXCL|O_RDWR|O_CLOEXEC, S_IRUSR|S_IWUSR);
++  if (fd_anon == -1) {
++    ZErrno err;
++    log_debug(gc, init)("Failed to create anonymous file in %s (%s)", path.get(),
++                        (err == EINVAL ? "Not supported" : err.to_string()));
++  } else {
++    // Get inode number for anonymous file
++    struct stat stat_buf;
++    if (fstat(fd_anon, &stat_buf) == -1) {
++      ZErrno err;
++      log_error(gc, init)("Failed to determine inode number for anonymous file (%s)", err.to_string());
++      return -1;
++    }
++
++    log_info(gc, init)("Heap backed by file: %s/#" UINT64_FORMAT, path.get(), (uint64_t)stat_buf.st_ino);
++
++    return fd_anon;
++  }
++
++  log_debug(gc, init)("Falling back to open/unlink");
++
++  // Create file name
++  char filename[PATH_MAX];
++  snprintf(filename, sizeof(filename), "%s/%s.%d", path.get(), name, os::current_process_id());
++
++  // Create file
++  const int fd = os::open(filename, O_CREAT|O_EXCL|O_RDWR|O_CLOEXEC, S_IRUSR|S_IWUSR);
++  if (fd == -1) {
++    ZErrno err;
++    log_error(gc, init)("Failed to create file %s (%s)", filename, err.to_string());
++    return -1;
++  }
++
++  // Unlink file
++  if (unlink(filename) == -1) {
++    ZErrno err;
++    log_error(gc, init)("Failed to unlink file %s (%s)", filename, err.to_string());
++    return -1;
++  }
++
++  log_info(gc, init)("Heap backed by file: %s", filename);
++
++  return fd;
++}
++
++int ZBackingFile::create_fd(const char* name) const {
++  if (ZPath == NULL) {
++    // If the path is not explicitly specified, then we first try to create a memfd file
++    // instead of looking for a tmpfd/hugetlbfs mount point. Note that memfd_create() might
++    // not be supported at all (requires kernel >= 3.17), or it might not support large
++    // pages (requires kernel >= 4.14). If memfd_create() fails, then we try to create a
++    // file on an accessible tmpfs or hugetlbfs mount point.
++    const int fd = create_mem_fd(name);
++    if (fd != -1) {
++      return fd;
++    }
++
++    log_debug(gc, init)("Falling back to searching for an accessible mount point");
++  }
++
++  return create_file_fd(name);
++}
++
++bool ZBackingFile::is_initialized() const {
++  return _initialized;
++}
++
++int ZBackingFile::fd() const {
++  return _fd;
++}
++
++size_t ZBackingFile::available() const {
++  return _available;
++}
++
++bool ZBackingFile::is_tmpfs() const {
++  return _filesystem == TMPFS_MAGIC;
++}
++
++bool ZBackingFile::is_hugetlbfs() const {
++  return _filesystem == HUGETLBFS_MAGIC;
++}
++
++bool ZBackingFile::tmpfs_supports_transparent_huge_pages() const {
++  // If the shmem_enabled file exists and is readable then we
++  // know the kernel supports transparent huge pages for tmpfs.
++  return access(ZFILENAME_SHMEM_ENABLED, R_OK) == 0;
++}
++
++bool ZBackingFile::try_split_and_expand_tmpfs(size_t offset, size_t length, size_t alignment) const {
++  // Try first smaller part.
++  const size_t offset0 = offset;
++  const size_t length0 = align_up(length / 2, alignment);
++  if (!try_expand_tmpfs(offset0, length0, alignment)) {
++    return false;
++  }
++
++  // Try second smaller part.
++  const size_t offset1 = offset0 + length0;
++  const size_t length1 = length - length0;
++  if (!try_expand_tmpfs(offset1, length1, alignment)) {
++    return false;
++  }
++
++  return true;
++}
++
++bool ZBackingFile::try_expand_tmpfs(size_t offset, size_t length, size_t alignment) const {
++  assert(length > 0, "Invalid length");
++  assert(is_aligned(length, alignment), "Invalid length");
++
++  ZErrno err = posix_fallocate(_fd, offset, length);
++
++  if (err == EINTR && length > alignment) {
++    // Calling posix_fallocate() with a large length can take a long
++    // time to complete. When running profilers, such as VTune, this
++    // syscall will be constantly interrupted by signals. Expanding
++    // the file in smaller steps avoids this problem.
++    return try_split_and_expand_tmpfs(offset, length, alignment);
++  }
++
++  if (err) {
++    log_error(gc)("Failed to allocate backing file (%s)", err.to_string());
++    return false;
++  }
++
++  return true;
++}
++
++bool ZBackingFile::try_expand_tmpfs(size_t offset, size_t length) const {
++  assert(is_tmpfs(), "Wrong filesystem");
++  return try_expand_tmpfs(offset, length, os::vm_page_size());
++}
++
++bool ZBackingFile::try_expand_hugetlbfs(size_t offset, size_t length) const {
++  assert(is_hugetlbfs(), "Wrong filesystem");
++
++  // Prior to kernel 4.3, hugetlbfs did not support posix_fallocate().
++  // Instead of posix_fallocate() we can use a well-known workaround,
++  // which involves truncating the file to requested size and then try
++  // to map it to verify that there are enough huge pages available to
++  // back it.
++  while (ftruncate(_fd, offset + length) == -1) {
++    ZErrno err;
++    if (err != EINTR) {
++      log_error(gc)("Failed to truncate backing file (%s)", err.to_string());
++      return false;
++    }
++  }
++
++  // If we fail mapping during initialization, i.e. when we are pre-mapping
++  // the heap, then we wait and retry a few times before giving up. Otherwise
++  // there is a risk that running JVMs back-to-back will fail, since there
++  // is a delay between process termination and the huge pages owned by that
++  // process being returned to the huge page pool and made available for new
++  // allocations.
++  void* addr = MAP_FAILED;
++  const int max_attempts = 5;
++  for (int attempt = 1; attempt <= max_attempts; attempt++) {
++    addr = mmap(0, length, PROT_READ|PROT_WRITE, MAP_SHARED, _fd, offset);
++    if (addr != MAP_FAILED || !_hugetlbfs_mmap_retry) {
++      // Mapping was successful or mmap retry is disabled
++      break;
++    }
++
++    ZErrno err;
++    log_debug(gc)("Failed to map backing file (%s), attempt %d of %d",
++                  err.to_string(), attempt, max_attempts);
++
++    // Wait and retry in one second, in the hope that
++    // huge pages will be available by then.
++    sleep(1);
++  }
++
++  // Disable mmap retry from now on
++  if (_hugetlbfs_mmap_retry) {
++    _hugetlbfs_mmap_retry = false;
++  }
++
++  if (addr == MAP_FAILED) {
++    // Not enough huge pages left
++    ZErrno err;
++    log_error(gc)("Failed to map backing file (%s)", err.to_string());
++    return false;
++  }
++
++  // Successful mapping, unmap again. From now on the pages we mapped
++  // will be reserved for this file.
++  if (munmap(addr, length) == -1) {
++    ZErrno err;
++    log_error(gc)("Failed to unmap backing file (%s)", err.to_string());
++    return false;
++  }
++
++  return true;
++}
++
++bool ZBackingFile::try_expand_tmpfs_or_hugetlbfs(size_t offset, size_t length, size_t alignment) const {
++  assert(is_aligned(offset, alignment), "Invalid offset");
++  assert(is_aligned(length, alignment), "Invalid length");
++
++  log_debug(gc)("Expanding heap from " SIZE_FORMAT "M to " SIZE_FORMAT "M", offset / M, (offset + length) / M);
++
++  return is_hugetlbfs() ? try_expand_hugetlbfs(offset, length) : try_expand_tmpfs(offset, length);
++}
++
++size_t ZBackingFile::try_expand(size_t offset, size_t length, size_t alignment) const {
++  size_t start = offset;
++  size_t end = offset + length;
++
++  // Try to expand
++  if (try_expand_tmpfs_or_hugetlbfs(start, length, alignment)) {
++    // Success
++    return end;
++  }
++
++  // Failed, try to expand as much as possible
++  for (;;) {
++    length = align_down((end - start) / 2, alignment);
++    if (length < alignment) {
++      // Done, don't expand more
++      return start;
++    }
++
++    if (try_expand_tmpfs_or_hugetlbfs(start, length, alignment)) {
++      // Success, try expand more
++      start += length;
++    } else {
++      // Failed, try expand less
++      end -= length;
++    }
++  }
++}
+diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.hpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.hpp
+new file mode 100644
+index 000000000..032dbc133
+--- /dev/null
++++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.hpp
+@@ -0,0 +1,63 @@
++/*
++ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++#ifndef OS_CPU_LINUX_AARCH64_ZBACKINGFILE_LINUX_AARCH64_HPP
++#define OS_CPU_LINUX_AARCH64_ZBACKINGFILE_LINUX_AARCH64_HPP
++
++#include "memory/allocation.hpp"
++
++class ZBackingFile {
++private:
++  static bool _hugetlbfs_mmap_retry;
++
++  int      _fd;
++  uint64_t _filesystem;
++  size_t   _available;
++  bool     _initialized;
++
++  int create_mem_fd(const char* name) const;
++  int create_file_fd(const char* name) const;
++  int create_fd(const char* name) const;
++
++  bool is_tmpfs() const;
++  bool is_hugetlbfs() const;
++  bool tmpfs_supports_transparent_huge_pages() const;
++
++  bool try_split_and_expand_tmpfs(size_t offset, size_t length, size_t alignment) const;
++  bool try_expand_tmpfs(size_t offset, size_t length, size_t alignment) const;
++  bool try_expand_tmpfs(size_t offset, size_t length) const;
++  bool try_expand_hugetlbfs(size_t offset, size_t length) const;
++  bool try_expand_tmpfs_or_hugetlbfs(size_t offset, size_t length, size_t alignment) const;
++
++public:
++  ZBackingFile();
++
++  bool is_initialized() const;
++
++  int fd() const;
++  size_t available() const;
++
++  size_t try_expand(size_t offset, size_t length, size_t alignment) const;
++};
++
++#endif // OS_CPU_LINUX_AARCH64_ZBACKINGFILE_LINUX_AARCH64_HPP
+diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingPath_linux_aarch64.cpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingPath_linux_aarch64.cpp
+new file mode 100644
+index 000000000..1adffa32b
+--- /dev/null
++++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingPath_linux_aarch64.cpp
+@@ -0,0 +1,149 @@
++/*
++ * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++#include "precompiled.hpp"
++#include "gc/z/zArray.inline.hpp"
++#include "gc/z/zBackingPath_linux_aarch64.hpp"
++#include "gc/z/zErrno.hpp"
++#include "logging/log.hpp"
++
++#include <stdio.h>
++#include <unistd.h>
++
++// Mount information, see proc(5) for more details.
++#define PROC_SELF_MOUNTINFO        "/proc/self/mountinfo"
++
++ZBackingPath::ZBackingPath(const char* filesystem, const char** preferred_mountpoints) {
++  if (ZPath != NULL) {
++    // Use specified path
++    _path = strdup(ZPath);
++  } else {
++    // Find suitable path
++    _path = find_mountpoint(filesystem, preferred_mountpoints);
++  }
++}
++
++ZBackingPath::~ZBackingPath() {
++  free(_path);
++  _path = NULL;
++}
++
++char* ZBackingPath::get_mountpoint(const char* line, const char* filesystem) const {
++  char* line_mountpoint = NULL;
++  char* line_filesystem = NULL;
++
++  // Parse line and return a newly allocated string containing the mount point if
++  // the line contains a matching filesystem and the mount point is accessible by
++  // the current user.
++  if (sscanf(line, "%*u %*u %*u:%*u %*s %ms %*[^-]- %ms", &line_mountpoint, &line_filesystem) != 2 ||
++      strcmp(line_filesystem, filesystem) != 0 ||
++      access(line_mountpoint, R_OK|W_OK|X_OK) != 0) {
++    // Not a matching or accessible filesystem
++    free(line_mountpoint);
++    line_mountpoint = NULL;
++  }
++
++  free(line_filesystem);
++
++  return line_mountpoint;
++}
++
++void ZBackingPath::get_mountpoints(const char* filesystem, ZArray<char*>* mountpoints) const {
++  FILE* fd = fopen(PROC_SELF_MOUNTINFO, "r");
++  if (fd == NULL) {
++    ZErrno err;
++    log_error(gc, init)("Failed to open %s: %s", PROC_SELF_MOUNTINFO, err.to_string());
++    return;
++  }
++
++  char* line = NULL;
++  size_t length = 0;
++
++  while (getline(&line, &length, fd) != -1) {
++    char* const mountpoint = get_mountpoint(line, filesystem);
++    if (mountpoint != NULL) {
++      mountpoints->add(mountpoint);
++    }
++  }
++
++  free(line);
++  fclose(fd);
++}
++
++void ZBackingPath::free_mountpoints(ZArray<char*>* mountpoints) const {
++  ZArrayIterator<char*> iter(mountpoints);
++  for (char* mountpoint; iter.next(&mountpoint);) {
++    free(mountpoint);
++  }
++  mountpoints->clear();
++}
++
++char* ZBackingPath::find_preferred_mountpoint(const char* filesystem,
++                                              ZArray<char*>* mountpoints,
++                                              const char** preferred_mountpoints) const {
++  // Find preferred mount point
++  ZArrayIterator<char*> iter1(mountpoints);
++  for (char* mountpoint; iter1.next(&mountpoint);) {
++    for (const char** preferred = preferred_mountpoints; *preferred != NULL; preferred++) {
++      if (!strcmp(mountpoint, *preferred)) {
++        // Preferred mount point found
++        return strdup(mountpoint);
++      }
++    }
++  }
++
++  // Preferred mount point not found
++  log_error(gc, init)("More than one %s filesystem found:", filesystem);
++  ZArrayIterator<char*> iter2(mountpoints);
++  for (char* mountpoint; iter2.next(&mountpoint);) {
++    log_error(gc, init)("  %s", mountpoint);
++  }
++
++  return NULL;
++}
++
++char* ZBackingPath::find_mountpoint(const char* filesystem, const char** preferred_mountpoints) const {
++  char* path = NULL;
++  ZArray<char*> mountpoints;
++
++  get_mountpoints(filesystem, &mountpoints);
++
++  if (mountpoints.size() == 0) {
++    // No mount point found
++    log_error(gc, init)("Failed to find an accessible %s filesystem", filesystem);
++  } else if (mountpoints.size() == 1) {
++    // One mount point found
++    path = strdup(mountpoints.at(0));
++  } else {
++    // More than one mount point found
++    path = find_preferred_mountpoint(filesystem, &mountpoints, preferred_mountpoints);
++  }
++
++  free_mountpoints(&mountpoints);
++
++  return path;
++}
++
++const char* ZBackingPath::get() const {
++  return _path;
++}
+diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingPath_linux_aarch64.hpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingPath_linux_aarch64.hpp
+new file mode 100644
+index 000000000..a03aaf960
+--- /dev/null
++++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingPath_linux_aarch64.hpp
+@@ -0,0 +1,52 @@
++/*
++ * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++#ifndef OS_CPU_LINUX_AARCH64_ZBACKINGPATH_LINUX_AARCH64_HPP
++#define OS_CPU_LINUX_AARCH64_ZBACKINGPATH_LINUX_AARCH64_HPP
++
++#include "gc/z/zArray.hpp"
++#include "memory/allocation.hpp"
++
++class ZBackingPath : public StackObj {
++private:
++  char* _path;
++
++  char* get_mountpoint(const char* line,
++                       const char* filesystem) const;
++  void get_mountpoints(const char* filesystem,
++                       ZArray<char*>* mountpoints) const;
++  void free_mountpoints(ZArray<char*>* mountpoints) const;
++  char* find_preferred_mountpoint(const char* filesystem,
++                                  ZArray<char*>* mountpoints,
++                                  const char** preferred_mountpoints) const;
++  char* find_mountpoint(const char* filesystem,
++                        const char** preferred_mountpoints) const;
++
++public:
++  ZBackingPath(const char* filesystem, const char** preferred_mountpoints);
++  ~ZBackingPath();
++
++  const char* get() const;
++};
++
++#endif // OS_CPU_LINUX_AARCH64_ZBACKINGPATH_LINUX_AARCH64_HPP
+diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zGlobals_linux_aarch64.cpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zGlobals_linux_aarch64.cpp
+new file mode 100644
+index 000000000..5d2480993
+--- /dev/null
++++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zGlobals_linux_aarch64.cpp
+@@ -0,0 +1,33 @@
++/*
++ * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++#include "precompiled.hpp"
++#include "gc/z/zGlobals.hpp"
++
++uintptr_t ZAddressReservedStart() {
++  return ZAddressMetadataMarked0;
++}
++
++uintptr_t ZAddressReservedEnd() {
++  return ZAddressMetadataRemapped + ZAddressOffsetMax;
++}
+diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zGlobals_linux_aarch64.hpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zGlobals_linux_aarch64.hpp
+new file mode 100644
+index 000000000..93c18067b
+--- /dev/null
++++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zGlobals_linux_aarch64.hpp
+@@ -0,0 +1,88 @@
++/*
++ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++#ifndef OS_CPU_LINUX_AARCH64_ZGLOBALS_LINUX_AARCH64_HPP
++#define OS_CPU_LINUX_AARCH64_ZGLOBALS_LINUX_AARCH64_HPP
++
++//
++// Page Allocation Tiers
++// ---------------------
++//
++//  Page Type     Page Size     Object Size Limit     Object Alignment
++//  ------------------------------------------------------------------
++//  Small         2M            <= 265K               <MinObjAlignmentInBytes>
++//  Medium        32M           <= 4M                 4K
++//  Large         X*M           > 4M                  2M
++//  ------------------------------------------------------------------
++//
++//
++// Address Space & Pointer Layout
++// ------------------------------
++//
++//  +--------------------------------+ 0x00007FFFFFFFFFFF (127TB)
++//  .                                .
++//  .                                .
++//  .                                .
++//  +--------------------------------+ 0x0000140000000000 (20TB)
++//  |         Remapped View          |
++//  +--------------------------------+ 0x0000100000000000 (16TB)
++//  |     (Reserved, but unused)     |
++//  +--------------------------------+ 0x00000c0000000000 (12TB)
++//  |         Marked1 View           |
++//  +--------------------------------+ 0x0000080000000000 (8TB)
++//  |         Marked0 View           |
++//  +--------------------------------+ 0x0000040000000000 (4TB)
++//  .                                .
++//  +--------------------------------+ 0x0000000000000000
++//
++//
++//   6                 4 4 4  4 4                                             0
++//   3                 7 6 5  2 1                                             0
++//  +-------------------+-+----+-----------------------------------------------+
++//  |00000000 00000000 0|0|1111|11 11111111 11111111 11111111 11111111 11111111|
++//  +-------------------+-+----+-----------------------------------------------+
++//  |                   | |    |
++//  |                   | |    * 41-0 Object Offset (42-bits, 4TB address space)
++//  |                   | |
++//  |                   | * 45-42 Metadata Bits (4-bits)  0001 = Marked0      (Address view 4-8TB)
++//  |                   |                                 0010 = Marked1      (Address view 8-12TB)
++//  |                   |                                 0100 = Remapped     (Address view 16-20TB)
++//  |                   |                                 1000 = Finalizable  (Address view N/A)
++//  |                   |
++//  |                   * 46-46 Unused (1-bit, always zero)
++//  |
++//  * 63-47 Fixed (17-bits, always zero)
++//
++
++const size_t    ZPlatformPageSizeSmallShift   = 21; // 2M
++
++const size_t    ZPlatformAddressOffsetBits    = 42; // 4TB
++
++const uintptr_t ZPlatformAddressMetadataShift = ZPlatformAddressOffsetBits;
++
++const uintptr_t ZPlatformAddressSpaceStart    = (uintptr_t)1 << ZPlatformAddressOffsetBits;
++const uintptr_t ZPlatformAddressSpaceSize     = ((uintptr_t)1 << ZPlatformAddressOffsetBits) * 4;
++
++const size_t    ZPlatformCacheLineSize        = 64;
++
++#endif // OS_CPU_LINUX_AARCH64_ZGLOBALS_LINUX_AARCH64_HPP
+diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zLargePages_linux_aarch64.cpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zLargePages_linux_aarch64.cpp
+new file mode 100644
+index 000000000..c79195cd1
+--- /dev/null
++++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zLargePages_linux_aarch64.cpp
+@@ -0,0 +1,38 @@
++/*
++ * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++#include "precompiled.hpp"
++#include "gc/z/zLargePages.hpp"
++#include "runtime/globals.hpp"
++
++void ZLargePages::initialize_platform() {
++  if (UseLargePages) {
++    if (UseTransparentHugePages) {
++      _state = Transparent;
++    } else {
++      _state = Explicit;
++    }
++  } else {
++    _state = Disabled;
++  }
++}
+diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zNUMA_linux_aarch64.cpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zNUMA_linux_aarch64.cpp
+new file mode 100644
+index 000000000..10706fac2
+--- /dev/null
++++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zNUMA_linux_aarch64.cpp
+@@ -0,0 +1,83 @@
++/*
++ * Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++#include "gc/z/zErrno.hpp"
++#include "gc/z/zCPU.hpp"
++#include "gc/z/zNUMA.hpp"
++#include "runtime/os.hpp"
++#include "utilities/debug.hpp"
++
++#include <unistd.h>
++#include <sys/syscall.h>
++
++#ifndef MPOL_F_NODE
++#define MPOL_F_NODE     (1<<0)  // Return next IL mode instead of node mask
++#endif
++
++#ifndef MPOL_F_ADDR
++#define MPOL_F_ADDR     (1<<1)  // Look up VMA using address
++#endif
++
++static int z_get_mempolicy(uint32_t* mode, const unsigned long *nmask, unsigned long maxnode, uintptr_t addr, int flags) {
++  return syscall(__NR_get_mempolicy, mode, nmask, maxnode, addr, flags);
++}
++
++void ZNUMA::initialize_platform() {
++  _enabled = UseNUMA;
++}
++
++uint32_t ZNUMA::count() {
++  if (!_enabled) {
++    // NUMA support not enabled
++    return 1;
++  }
++
++  return os::Linux::numa_max_node() + 1;
++}
++
++uint32_t ZNUMA::id() {
++  if (!_enabled) {
++    // NUMA support not enabled
++    return 0;
++  }
++
++  return os::Linux::get_node_by_cpu(ZCPU::id());
++}
++
++uint32_t ZNUMA::memory_id(uintptr_t addr) {
++  if (!_enabled) {
++    // NUMA support not enabled, assume everything belongs to node zero
++    return 0;
++  }
++
++  uint32_t id = (uint32_t)-1;
++
++  if (z_get_mempolicy(&id, NULL, 0, addr, MPOL_F_NODE | MPOL_F_ADDR) == -1) {
++    ZErrno err;
++    fatal("Failed to get NUMA id for memory at " PTR_FORMAT " (%s)", addr, err.to_string());
++  }
++
++  assert(id < count(), "Invalid NUMA id");
++
++  return id;
++}
+diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zPhysicalMemoryBacking_linux_aarch64.cpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zPhysicalMemoryBacking_linux_aarch64.cpp
+new file mode 100644
+index 000000000..55c2a16e0
+--- /dev/null
++++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zPhysicalMemoryBacking_linux_aarch64.cpp
+@@ -0,0 +1,270 @@
++/*
++ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++#include "precompiled.hpp"
++#include "gc/z/zAddress.inline.hpp"
++#include "gc/z/zBackingFile_linux_aarch64.hpp"
++#include "gc/z/zErrno.hpp"
++#include "gc/z/zLargePages.inline.hpp"
++#include "gc/z/zMemory.hpp"
++#include "gc/z/zNUMA.hpp"
++#include "gc/z/zPhysicalMemory.inline.hpp"
++#include "gc/z/zPhysicalMemoryBacking_linux_aarch64.hpp"
++#include "logging/log.hpp"
++#include "runtime/os.hpp"
++#include "utilities/align.hpp"
++#include "utilities/debug.hpp"
++
++#include <stdio.h>
++#include <sys/mman.h>
++#include <sys/types.h>
++
++// Support for building on older Linux systems
++#ifndef MADV_HUGEPAGE
++#define MADV_HUGEPAGE                        14
++#endif
++
++// Proc file entry for max map mount
++#define ZFILENAME_PROC_MAX_MAP_COUNT         "/proc/sys/vm/max_map_count"
++
++ZPhysicalMemoryBacking::ZPhysicalMemoryBacking(size_t max_capacity, size_t granule_size) :
++    _manager(),
++    _file(),
++    _granule_size(granule_size) {
++
++  if (!_file.is_initialized()) {
++    return;
++  }
++
++  // Check and warn if max map count is too low
++  check_max_map_count(max_capacity, granule_size);
++
++  // Check and warn if available space on filesystem is too low
++  check_available_space_on_filesystem(max_capacity);
++}
++
++void ZPhysicalMemoryBacking::check_max_map_count(size_t max_capacity, size_t granule_size) const {
++  const char* const filename = ZFILENAME_PROC_MAX_MAP_COUNT;
++  FILE* const file = fopen(filename, "r");
++  if (file == NULL) {
++    // Failed to open file, skip check
++    log_debug(gc, init)("Failed to open %s", filename);
++    return;
++  }
++
++  size_t actual_max_map_count = 0;
++  const int result = fscanf(file, SIZE_FORMAT, &actual_max_map_count);
++  fclose(file);
++  if (result != 1) {
++    // Failed to read file, skip check
++    log_debug(gc, init)("Failed to read %s", filename);
++    return;
++  }
++
++  // The required max map count is impossible to calculate exactly since subsystems
++  // other than ZGC are also creating memory mappings, and we have no control over that.
++  // However, ZGC tends to create the most mappings and dominate the total count.
++  // In the worst cases, ZGC will map each granule three times, i.e. once per heap view.
++  // We speculate that we need another 20% to allow for non-ZGC subsystems to map memory.
++  const size_t required_max_map_count = (max_capacity / granule_size) * 3 * 1.2;
++  if (actual_max_map_count < required_max_map_count) {
++    log_warning(gc, init)("***** WARNING! INCORRECT SYSTEM CONFIGURATION DETECTED! *****");
++    log_warning(gc, init)("The system limit on number of memory mappings per process might be too low "
++                          "for the given");
++    log_warning(gc, init)("max Java heap size (" SIZE_FORMAT "M). Please adjust %s to allow for at",
++                          max_capacity / M, filename);
++    log_warning(gc, init)("least " SIZE_FORMAT " mappings (current limit is " SIZE_FORMAT "). Continuing "
++                          "execution with the current", required_max_map_count, actual_max_map_count);
++    log_warning(gc, init)("limit could lead to a fatal error, due to failure to map memory.");
++  }
++}
++
++void ZPhysicalMemoryBacking::check_available_space_on_filesystem(size_t max_capacity) const {
++  // Note that the available space on a tmpfs or a hugetlbfs filesystem
++  // will be zero if no size limit was specified when it was mounted.
++  const size_t available = _file.available();
++  if (available == 0) {
++    // No size limit set, skip check
++    log_info(gc, init)("Available space on backing filesystem: N/A");
++    return;
++  }
++
++  log_info(gc, init)("Available space on backing filesystem: " SIZE_FORMAT "M",
++                     available / M);
++
++  // Warn if the filesystem doesn't currently have enough space available to hold
++  // the max heap size. The max heap size will be capped if we later hit this limit
++  // when trying to expand the heap.
++  if (available < max_capacity) {
++    log_warning(gc, init)("***** WARNING! INCORRECT SYSTEM CONFIGURATION DETECTED! *****");
++    log_warning(gc, init)("Not enough space available on the backing filesystem to hold the current "
++                          "max Java heap");
++    log_warning(gc, init)("size (" SIZE_FORMAT "M). Please adjust the size of the backing filesystem "
++                          "accordingly (available", max_capacity / M);
++    log_warning(gc, init)("space is currently " SIZE_FORMAT "M). Continuing execution with the current "
++                          "filesystem size could", available / M);
++    log_warning(gc, init)("lead to a premature OutOfMemoryError being thrown, due to failure to map "
++                          "memory.");
++  }
++}
++
++bool ZPhysicalMemoryBacking::is_initialized() const {
++  return _file.is_initialized();
++}
++
++size_t ZPhysicalMemoryBacking::try_expand(size_t old_capacity, size_t new_capacity) {
++  assert(old_capacity < new_capacity, "Invalid old/new capacity");
++
++  const size_t capacity = _file.try_expand(old_capacity, new_capacity - old_capacity, _granule_size);
++  if (capacity > old_capacity) {
++    // Add expanded capacity to free list
++    _manager.free(old_capacity, capacity - old_capacity);
++  }
++
++  return capacity;
++}
++
++ZPhysicalMemory ZPhysicalMemoryBacking::alloc(size_t size) {
++  assert(is_aligned(size, _granule_size), "Invalid size");
++
++  ZPhysicalMemory pmem;
++
++  // Allocate segments
++  for (size_t allocated = 0; allocated < size; allocated += _granule_size) {
++    const uintptr_t start = _manager.alloc_from_front(_granule_size);
++    assert(start != UINTPTR_MAX, "Allocation should never fail");
++    pmem.add_segment(ZPhysicalMemorySegment(start, _granule_size));
++  }
++
++  return pmem;
++}
++
++void ZPhysicalMemoryBacking::free(ZPhysicalMemory pmem) {
++  const size_t nsegments = pmem.nsegments();
++
++  // Free segments
++  for (size_t i = 0; i < nsegments; i++) {
++    const ZPhysicalMemorySegment segment = pmem.segment(i);
++    _manager.free(segment.start(), segment.size());
++  }
++}
++
++void ZPhysicalMemoryBacking::map_failed(ZErrno err) const {
++  if (err == ENOMEM) {
++    fatal("Failed to map memory. Please check the system limit on number of "
++          "memory mappings allowed per process (see %s)", ZFILENAME_PROC_MAX_MAP_COUNT);
++  } else {
++    fatal("Failed to map memory (%s)", err.to_string());
++  }
++}
++
++void ZPhysicalMemoryBacking::advise_view(uintptr_t addr, size_t size) const {
++  if (madvise((void*)addr, size, MADV_HUGEPAGE) == -1) {
++    ZErrno err;
++    log_error(gc)("Failed to advise use of transparent huge pages (%s)", err.to_string());
++  }
++}
++
++void ZPhysicalMemoryBacking::pretouch_view(uintptr_t addr, size_t size) const {
++  const size_t page_size = ZLargePages::is_explicit() ? os::large_page_size() : os::vm_page_size();
++  os::pretouch_memory((void*)addr, (void*)(addr + size), page_size);
++}
++
++void ZPhysicalMemoryBacking::map_view(ZPhysicalMemory pmem, uintptr_t addr, bool pretouch) const {
++  const size_t nsegments = pmem.nsegments();
++
++  // Map segments
++  for (size_t i = 0; i < nsegments; i++) {
++    const ZPhysicalMemorySegment segment = pmem.segment(i);
++    const size_t size = segment.size();
++    const void* const res = mmap((void*)addr, size, PROT_READ|PROT_WRITE, MAP_FIXED|MAP_SHARED, _file.fd(), segment.start());
++    if (res == MAP_FAILED) {
++      ZErrno err;
++      map_failed(err);
++    }
++
++    // Advise on use of transparent huge pages before touching it
++    if (ZLargePages::is_transparent()) {
++      advise_view(addr, size);
++    }
++
++    // NUMA interleave memory before touching it
++    ZNUMA::memory_interleave(addr, size);
++
++    if (pretouch) {
++      pretouch_view(addr, size);
++    }
++
++    addr += size;
++  }
++}
++
++void ZPhysicalMemoryBacking::unmap_view(ZPhysicalMemory pmem, uintptr_t addr) const {
++  // Note that we must keep the address space reservation intact and just detach
++  // the backing memory. For this reason we map a new anonymous, non-accessible
++  // and non-reserved page over the mapping instead of actually unmapping.
++  const size_t size = pmem.size();
++  const void* const res = mmap((void*)addr, size, PROT_NONE, MAP_FIXED|MAP_ANONYMOUS|MAP_PRIVATE|MAP_NORESERVE, -1, 0);
++  if (res == MAP_FAILED) {
++    ZErrno err;
++    map_failed(err);
++  }
++}
++
++uintptr_t ZPhysicalMemoryBacking::nmt_address(uintptr_t offset) const {
++  // From an NMT point of view we treat the first heap mapping (marked0) as committed
++  return ZAddress::marked0(offset);
++}
++
++void ZPhysicalMemoryBacking::map(ZPhysicalMemory pmem, uintptr_t offset) const {
++  if (ZUnmapBadViews) {
++    // Only map the good view, for debugging only
++    map_view(pmem, ZAddress::good(offset), AlwaysPreTouch);
++  } else {
++    // Map all views
++    map_view(pmem, ZAddress::marked0(offset), AlwaysPreTouch);
++    map_view(pmem, ZAddress::marked1(offset), AlwaysPreTouch);
++    map_view(pmem, ZAddress::remapped(offset), AlwaysPreTouch);
++  }
++}
++
++void ZPhysicalMemoryBacking::unmap(ZPhysicalMemory pmem, uintptr_t offset) const {
++  if (ZUnmapBadViews) {
++    // Only map the good view, for debugging only
++    unmap_view(pmem, ZAddress::good(offset));
++  } else {
++    // Unmap all views
++    unmap_view(pmem, ZAddress::marked0(offset));
++    unmap_view(pmem, ZAddress::marked1(offset));
++    unmap_view(pmem, ZAddress::remapped(offset));
++  }
++}
++
++void ZPhysicalMemoryBacking::flip(ZPhysicalMemory pmem, uintptr_t offset) const {
++  assert(ZUnmapBadViews, "Should be enabled");
++  const uintptr_t addr_good = ZAddress::good(offset);
++  const uintptr_t addr_bad = ZAddress::is_marked(ZAddressGoodMask) ? ZAddress::remapped(offset) : ZAddress::marked(offset);
++  // Map/Unmap views
++  map_view(pmem, addr_good, false /* pretouch */);
++  unmap_view(pmem, addr_bad);
++}
+diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zPhysicalMemoryBacking_linux_aarch64.hpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zPhysicalMemoryBacking_linux_aarch64.hpp
+new file mode 100644
+index 000000000..c55b7b17c
+--- /dev/null
++++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zPhysicalMemoryBacking_linux_aarch64.hpp
+@@ -0,0 +1,65 @@
++/*
++ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++#ifndef OS_CPU_LINUX_AARCH64_ZPHYSICALMEMORYBACKING_LINUX_AARCH64_HPP
++#define OS_CPU_LINUX_AARCH64_ZPHYSICALMEMORYBACKING_LINUX_AARCH64_HPP
++
++#include "gc/z/zBackingFile_linux_aarch64.hpp"
++#include "gc/z/zMemory.hpp"
++
++class ZErrno;
++class ZPhysicalMemory;
++
++class ZPhysicalMemoryBacking {
++private:
++  ZMemoryManager _manager;
++  ZBackingFile   _file;
++  const size_t   _granule_size;
++
++  void check_max_map_count(size_t max_capacity, size_t granule_size) const;
++  void check_available_space_on_filesystem(size_t max_capacity) const;
++  void map_failed(ZErrno err) const;
++
++  void advise_view(uintptr_t addr, size_t size) const;
++  void pretouch_view(uintptr_t addr, size_t size) const;
++  void map_view(ZPhysicalMemory pmem, uintptr_t addr, bool pretouch) const;
++  void unmap_view(ZPhysicalMemory pmem, uintptr_t addr) const;
++
++public:
++  ZPhysicalMemoryBacking(size_t max_capacity, size_t granule_size);
++
++  bool is_initialized() const;
++
++  size_t try_expand(size_t old_capacity, size_t new_capacity);
++
++  ZPhysicalMemory alloc(size_t size);
++  void free(ZPhysicalMemory pmem);
++
++  uintptr_t nmt_address(uintptr_t offset) const;
++
++  void map(ZPhysicalMemory pmem, uintptr_t offset) const;
++  void unmap(ZPhysicalMemory pmem, uintptr_t offset) const;
++  void flip(ZPhysicalMemory pmem, uintptr_t offset) const;
++};
++
++#endif // OS_CPU_LINUX_AARCH64_ZPHYSICALMEMORYBACKING_LINUX_AARCH64_HPP
+diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zVirtualMemory_linux_aarch64.cpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zVirtualMemory_linux_aarch64.cpp
+new file mode 100644
+index 000000000..68df40191
+--- /dev/null
++++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zVirtualMemory_linux_aarch64.cpp
+@@ -0,0 +1,41 @@
++/*
++ * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++#include "precompiled.hpp"
++#include "gc/z/zVirtualMemory.hpp"
++#include "logging/log.hpp"
++
++#include <sys/mman.h>
++#include <sys/types.h>
++
++bool ZVirtualMemoryManager::reserve(uintptr_t start, size_t size) {
++  // Reserve address space
++  const uintptr_t actual_start = (uintptr_t)mmap((void*)start, size, PROT_NONE,
++                                                 MAP_ANONYMOUS|MAP_PRIVATE|MAP_NORESERVE, -1, 0);
++  if (actual_start != start) {
++    log_error(gc)("Failed to reserve address space for Java heap");
++    return false;
++  }
++
++  return true;
++}
+diff --git a/src/hotspot/share/gc/z/c1/zBarrierSetC1.cpp b/src/hotspot/share/gc/z/c1/zBarrierSetC1.cpp
+index a1b43005c..f6f48268d 100644
+--- a/src/hotspot/share/gc/z/c1/zBarrierSetC1.cpp
++++ b/src/hotspot/share/gc/z/c1/zBarrierSetC1.cpp
+@@ -39,21 +39,15 @@ ZLoadBarrierStubC1::ZLoadBarrierStubC1(LIRAccess& access, LIR_Opr ref, address r
+     _patch_info(access.patch_emit_info()),
+     _runtime_stub(runtime_stub) {
+ 
++  assert(_ref->is_register(), "Must be a register");
++  assert(_ref_addr->is_address(), "Must be an address");
++
+   // Allocate tmp register if needed
+-  if (!_ref_addr->is_register()) {
+-    assert(_ref_addr->is_address(), "Must be an address");
+-    if (_ref_addr->as_address_ptr()->index()->is_valid() ||
+-        _ref_addr->as_address_ptr()->disp() != 0) {
+-      // Has index or displacement, need tmp register to load address into
+-      _tmp = access.gen()->new_pointer_register();
+-    } else {
+-      // No index or displacement, address available in base register
+-      _ref_addr = _ref_addr->as_address_ptr()->base();
+-    }
++  if (_ref_addr->as_address_ptr()->index()->is_valid() ||
++      _ref_addr->as_address_ptr()->disp() != 0) {
++    // Has index or displacement, need tmp register to load address into
++    _tmp = access.gen()->new_pointer_register();
+   }
+-
+-  assert(_ref->is_register(), "Must be a register");
+-  assert(_ref_addr->is_register() != _tmp->is_register(), "Only one should be a register");
+ }
+ 
+ DecoratorSet ZLoadBarrierStubC1::decorators() const {
+-- 
+2.12.3
+

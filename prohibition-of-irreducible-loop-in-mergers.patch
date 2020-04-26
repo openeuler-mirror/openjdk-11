@@ -1,0 +1,27 @@
+From fd0b27781fdc8a8d4089aeca7acfcaf7cfb1a82c Mon Sep 17 00:00:00 2001
+Date: Thu, 19 Mar 2020 15:07:23 +0800
+Subject: [PATCH] prohibition of irreducible loop in mergers
+
+Summary: C2Compiler: irreducible loop should not enter merge_many_backedges
+LLT: NA
+Bug url: NA
+---
+ src/hotspot/share/opto/loopnode.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/hotspot/share/opto/loopnode.cpp b/src/hotspot/share/opto/loopnode.cpp
+index da81c3a5d..5c01a44e4 100644
+--- a/src/hotspot/share/opto/loopnode.cpp
++++ b/src/hotspot/share/opto/loopnode.cpp
+@@ -2089,7 +2089,7 @@ bool IdealLoopTree::beautify_loops( PhaseIdealLoop *phase ) {
+   // If I am a shared header (multiple backedges), peel off the many
+   // backedges into a private merge point and use the merge point as
+   // the one true backedge.
+-  if( _head->req() > 3 ) {
++  if( _head->req() > 3 && !_irreducible ) {
+     // Merge the many backedges into a single backedge but leave
+     // the hottest backedge as separate edge for the following peel.
+     merge_many_backedges( phase );
+-- 
+2.12.3
+

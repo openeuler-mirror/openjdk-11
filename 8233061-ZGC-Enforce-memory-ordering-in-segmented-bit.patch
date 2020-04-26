@@ -1,0 +1,101 @@
+From d2137837d518a8bdb8e075109e502e78bd2f9fa9 Mon Sep 17 00:00:00 2001
+Date: Wed, 19 Feb 2020 17:36:32 +0800
+Subject: [PATCH] 8233061: ZGC: Enforce memory ordering in segmented bit maps
+
+Summary: <gc>: <resolves try_mark and relocate crash>
+LLT: renaissance
+Bug url: https://bugs.openjdk.java.net/browse/JDK-8233061
+---
+ src/hotspot/share/gc/z/zLiveMap.cpp        | 20 +++++++++-----------
+ src/hotspot/share/gc/z/zLiveMap.inline.hpp |  9 +++++----
+ 2 files changed, 14 insertions(+), 15 deletions(-)
+
+diff --git a/src/hotspot/share/gc/z/zLiveMap.cpp b/src/hotspot/share/gc/z/zLiveMap.cpp
+index 7187b6166..c1d79b794 100644
+--- a/src/hotspot/share/gc/z/zLiveMap.cpp
++++ b/src/hotspot/share/gc/z/zLiveMap.cpp
+@@ -50,7 +50,9 @@ void ZLiveMap::reset(size_t index) {
+ 
+   // Multiple threads can enter here, make sure only one of them
+   // resets the marking information while the others busy wait.
+-  for (uint32_t seqnum = _seqnum; seqnum != ZGlobalSeqNum; seqnum = _seqnum) {
++  for (uint32_t seqnum = OrderAccess::load_acquire(&_seqnum);
++       seqnum != ZGlobalSeqNum;
++       seqnum = OrderAccess::load_acquire(&_seqnum)) {
+     if ((seqnum != seqnum_initializing) &&
+         (Atomic::cmpxchg(seqnum_initializing, &_seqnum, seqnum) == seqnum)) {
+       // Reset marking information
+@@ -61,13 +63,13 @@ void ZLiveMap::reset(size_t index) {
+       segment_live_bits().clear();
+       segment_claim_bits().clear();
+ 
+-      // Make sure the newly reset marking information is
+-      // globally visible before updating the page seqnum.
+-      OrderAccess::storestore();
+-
+-      // Update seqnum
+       assert(_seqnum == seqnum_initializing, "Invalid");
+-      _seqnum = ZGlobalSeqNum;
++
++      // Make sure the newly reset marking information is ordered
++      // before the update of the page seqnum, such that when the
++      // up-to-date seqnum is load acquired, the bit maps will not
++      // contain stale information.
++      OrderAccess::release_store(&_seqnum, ZGlobalSeqNum);
+       break;
+     }
+ 
+@@ -89,10 +91,6 @@ void ZLiveMap::reset_segment(BitMap::idx_t segment) {
+   if (!claim_segment(segment)) {
+     // Already claimed, wait for live bit to be set
+     while (!is_segment_live(segment)) {
+-      // Busy wait. The loadload barrier is needed to make
+-      // sure we re-read the live bit every time we loop.
+-      OrderAccess::loadload();
+-
+       // Mark reset contention
+       if (!contention) {
+         // Count contention once
+diff --git a/src/hotspot/share/gc/z/zLiveMap.inline.hpp b/src/hotspot/share/gc/z/zLiveMap.inline.hpp
+index 1e4d56f41..fb45a892c 100644
+--- a/src/hotspot/share/gc/z/zLiveMap.inline.hpp
++++ b/src/hotspot/share/gc/z/zLiveMap.inline.hpp
+@@ -30,6 +30,7 @@
+ #include "gc/z/zOop.inline.hpp"
+ #include "gc/z/zUtils.inline.hpp"
+ #include "runtime/atomic.hpp"
++#include "runtime/orderAccess.hpp"
+ #include "utilities/bitMap.inline.hpp"
+ #include "utilities/debug.hpp"
+ 
+@@ -38,7 +39,7 @@ inline void ZLiveMap::reset() {
+ }
+ 
+ inline bool ZLiveMap::is_marked() const {
+-  return _seqnum == ZGlobalSeqNum;
++  return OrderAccess::load_acquire(&_seqnum) == ZGlobalSeqNum;
+ }
+ 
+ inline uint32_t ZLiveMap::live_objects() const {
+@@ -68,15 +69,15 @@ inline BitMapView ZLiveMap::segment_claim_bits() {
+ }
+ 
+ inline bool ZLiveMap::is_segment_live(BitMap::idx_t segment) const {
+-  return segment_live_bits().at(segment);
++  return segment_live_bits().par_at(segment);
+ }
+ 
+ inline bool ZLiveMap::set_segment_live_atomic(BitMap::idx_t segment) {
+-  return segment_live_bits().par_set_bit(segment);
++  return segment_live_bits().par_set_bit(segment, memory_order_release);
+ }
+ 
+ inline bool ZLiveMap::claim_segment(BitMap::idx_t segment) {
+-  return segment_claim_bits().par_set_bit(segment);
++  return segment_claim_bits().par_set_bit(segment, memory_order_acq_rel);
+ }
+ 
+ inline BitMap::idx_t ZLiveMap::first_live_segment() const {
+-- 
+2.12.3
+
