@@ -1,6 +1,6 @@
 From 1ab27951c430bbe0820321c7194e89f63b9ac78b Mon Sep 17 00:00:00 2001
 Date: Tue, 30 Jul 2019 14:20:57 +0000
-Subject: [PATCH] change vendor to Huawei Technologies Co., LTD
+Subject: [PATCH] change vendor to openEuler Community
 
 Summary: change VENDOR to openEuler Community, as
 		 well as VENDOR_URL & VENDOR_URL_BUG

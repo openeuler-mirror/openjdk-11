@@ -1,0 +1,12 @@
+diff --git a/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp b/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp
+index 18f455086..785470dbe 100644
+--- a/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp
++++ b/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp
+@@ -23,6 +23,7 @@
+ 
+ #include "precompiled.hpp"
+ #include "asm/macroAssembler.inline.hpp"
++#include "code/vmreg.inline.hpp"
+ #include "gc/z/zBarrier.inline.hpp"
+ #include "gc/z/zBarrierSet.hpp"
+ #include "gc/z/zBarrierSetAssembler.hpp"

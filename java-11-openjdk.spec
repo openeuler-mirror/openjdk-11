@@ -1,4 +1,5 @@
 # RPM conditionals so as to be able to dynamically produce
+
 # slowdebug/release builds. See:
 # http://rpm.org/user_doc/conditional_builds.html
 #
@@ -21,11 +22,12 @@
 # Enable release builds by default on relevant arches.
 %bcond_without release
 
+%define _unpackaged_files_terminate_build 0
+
 # note: parametrized macros are order-sensitive (unlike not-parametrized) even with normal macros
 # also necessary when passing it as parameter to other macros. If not macro, then it is considered a switch
 # see the difference between global and define:
 # See https://github.com/rpm-software-management/rpm/issues/127 to comments at  "pmatilai commented on Aug 18, 2017"
-# (initiated in https://bugzilla.redhat.com/show_bug.cgi?id=1482192)
 %global debug_suffix_unquoted -slowdebug
 # quoted one for shell operations
 %global debug_suffix "%{debug_suffix_unquoted}"
@@ -71,13 +73,6 @@
 %global include_debug_build 0
 %endif
 
-# On x86_64 and AArch64, we use the Shenandoah HotSpot
-%ifarch x86_64 %{aarch64}
-%global use_shenandoah_hotspot 1
-%else
-%global use_shenandoah_hotspot 0
-%endif
-
 %if %{include_debug_build}
 %global build_loop2 %{debug_suffix}
 %else
@@ -112,22 +107,6 @@
 %global ourcppflags %(echo %ourflags | sed -e 's|-fexceptions||')
 %global ourldflags %{__global_ldflags}
 
-# With disabled nss is NSS deactivated, so NSS_LIBDIR can contain the wrong path
-# the initialization must be here. Later the pkg-config have buggy behavior
-# looks like openjdk RPM specific bug
-# Always set this so the nss.cfg file is not broken
-%global NSS_LIBDIR %(pkg-config --variable=libdir nss)
-%global NSS_LIBS %(pkg-config --libs nss)
-%global NSS_CFLAGS %(pkg-config --cflags nss-softokn)
-# see https://bugzilla.redhat.com/show_bug.cgi?id=1332456
-%global NSSSOFTOKN_BUILDTIME_NUMBER %(pkg-config --modversion nss-softokn || : )
-%global NSS_BUILDTIME_NUMBER %(pkg-config --modversion nss || : )
-# this is workaround for processing of requires during srpm creation
-%global NSSSOFTOKN_BUILDTIME_VERSION %(if [ "x%{NSSSOFTOKN_BUILDTIME_NUMBER}" == "x" ] ; then echo "" ;else echo ">= %{NSSSOFTOKN_BUILDTIME_NUMBER}" ;fi)
-%global NSS_BUILDTIME_VERSION %(if [ "x%{NSS_BUILDTIME_NUMBER}" == "x" ] ; then echo "" ;else echo ">= %{NSS_BUILDTIME_NUMBER}" ;fi)
-
-
-# fix for https://bugzilla.redhat.com/show_bug.cgi?id=1111349
 %global _privatelibs libsplashscreen[.]so.*|libawt_xawt[.]so.*|libjli[.]so.*|libattach[.]so.*|libawt[.]so.*|libextnet[.]so.*|libawt_headless[.]so.*|libdt_socket[.]so.*|libfontmanager[.]so.*|libinstrument[.]so.*|libj2gss[.]so.*|libj2pcsc[.]so.*|libj2pkcs11[.]so.*|libjaas[.]so.*|libjavajpeg[.]so.*|libjdwp[.]so.*|libjimage[.]so.*|libjsound[.]so.*|liblcms[.]so.*|libmanagement[.]so.*|libmanagement_agent[.]so.*|libmanagement_ext[.]so.*|libmlib_image[.]so.*|libnet[.]so.*|libnio[.]so.*|libprefs[.]so.*|librmi[.]so.*|libsaproc[.]so.*|libsctp[.]so.*|libsunec[.]so.*|libunpack[.]so.*|libzip[.]so.*
 
 %global __provides_exclude ^(%{_privatelibs})$
@@ -182,7 +161,7 @@
 
 
 %ifarch %{jit_arches}
-%global with_systemtap 1
+%global with_systemtap 0
 %else
 %global with_systemtap 0
 %endif
@@ -193,10 +172,10 @@
 # Standard JPackage naming and versioning defines
 %global origin          openjdk
 %global origin_nice     OpenJDK
-%global top_level_dir_name   %{origin}
-%global minorver        0
-%global buildver        28
 %global updatever       6
+%global minorver        0
+%global buildver        10
+%global top_level_dir_name   %{origin}
 # priority must be 7 digits in total
 # setting to 1, so debug ones can have 0
 %global priority        00000%{minorver}1
@@ -212,7 +191,7 @@
 # output dir stub
 %define buildoutputdir() %{expand:openjdk/build%{?1}}
 # we can copy the javadoc to not arched dir, or make it not noarch
-%define uniquejavadocdir()    %{expand:%{fullversion}%{?1}}
+%define uniquejavadocdir()    %{expand:jdk-%{fulljavaver}+%{updatever}}
 # main id and dir of this jdk
 %define uniquesuffix()        %{expand:%{fullversion}.%{_arch}%{?1}}
 
@@ -224,6 +203,7 @@
 
 %define sdkbindir()     %{expand:%{_jvmdir}/%{sdkdir -- %{?1}}/bin}
 %define jrebindir()     %{expand:%{_jvmdir}/%{sdkdir -- %{?1}}/bin}
+
 
 %global rpm_state_dir %{_localstatedir}/lib/rpm-state/
 
@@ -256,7 +236,6 @@ exit 0
 %ifarch %{jit_arches}
 # MetaspaceShared::generate_vtable_methods not implemented for PPC JIT
 %ifnarch %{ppc64le}
-# see https://bugzilla.redhat.com/show_bug.cgi?id=513605
 %{jrebindir -- %{?1}}/java -Xshare:dump >/dev/null 2>/dev/null
 %endif
 %endif
@@ -589,7 +568,6 @@ exit 0
 %config(noreplace) %{etcjavadir -- %{?1}}/conf/security/java.policy
 %config(noreplace) %{etcjavadir -- %{?1}}/conf/security/java.security
 %config(noreplace) %{etcjavadir -- %{?1}}/conf/logging.properties
-%config(noreplace) %{etcjavadir -- %{?1}}/conf/security/nss.cfg
 %config(noreplace) %{etcjavadir -- %{?1}}/conf/management/jmxremote.access
 # this is conifg template, thus not config-noreplace
 %config  %{etcjavadir -- %{?1}}/conf/management/jmxremote.password.template
@@ -639,7 +617,6 @@ exit 0
 %if %{with_systemtap}
 %{_jvmdir}/%{sdkdir -- %{?1}}/tapset
 %endif
-%{_datadir}/applications/*jconsole%{?1}.desktop
 %{_mandir}/man1/jar-%{uniquesuffix -- %{?1}}.1*
 %{_mandir}/man1/jarsigner-%{uniquesuffix -- %{?1}}.1*
 %{_mandir}/man1/javac-%{uniquesuffix -- %{?1}}.1*
@@ -658,12 +635,6 @@ exit 0
 %{_mandir}/man1/jstatd-%{uniquesuffix -- %{?1}}.1*
 %{_mandir}/man1/rmic-%{uniquesuffix -- %{?1}}.1*
 %{_mandir}/man1/serialver-%{uniquesuffix -- %{?1}}.1*
-%if %{with_systemtap}
-%dir %{tapsetroot}
-%dir %{tapsetdirttapset}
-%dir %{tapsetdir}
-%{tapsetdir}/*%{_arch}%{?1}.stp
-%endif
 }
 
 %define files_jmods() %{expand:
@@ -722,9 +693,6 @@ Requires: javapackages-filesystem
 Requires: tzdata-java >= 2015d
 # libsctp.so.1 is being `dlopen`ed on demand
 Requires: lksctp-tools%{?_isa}
-# there is a need to depend on the exact version of NSS
-Requires: nss%{?_isa} %{NSS_BUILDTIME_VERSION}
-Requires: nss-softokn%{?_isa} %{NSSSOFTOKN_BUILDTIME_VERSION}
 # tool to copy jdk's configs - should be Recommends only, but then only dnf/yum enforce it,
 # not rpm transaction and so no configs are persisted when pure rpm -u is run. It may be
 # considered as regression
@@ -751,7 +719,6 @@ Provides: java-%{javaver}-headless%{?1} = %{epoch}:%{version}-%{release}
 Provides: java-%{origin}-headless%{?1} = %{epoch}:%{version}-%{release}
 Provides: java-headless%{?1} = %{epoch}:%{javaver}
 
-# https://bugzilla.redhat.com/show_bug.cgi?id=1312019
 Provides: /usr/bin/jjs
 
 }
@@ -834,7 +801,7 @@ Provides: java-%{javaver}-%{origin}-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{fulljavaver}
-Release: 2%{?dist}
+Release: 2
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -869,21 +836,11 @@ URL:      http://openjdk.java.net/
 
 Source0: openjdk-%{fulljavaver}-ga.tar.xz
 
-# Desktop files. Adapted from IcedTea
-# Source9: jconsole.desktop.in
-
-# nss configuration file
-# Source11: nss.cfg.in
-
 ############################################
 #
 # RPM/distribution specific patches
 #
 ############################################
-
-# NSS via SunPKCS11 Provider (disabled comment
-# due to memory leak).
-# Patch1000: enableCommentedOutSystemNss.patch
 
 #############################################
 #
@@ -907,12 +864,10 @@ Patch13: 8233061-ZGC-Enforce-memory-ordering-in-segmented-bit.patch
 Patch14: Add-loadload-membar-to-avoid-loading-a-incorrect-offset.patch
 Patch15: 8226536-Catch-OOM-from-deopt-that-fails-rematerializ.patch
 Patch16: prohibition-of-irreducible-loop-in-mergers.patch
-Patch17: 8201271-AArch64-Vector-API-for-AArch64.patch
 Patch18: 8209375-ZGC-Use-dynamic-base-address-for-mark-stack-.patch
-Patch19: VectorAPI-X86-Vector-API-not-supported-on-X86-fix-jt.patch
 Patch20: 8209894-ZGC-Cap-number-of-GC-workers-based-on-heap-s.patch
-Patch21: 8223347-Integration-of-Vector-API-Fix-VectorAPI-prin.patch
 Patch22: 8233506-ZGC-the-load-for-Reference.get-can-be-conver.patch
+Patch23: add-missing-inline.patch
 
 BuildRequires: autoconf
 BuildRequires: automake
@@ -937,8 +892,6 @@ BuildRequires: libXi-devel
 BuildRequires: libXinerama-devel
 BuildRequires: libXt-devel
 BuildRequires: libXtst-devel
-# Requirements for setting up the nss.cfg
-BuildRequires: nss-devel
 BuildRequires: pkgconfig
 BuildRequires: xorg-x11-proto-devel
 BuildRequires: zip
@@ -1159,12 +1112,13 @@ if [ %{include_debug_build} -eq 0 -a  %{include_normal_build} -eq 0 ] ; then
   exit 13
 fi
 %setup -q -c -n %{uniquesuffix ""} -T -a 0
-# https://bugzilla.redhat.com/show_bug.cgi?id=1189084
 prioritylength=`expr length %{priority}`
 if [ $prioritylength -ne 7 ] ; then
  echo "priority must be 7 digits in total, violated"
  exit 14
 fi
+
+pushd %{top_level_dir_name}
 
 # OpenJDK patches
 %patch1 -p1
@@ -1183,56 +1137,10 @@ fi
 %patch14 -p1
 %patch15 -p1
 %patch16 -p1
-%patch17 -p1
 %patch18 -p1
-%patch19 -p1
 %patch20 -p1
-%patch21 -p1
 %patch22 -p1
-
-# Extract systemtap tapsets
-%if %{with_systemtap}
-tar --strip-components=1 -x -I xz -f %{SOURCE8}
-%if %{include_debug_build}
-cp -r tapset tapset%{debug_suffix}
-%endif
-
-for suffix in %{build_loop} ; do
-  for file in "tapset"$suffix/*.in; do
-    OUTPUT_FILE=`echo $file | sed -e "s:\.stp\.in$:%{version}-%{release}.%{_arch}.stp:g"`
-    sed -e "s:@ABS_SERVER_LIBJVM_SO@:%{_jvmdir}/%{sdkdir -- $suffix}/lib/server/libjvm.so:g" $file > $file.1
-# TODO find out which architectures other than i686 have a client vm
-%ifarch %{ix86}
-    sed -e "s:@ABS_CLIENT_LIBJVM_SO@:%{_jvmdir}/%{sdkdir -- $suffix}/lib/client/libjvm.so:g" $file.1 > $OUTPUT_FILE
-%else
-    sed -e "/@ABS_CLIENT_LIBJVM_SO@/d" $file.1 > $OUTPUT_FILE
-%endif
-    sed -i -e "s:@ABS_JAVA_HOME_DIR@:%{_jvmdir}/%{sdkdir -- $suffix}:g" $OUTPUT_FILE
-    sed -i -e "s:@INSTALL_ARCH_DIR@:%{archinstall}:g" $OUTPUT_FILE
-    sed -i -e "s:@prefix@:%{_jvmdir}/%{sdkdir -- $suffix}/:g" $OUTPUT_FILE
-  done
-done
-# systemtap tapsets ends
-%endif
-
-# Prepare desktop files
-for suffix in %{build_loop} ; do
-for file in %{SOURCE9}; do
-    FILE=`basename $file | sed -e s:\.in$::g`
-    EXT="${FILE##*.}"
-    NAME="${FILE%.*}"
-    OUTPUT_FILE=$NAME$suffix.$EXT
-    sed    -e  "s:@JAVA_HOME@:%{sdkbindir -- $suffix}:g" $file > $OUTPUT_FILE
-    sed -i -e  "s:@JRE_HOME@:%{jrebindir -- $suffix}:g" $OUTPUT_FILE
-    sed -i -e  "s:@ARCH@:%{version}-%{release}.%{_arch}$suffix:g" $OUTPUT_FILE
-    sed -i -e  "s:@JAVA_MAJOR_VERSION@:%{majorver}:g" $OUTPUT_FILE
-    sed -i -e  "s:@JAVA_VENDOR@:%{origin}:g" $OUTPUT_FILE
-done
-done
-
-# Setup nss.cfg
-sed -e "s:@NSS_LIBDIR@:%{NSS_LIBDIR}:g" %{SOURCE11} > nss.cfg
-
+%patch23 -p1
 
 %build
 # How many CPU's do we have?
@@ -1283,14 +1191,14 @@ bash ../configure \
 %ifarch %{ppc64le}
     --with-jobs=1 \
 %endif
-    --with-version-build=%{buildver} \
-    --with-version-pre="ea" \
+    --with-version-pre="" \
     --with-version-opt="" \
+    --with-version-build=%{buildver} \
+    --with-version-update=%{updatever} \
     --with-boot-jdk=/usr/lib/jvm/java-11-openjdk \
     --with-debug-level=$debugbuild \
     --with-native-debug-symbols=internal \
     --enable-unlimited-crypto \
-    --enable-system-nss \
     --with-zlib=system \
     --with-libjpeg=system \
     --with-giflib=system \
@@ -1316,7 +1224,6 @@ make docs-zip
 
 # the build (erroneously) removes read permissions from some jars
 # this is a regression in OpenJDK 7 (our compiler):
-# http://icedtea.classpath.org/bugzilla/show_bug.cgi?id=1437
 find images/%{jdkimage} -iname '*.jar' -exec chmod ugo+r {} \;
 
 # Build screws up permissions on binaries
@@ -1328,9 +1235,6 @@ popd >& /dev/null
 
 # Install nss.cfg right away as we will be using the JRE above
 export JAVA_HOME=$(pwd)/%{buildoutputdir -- $suffix}/images/%{jdkimage}
-
-# Install nss.cfg right away as we will be using the JRE above
-install -m 644 nss.cfg $JAVA_HOME/conf/security/
 
 # Use system-wide tzdata
 rm $JAVA_HOME/lib/tzdb.dat
@@ -1345,19 +1249,6 @@ done
 for suffix in %{rev_build_loop} ; do
 
 export JAVA_HOME=$(pwd)/%{buildoutputdir -- $suffix}/images/%{jdkimage}
-
-#check sheandoah is enabled
-%if %{use_shenandoah_hotspot}
-$JAVA_HOME//bin/java -XX:+UseShenandoahGC -version
-%endif
-
-# Check unlimited policy has been used
-$JAVA_HOME/bin/javac -d . %{SOURCE13}
-$JAVA_HOME/bin/java --add-opens java.base/javax.crypto=ALL-UNNAMED TestCryptoLevel
-
-# Check ECC is working
-$JAVA_HOME/bin/javac -d . %{SOURCE14}
-$JAVA_HOME/bin/java $(echo $(basename %{SOURCE14})|sed "s|\.java||")
 
 # Check debug symbols are present and can identify code
 find "$JAVA_HOME" -iname '*.so' -print0 | while read -d $'\0' lib
@@ -1407,8 +1298,6 @@ done
 # javaCalls.cpp:58 should map to:
 # http://hg.openjdk.java.net/jdk8u/jdk8u/hotspot/file/ff3b27e6bcc2/src/share/vm/runtime/javaCalls.cpp#l58 
 # Using line number 1 might cause build problems. See:
-# https://bugzilla.redhat.com/show_bug.cgi?id=1539664
-# https://bugzilla.redhat.com/show_bug.cgi?id=1538767
 gdb -q "$JAVA_HOME/bin/java" <<EOF | tee gdb.out
 handle SIGSEGV pass nostop noprint
 handle SIGILL pass nostop noprint
@@ -1502,7 +1391,7 @@ popd
 # Install Javadoc documentation
 install -d -m 755 $RPM_BUILD_ROOT%{_javadocdir}
 cp -a %{buildoutputdir -- $suffix}/images/docs $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}
-cp -a %{buildoutputdir -- $suffix}/bundles/jdk-%{majorver}-ea+%{buildver}-docs.zip  $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}.zip
+cp -a %{buildoutputdir -- $suffix}/bundles/jdk-%{majorver}.0.%{updatever}+%{buildver}-docs.zip  $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}.zip
 
 # Install icons and menu entries
 for s in 16 24 32 48 ; do
@@ -1511,15 +1400,7 @@ for s in 16 24 32 48 ; do
     $RPM_BUILD_ROOT%{_datadir}/icons/hicolor/${s}x${s}/apps/java-%{javaver}-%{origin}.png
 done
 
-# Install desktop files
-install -d -m 755 $RPM_BUILD_ROOT%{_datadir}/{applications,pixmaps}
-for e in jconsole$suffix ; do
-    desktop-file-install --vendor=%{uniquesuffix -- $suffix} --mode=644 \
-        --dir=$RPM_BUILD_ROOT%{_datadir}/applications $e.desktop
-done
-
 # Install /etc/.java/.systemPrefs/ directory
-# See https://bugzilla.redhat.com/show_bug.cgi?id=741821
 mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/.java/.systemPrefs
 
 # copy samples next to demos; samples are mostly js files
@@ -1550,8 +1431,6 @@ done
 %if %{include_normal_build}
 # intentionally only for non-debug
 %pretrans headless -p <lua>
--- see https://bugzilla.redhat.com/show_bug.cgi?id=1038092 for whole issue
--- see https://bugzilla.redhat.com/show_bug.cgi?id=1290388 for pretrans over pre
 -- if copy-jdk-configs is in transaction, it installs in pretrans to temp
 -- if copy_jdk_configs is in temp, then it means that copy-jdk-configs is in transaction  and so is
 -- preferred over one in %%{_libexecdir}. If it is not in transaction, then depends
@@ -1677,7 +1556,6 @@ require "copy_jdk_configs.lua"
 
 %if %{include_normal_build}
 %files headless
-# important note, see https://bugzilla.redhat.com/show_bug.cgi?id=1038092 for whole issue
 # all config/noreplace files (and more) have to be declared in pretrans. See pretrans
 %{files_jre_headless %{nil}}
 
