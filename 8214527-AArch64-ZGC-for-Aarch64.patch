@@ -1,5 +1,5 @@
-From c759704261967595054d7ad928cb2cb13dc53356 Mon Sep 17 00:00:00 2001
-Date: Wed, 25 Dec 2019 14:21:26 +0800
+From 7995d2341ea83431d68cf36d22577074e111e32d Mon Sep 17 00:00:00 2001
+Date: Mon, 13 Apr 2020 10:40:13 +0800
 Subject: [PATCH] 8214527: AArch64: ZGC for Aarch64
 
 Summary: <gc>: <Implement ZGC for AArch64>
@@ -9,9 +9,6 @@ Bug url: https://bugs.openjdk.java.net/browse/JDK-8214527
  make/autoconf/hotspot.m4                           |   3 +-
  src/hotspot/cpu/aarch64/aarch64.ad                 | 486 +++++++++++++++++++++
  .../cpu/aarch64/c1_LIRAssembler_aarch64.cpp        |  12 +-
- .../gc/shared/barrierSetAssembler_aarch64.hpp      |   2 +-
- .../shared/modRefBarrierSetAssembler_aarch64.cpp   |   4 +-
- .../shared/modRefBarrierSetAssembler_aarch64.hpp   |   2 +-
  .../aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp  | 408 +++++++++++++++++
  .../aarch64/gc/z/zBarrierSetAssembler_aarch64.hpp  |  92 ++++
  src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp  |  19 +-
@@ -29,7 +26,7 @@ Bug url: https://bugs.openjdk.java.net/browse/JDK-8214527
  .../gc/z/zPhysicalMemoryBacking_linux_aarch64.hpp  |  65 +++
  .../gc/z/zVirtualMemory_linux_aarch64.cpp          |  41 ++
  src/hotspot/share/gc/z/c1/zBarrierSetC1.cpp        |  20 +-
- 23 files changed, 2368 insertions(+), 27 deletions(-)
+ 20 files changed, 2361 insertions(+), 20 deletions(-)
  create mode 100644 src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp
  create mode 100644 src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.hpp
  create mode 100644 src/hotspot/os_cpu/linux_aarch64/gc/z/zAddress_linux_aarch64.inline.hpp
@@ -60,7 +57,7 @@ index 1d4c710be..6bfda33da 100644
    else
      DISABLED_JVM_FEATURES="$DISABLED_JVM_FEATURES zgc"
 diff --git a/src/hotspot/cpu/aarch64/aarch64.ad b/src/hotspot/cpu/aarch64/aarch64.ad
-index bdef2a6d7..d0f3fc33d 100644
+index f2a9207b8..57b20775e 100644
 --- a/src/hotspot/cpu/aarch64/aarch64.ad
 +++ b/src/hotspot/cpu/aarch64/aarch64.ad
 @@ -957,6 +957,146 @@ reg_class v3_reg(
@@ -578,7 +575,7 @@ index bdef2a6d7..d0f3fc33d 100644
  // These must follow all instruction definitions as they use the names
  // defined in the instructions definitions.
 diff --git a/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp
-index ac91e87d2..e6601434b 100644
+index 73202f669..cf3ce0a8f 100644
 --- a/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp
 +++ b/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp
 @@ -1012,7 +1012,11 @@ void LIR_Assembler::mem2reg(LIR_Opr src, LIR_Opr dest, BasicType type, LIR_Patch
@@ -594,7 +591,7 @@ index ac91e87d2..e6601434b 100644
    } else if (type == T_ADDRESS && addr->disp() == oopDesc::klass_offset_in_bytes()) {
      if (UseCompressedClassPointers) {
        __ decode_klass_not_null(dest->as_register());
-@@ -2811,7 +2815,11 @@ void LIR_Assembler::negate(LIR_Opr left, LIR_Opr dest, LIR_Opr tmp) {
+@@ -2818,7 +2822,11 @@ void LIR_Assembler::negate(LIR_Opr left, LIR_Opr dest, LIR_Opr tmp) {
  
  
  void LIR_Assembler::leal(LIR_Opr addr, LIR_Opr dest, LIR_PatchCode patch_code, CodeEmitInfo* info) {
@@ -607,49 +604,6 @@ index ac91e87d2..e6601434b 100644
    __ lea(dest->as_register_lo(), as_Address(addr->as_address_ptr()));
  }
  
-diff --git a/src/hotspot/cpu/aarch64/gc/shared/barrierSetAssembler_aarch64.hpp b/src/hotspot/cpu/aarch64/gc/shared/barrierSetAssembler_aarch64.hpp
-index 6bd6c6b89..68e287517 100644
---- a/src/hotspot/cpu/aarch64/gc/shared/barrierSetAssembler_aarch64.hpp
-+++ b/src/hotspot/cpu/aarch64/gc/shared/barrierSetAssembler_aarch64.hpp
-@@ -37,7 +37,7 @@ private:
- 
- public:
-   virtual void arraycopy_prologue(MacroAssembler* masm, DecoratorSet decorators, bool is_oop,
--                                  Register addr, Register count, RegSet saved_regs) {}
-+                                  Register src, Register dst, Register count, RegSet saved_regs) {}
-   virtual void arraycopy_epilogue(MacroAssembler* masm, DecoratorSet decorators, bool is_oop,
-                                   Register start, Register end, Register tmp, RegSet saved_regs) {}
-   virtual void load_at(MacroAssembler* masm, DecoratorSet decorators, BasicType type,
-diff --git a/src/hotspot/cpu/aarch64/gc/shared/modRefBarrierSetAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/gc/shared/modRefBarrierSetAssembler_aarch64.cpp
-index a28c50169..badd46d05 100644
---- a/src/hotspot/cpu/aarch64/gc/shared/modRefBarrierSetAssembler_aarch64.cpp
-+++ b/src/hotspot/cpu/aarch64/gc/shared/modRefBarrierSetAssembler_aarch64.cpp
-@@ -29,10 +29,10 @@
- #define __ masm->
- 
- void ModRefBarrierSetAssembler::arraycopy_prologue(MacroAssembler* masm, DecoratorSet decorators, bool is_oop,
--                                                   Register addr, Register count, RegSet saved_regs) {
-+                                                   Register src, Register dst, Register count, RegSet saved_regs) {
- 
-   if (is_oop) {
--    gen_write_ref_array_pre_barrier(masm, decorators, addr, count, saved_regs);
-+    gen_write_ref_array_pre_barrier(masm, decorators, dst, count, saved_regs);
-   }
- }
- 
-diff --git a/src/hotspot/cpu/aarch64/gc/shared/modRefBarrierSetAssembler_aarch64.hpp b/src/hotspot/cpu/aarch64/gc/shared/modRefBarrierSetAssembler_aarch64.hpp
-index e145b5d74..00e36b919 100644
---- a/src/hotspot/cpu/aarch64/gc/shared/modRefBarrierSetAssembler_aarch64.hpp
-+++ b/src/hotspot/cpu/aarch64/gc/shared/modRefBarrierSetAssembler_aarch64.hpp
-@@ -44,7 +44,7 @@ protected:
- 
- public:
-   virtual void arraycopy_prologue(MacroAssembler* masm, DecoratorSet decorators, bool is_oop,
--                                  Register addr, Register count, RegSet saved_regs);
-+                                  Register src, Register dst, Register count, RegSet saved_regs);
-   virtual void arraycopy_epilogue(MacroAssembler* masm, DecoratorSet decorators, bool is_oop,
-                                   Register start, Register count, Register tmp, RegSet saved_regs);
-   virtual void store_at(MacroAssembler* masm, DecoratorSet decorators, BasicType type,
 diff --git a/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp
 new file mode 100644
 index 000000000..90b2b4ca7
@@ -1163,7 +1117,7 @@ index 000000000..7e8be01cc
 +
 +#endif // CPU_AARCH64_GC_Z_ZBARRIERSETASSEMBLER_AARCH64_HPP
 diff --git a/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp b/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp
-index eff23b6ba..ac7eb8480 100644
+index 89a433013..ac7eb8480 100644
 --- a/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp
 +++ b/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp
 @@ -45,6 +45,9 @@
@@ -1193,35 +1147,8 @@ index eff23b6ba..ac7eb8480 100644
      // Check if the oop is in the right area of memory
      __ mov(c_rarg3, (intptr_t) Universe::verify_oop_mask());
      __ andr(c_rarg2, r0, c_rarg3);
-@@ -1333,7 +1346,7 @@ class StubGenerator: public StubCodeGenerator {
-     }
- 
-     BarrierSetAssembler *bs = BarrierSet::barrier_set()->barrier_set_assembler();
--    bs->arraycopy_prologue(_masm, decorators, is_oop, d, count, saved_reg);
-+    bs->arraycopy_prologue(_masm, decorators, is_oop, s, d, count, saved_reg);
- 
-     if (is_oop) {
-       // save regs before copy_memory
-@@ -1399,7 +1412,7 @@ class StubGenerator: public StubCodeGenerator {
-     }
- 
-     BarrierSetAssembler *bs = BarrierSet::barrier_set()->barrier_set_assembler();
--    bs->arraycopy_prologue(_masm, decorators, is_oop, d, count, saved_regs);
-+    bs->arraycopy_prologue(_masm, decorators, is_oop, s, d, count, saved_regs);
- 
-     if (is_oop) {
-       // save regs before copy_memory
-@@ -1753,7 +1766,7 @@ class StubGenerator: public StubCodeGenerator {
-     }
- 
-     BarrierSetAssembler *bs = BarrierSet::barrier_set()->barrier_set_assembler();
--    bs->arraycopy_prologue(_masm, decorators, is_oop, to, count, wb_pre_saved_regs);
-+    bs->arraycopy_prologue(_masm, decorators, is_oop, from, to, count, wb_pre_saved_regs);
- 
-     // save the original count
-     __ mov(count_save, count);
 diff --git a/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp b/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp
-index e8b4b7414..3aa3f8579 100644
+index d2290a670..381211ecc 100644
 --- a/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp
 +++ b/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp
 @@ -273,13 +273,13 @@ void ZBarrierSetAssembler::generate_c1_load_barrier_stub(LIR_Assembler* ce,
@@ -1234,11 +1161,11 @@ index e8b4b7414..3aa3f8579 100644
 -  } else {
 +  if (stub->tmp()->is_valid()) {
      // Load address into tmp register
-     ce->leal(stub->ref_addr(), stub->tmp(), stub->patch_code(), stub->patch_info());
+     ce->leal(stub->ref_addr(), stub->tmp());
      ref_addr = stub->tmp()->as_pointer_register();
 +  } else {
 +    // Address already in register
-+    ref_addr = stub->ref_addr()->as_address_ptr()->base()->as_pointer_register(); 
++    ref_addr = stub->ref_addr()->as_address_ptr()->base()->as_pointer_register();
    }
  
    assert_different_registers(ref, ref_addr, noreg);
@@ -2654,11 +2581,11 @@ index 000000000..68df40191
 +  return true;
 +}
 diff --git a/src/hotspot/share/gc/z/c1/zBarrierSetC1.cpp b/src/hotspot/share/gc/z/c1/zBarrierSetC1.cpp
-index a1b43005c..f6f48268d 100644
+index 9f8ce7424..0abd3980f 100644
 --- a/src/hotspot/share/gc/z/c1/zBarrierSetC1.cpp
 +++ b/src/hotspot/share/gc/z/c1/zBarrierSetC1.cpp
-@@ -39,21 +39,15 @@ ZLoadBarrierStubC1::ZLoadBarrierStubC1(LIRAccess& access, LIR_Opr ref, address r
-     _patch_info(access.patch_emit_info()),
+@@ -38,21 +38,15 @@ ZLoadBarrierStubC1::ZLoadBarrierStubC1(LIRAccess& access, LIR_Opr ref, address r
+     _tmp(LIR_OprFact::illegalOpr),
      _runtime_stub(runtime_stub) {
  
 +  assert(_ref->is_register(), "Must be a register");
@@ -2687,5 +2614,5 @@ index a1b43005c..f6f48268d 100644
  
  DecoratorSet ZLoadBarrierStubC1::decorators() const {
 -- 
-2.12.3
+2.19.1
 

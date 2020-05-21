@@ -6,10 +6,10 @@
 # Examples:
 #
 # Produce release *and* slowdebug builds on x86_64 (default):
-# $ rpmbuild -ba java-1.8.0-openjdk.spec
+# $ rpmbuild -ba java-11-openjdk.spec
 #
 # Produce only release builds (no slowdebug builds) on x86_64:
-# $ rpmbuild -ba java-1.8.0-openjdk.spec --without slowdebug
+# $ rpmbuild -ba java-11-openjdk.spec --without slowdebug
 #
 # Only produce a release build on x86_64:
 # $ fedpkg mockbuild --without slowdebug
@@ -172,7 +172,7 @@
 # Standard JPackage naming and versioning defines
 %global origin          openjdk
 %global origin_nice     OpenJDK
-%global updatever       6
+%global updatever       7
 %global minorver        0
 %global buildver        10
 %global top_level_dir_name   %{origin}
@@ -801,7 +801,7 @@ Provides: java-%{javaver}-%{origin}-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{fulljavaver}
-Release: 2
+Release: 3
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -850,12 +850,9 @@ Source0: openjdk-%{fulljavaver}-ga.tar.xz
 
 Patch1: change-vendor-to-openEuler_Community.patch
 Patch2: 8225648-TESTBUG-java-lang-annotation-loaderLeak-Main.patch
-Patch3: 8231584-Deadlock-with-ClassLoader.findLibrary-and-Sy.patch
-Patch4: 8214345-infinite-recursion-while-checking-super-clas.patch
 Patch5: Add-ability-to-configure-third-port-for-remote-JMX.patch
 Patch6: 8214527-AArch64-ZGC-for-Aarch64.patch
 Patch7: 8224675-Late-GC-barrier-insertion-for-ZGC.patch
-Patch8: freetype-seeks-to-index-at-the-end-of-the-fo.patch
 Patch9: ZGC-Redesign-C2-load-barrier-to-expand-on-th.patch
 Patch10: ZGC-aarch64-not-using-zr-register-avoid-sigill-in-Ma.patch
 Patch11: 8217856-ZGC-Break-out-C2-matching-rules-into-separat.patch
@@ -863,11 +860,13 @@ Patch12: 8233073-Make-BitMap-accessors-more-memory-ordering-f.patch
 Patch13: 8233061-ZGC-Enforce-memory-ordering-in-segmented-bit.patch
 Patch14: Add-loadload-membar-to-avoid-loading-a-incorrect-offset.patch
 Patch15: 8226536-Catch-OOM-from-deopt-that-fails-rematerializ.patch
-Patch16: prohibition-of-irreducible-loop-in-mergers.patch
 Patch18: 8209375-ZGC-Use-dynamic-base-address-for-mark-stack-.patch
 Patch20: 8209894-ZGC-Cap-number-of-GC-workers-based-on-heap-s.patch
 Patch22: 8233506-ZGC-the-load-for-Reference.get-can-be-conver.patch
 Patch23: add-missing-inline.patch
+Patch24: 8210303-VM_HandshakeAllThreads-fails-assert-with-fai.patch
+Patch25: 8212933-Thread-SMR-requesting-a-VM-operation-whilst-.patch
+Patch26: ZGC-aarch64-fix-system-call-number-of-memfd_create.patch
 
 BuildRequires: autoconf
 BuildRequires: automake
@@ -1123,12 +1122,9 @@ pushd %{top_level_dir_name}
 # OpenJDK patches
 %patch1 -p1
 %patch2 -p1
-%patch3 -p1
-%patch4 -p1
 %patch5 -p1
 %patch6 -p1
 %patch7 -p1
-%patch8 -p1
 %patch9 -p1
 %patch10 -p1
 %patch11 -p1
@@ -1136,11 +1132,13 @@ pushd %{top_level_dir_name}
 %patch13 -p1
 %patch14 -p1
 %patch15 -p1
-%patch16 -p1
 %patch18 -p1
 %patch20 -p1
 %patch22 -p1
 %patch23 -p1
+%patch24 -p1
+%patch25 -p1
+%patch26 -p1
 
 %build
 # How many CPU's do we have?
@@ -1161,8 +1159,8 @@ export CFLAGS="$CFLAGS -mieee"
 # We use ourcppflags because the OpenJDK build seems to
 # pass EXTRA_CFLAGS to the HotSpot C++ compiler...
 # Explicitly set the C++ standard as the default has changed on GCC >= 6
-EXTRA_CFLAGS="%ourcppflags -std=gnu++98 -Wno-error -fno-delete-null-pointer-checks -fno-lifetime-dse"
-EXTRA_CPP_FLAGS="%ourcppflags -std=gnu++98 -fno-delete-null-pointer-checks -fno-lifetime-dse"
+EXTRA_CFLAGS="%ourcppflags -Wno-error -fno-delete-null-pointer-checks -fno-lifetime-dse"
+EXTRA_CPP_FLAGS="%ourcppflags -std=gnu++98 -Wno-error -fno-delete-null-pointer-checks -fno-lifetime-dse"
 
 %ifarch %{power64} ppc
 # fix rpmlint warnings
@@ -1610,5 +1608,11 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
-* Fri April 3 2020 jvmboy <hedongbo@huawei.com> - 1:11.0.ea.28-1
+* Thu May 21 2020 jdkboy <guoge1@huawei.com> - 1:11.0.7.10-3
+- Update to 11.0.7+10 (GA)
+
+* Tue Apr 28 2020 jdkboy <guoge1@huawei.com> - 1:11.0.6.10-2
+- Adjust some patches
+
+* Sun Apr 26 2020 Noah <hedongbo@huawei.com> - 1:11.0.6.10-1
 - Initial build from OpenJDK 11.0.6
