@@ -5,15 +5,16 @@ Subject: [PATCH] ZGC: aarch64: not using zr register avoid sigill in
 
 Summary: <gc>: <instruction ldp doesn't support two same register>
 LLT: jtreg
-Bug url: NA
+Bug url:
 ---
- src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp | 46 +++++++++++++---------
- 1 file changed, 24 insertions(+), 22 deletions(-)
+ src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp | 48 +++++++++++++---------
+ 1 file changed, 28 insertions(+), 20 deletions(-)
+
 diff --git a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
-index 611f13b0e..6db979b57 100644
+index 611f13b0e..a65a605d0 100644
 --- a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
 +++ b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
-@@ -2100,57 +2100,59 @@ int MacroAssembler::pop(unsigned int bitset, Register stack) {
+@@ -2100,58 +2100,66 @@ int MacroAssembler::pop(unsigned int bitset, Register stack) {
  // Push lots of registers in the bit set supplied.  Don't push sp.
  // Return the number of words pushed
  int MacroAssembler::push_fp(unsigned int bitset, Register stack) {
@@ -33,19 +34,19 @@ index 611f13b0e..6db979b57 100644
  
 -  // Always pushing full 128 bit registers.
 -  if (count) {
--    stpq(as_FloatRegister(regs[0]), as_FloatRegister(regs[1]), Address(pre(stack, -count * wordSize * 2)));
--    words_pushed += 2;
 +  if (!count) {
 +    return 0;
-   }
--  for (int i = 2; i < count; i += 2) {
-+
-+  add(stack, stack, -count * wordSize * 2);
++  }
 +
 +  if (count & 1) {
-+    strq(as_FloatRegister(regs[0]), Address(stack));
++    strq(as_FloatRegister(regs[0]), Address(pre(stack, -count * wordSize * 2)));
 +    i += 1;
-+  }
++  } else {
+     stpq(as_FloatRegister(regs[0]), as_FloatRegister(regs[1]), Address(pre(stack, -count * wordSize * 2)));
+-    words_pushed += 2;
++    i += 2;
+   }
+-  for (int i = 2; i < count; i += 2) {
 +
 +  for (; i < count; i += 2) {
      stpq(as_FloatRegister(regs[i]), as_FloatRegister(regs[i+1]), Address(stack, i * wordSize * 2));
@@ -72,26 +73,34 @@ index 611f13b0e..6db979b57 100644
 -  count &= ~1;
  
 -  for (int i = 2; i < count; i += 2) {
--    ldpq(as_FloatRegister(regs[i]), as_FloatRegister(regs[i+1]), Address(stack, i * wordSize * 2));
--    words_pushed += 2;
 +  if (!count) {
 +    return 0;
-   }
--  if (count) {
--    ldpq(as_FloatRegister(regs[0]), as_FloatRegister(regs[1]), Address(post(stack, count * wordSize * 2)));
--    words_pushed += 2;
++  }
 +
 +  if (count & 1) {
-+    ldrq(as_FloatRegister(regs[0]), Address(stack));
 +    i += 1;
++  } else {
++    i += 2;
++  }
++
++  for (; i < count; i += 2) {
+     ldpq(as_FloatRegister(regs[i]), as_FloatRegister(regs[i+1]), Address(stack, i * wordSize * 2));
+-    words_pushed += 2;
+   }
+-  if (count) {
++
++  if ((count & 1) == 0) {
+     ldpq(as_FloatRegister(regs[0]), as_FloatRegister(regs[1]), Address(post(stack, count * wordSize * 2)));
+-    words_pushed += 2;
++  } else {
++    ldrq(as_FloatRegister(regs[0]), Address(post(stack, count * wordSize * 2)));
    }
  
 -  assert(words_pushed == count, "oops, pushed != count");
-+  for (; i < count; i += 2) {
-+    ldpq(as_FloatRegister(regs[i]), as_FloatRegister(regs[i+1]), Address(stack, i * wordSize * 2));
-+  }
-+
-+  add(stack, stack, count * wordSize * 2);
- 
+-
    return count;
  }
+ 
+-- 
+2.12.3
+

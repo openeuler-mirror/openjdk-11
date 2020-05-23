@@ -1,0 +1,28 @@
+From e25b331a945301e24429c120bef1ed0daf04d49c Mon Sep 17 00:00:00 2001
+Date: Fri, 3 Apr 2020 17:12:16 +0800
+Subject: [PATCH] ZGC: aarch64: Fix MR 32, fix system call number of
+ memfd_create
+
+Summary: <gc>: <memfd_create in aarch64 always fail because the system call number is wrong>
+LLT: N/A
+Bug url: N/A
+---
+ src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.cpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.cpp
+index 47894b5..f956b53 100644
+--- a/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.cpp
++++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.cpp
+@@ -51,7 +51,7 @@
+ 
+ // Support for building on older Linux systems
+ #ifndef __NR_memfd_create
+-#define __NR_memfd_create                319
++#define __NR_memfd_create                279
+ #endif
+ #ifndef MFD_CLOEXEC
+ #define MFD_CLOEXEC                      0x0001U
+-- 
+1.8.3.1
+
