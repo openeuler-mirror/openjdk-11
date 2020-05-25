@@ -22,7 +22,10 @@
 # Enable release builds by default on relevant arches.
 %bcond_without release
 
-%define _unpackaged_files_terminate_build 0
+# The -g flag says to use strip -g instead of full strip on DSOs or EXEs.
+# This fixes detailed NMT and other tools which need minimal debug info.
+# See: https://bugzilla.redhat.com/show_bug.cgi?id=1520879
+%global _find_debuginfo_opts -g
 
 # note: parametrized macros are order-sensitive (unlike not-parametrized) even with normal macros
 # also necessary when passing it as parameter to other macros. If not macro, then it is considered a switch
@@ -50,25 +53,11 @@
 %global build_loop1 %{nil}
 %endif
 
-%global aarch64         aarch64 arm64 armv8
-# we need to distinguish between big and little endian PPC64
-%global ppc64le         ppc64le
-%global ppc64be         ppc64 ppc64p7
-%global multilib_arches %{power64} sparc64 x86_64
-%global jit_arches      %{ix86} x86_64 sparcv9 sparc64 %{aarch64} %{power64} %{arm} s390x
-%global aot_arches      x86_64 %{aarch64}
+%global aarch64         aarch64
 
 # By default, we build a debug build during main build on JIT architectures
 %if %{with slowdebug}
-%ifarch %{jit_arches}
-%ifnarch %{arm}
 %global include_debug_build 1
-%else
-%global include_debug_build 0
-%endif
-%else
-%global include_debug_build 0
-%endif
 %else
 %global include_debug_build 0
 %endif
@@ -85,18 +74,9 @@
 # is expected in one single case at the end of the build
 %global rev_build_loop  %{build_loop2} %{build_loop1}
 
-%ifarch %{jit_arches}
-%global bootstrap_build 1
-%else
-%global bootstrap_build 1
-%endif
-
-%if %{bootstrap_build}
-%global targets bootcycle-images all docs
-%else
-%global targets all docs
-%endif
-
+%global release_targets images docs-zip
+# No docs nor bootcycle for debug builds
+%global debug_targets images
 
 # Filter out flags from the optflags macro that cause problems with the OpenJDK build
 # We filter out -O flags so that the optimization of HotSpot is not lowered from O3 to O2
@@ -107,10 +87,11 @@
 %global ourcppflags %(echo %ourflags | sed -e 's|-fexceptions||')
 %global ourldflags %{__global_ldflags}
 
-%global _privatelibs libsplashscreen[.]so.*|libawt_xawt[.]so.*|libjli[.]so.*|libattach[.]so.*|libawt[.]so.*|libextnet[.]so.*|libawt_headless[.]so.*|libdt_socket[.]so.*|libfontmanager[.]so.*|libinstrument[.]so.*|libj2gss[.]so.*|libj2pcsc[.]so.*|libj2pkcs11[.]so.*|libjaas[.]so.*|libjavajpeg[.]so.*|libjdwp[.]so.*|libjimage[.]so.*|libjsound[.]so.*|liblcms[.]so.*|libmanagement[.]so.*|libmanagement_agent[.]so.*|libmanagement_ext[.]so.*|libmlib_image[.]so.*|libnet[.]so.*|libnio[.]so.*|libprefs[.]so.*|librmi[.]so.*|libsaproc[.]so.*|libsctp[.]so.*|libsunec[.]so.*|libunpack[.]so.*|libzip[.]so.*
-
-%global __provides_exclude ^(%{_privatelibs})$
-%global __requires_exclude ^(%{_privatelibs})$
+# With disabled nss is NSS deactivated, so NSS_LIBDIR can contain the wrong path
+# the initialization must be here. Later the pkg-config have buggy behavior
+# looks like openjdk RPM specific bug
+# Always set this so the nss.cfg file is not broken
+%global NSS_LIBDIR %(pkg-config --variable=libdir nss)
 
 # In some cases, the arch used by the JDK does
 # not match _arch.
@@ -119,55 +100,17 @@
 %ifarch x86_64
 %global archinstall amd64
 %endif
-%ifarch ppc
-%global archinstall ppc
-%endif
-%ifarch %{ppc64be}
-%global archinstall ppc64
-%endif
-%ifarch %{ppc64le}
-%global archinstall ppc64le
-%endif
-%ifarch %{ix86}
-%global archinstall i686
-%endif
-%ifarch ia64
-%global archinstall ia64
-%endif
-%ifarch s390
-%global archinstall s390
-%endif
-%ifarch s390x
-%global archinstall s390x
-%endif
-%ifarch %{arm}
-%global archinstall arm
-%endif
 %ifarch %{aarch64}
 %global archinstall aarch64
 %endif
-# 32 bit sparc, optimized for v9
-%ifarch sparcv9
-%global archinstall sparc
-%endif
-# 64 bit sparc
-%ifarch sparc64
-%global archinstall sparcv9
-%endif
-%ifnarch %{jit_arches}
-%global archinstall %{_arch}
-%endif
 
-
-
-%ifarch %{jit_arches}
-%global with_systemtap 0
-%else
-%global with_systemtap 0
-%endif
+%global with_systemtap 1
 
 # New Version-String scheme-style defines
 %global majorver 11
+
+# Define IcedTea version used for SystemTap tapsets and desktop file
+%global icedteaver      3.15.0
 
 # Standard JPackage naming and versioning defines
 %global origin          openjdk
@@ -207,7 +150,6 @@
 
 %global rpm_state_dir %{_localstatedir}/lib/rpm-state/
 
-%if %{with_systemtap}
 # Where to install systemtap tapset (links)
 # We would like these to be in a package specific sub-dir,
 # but currently systemtap doesn't support that, so we have to
@@ -219,7 +161,6 @@
 %global tapsetroot /usr/share/systemtap
 %global tapsetdirttapset %{tapsetroot}/tapset/
 %global tapsetdir %{tapsetdirttapset}/%{_build_cpu}
-%endif
 
 # not-duplicated scriptlets for normal/debug packages
 %global update_desktop_icons /usr/bin/gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
@@ -233,12 +174,8 @@ exit 0
 
 
 %define post_headless() %{expand:
-%ifarch %{jit_arches}
 # MetaspaceShared::generate_vtable_methods not implemented for PPC JIT
-%ifnarch %{ppc64le}
 %{jrebindir -- %{?1}}/java -Xshare:dump >/dev/null 2>/dev/null
-%endif
-%endif
 
 PRIORITY=%{priority}
 if [ "%{?1}" == %{debug_suffix} ]; then
@@ -323,9 +260,7 @@ ext=.gz
 alternatives \\
   --install %{_bindir}/javac javac %{sdkbindir -- %{?1}}/javac $PRIORITY  --family %{name}.%{_arch} \\
   --slave %{_jvmdir}/java java_sdk %{_jvmdir}/%{sdkdir -- %{?1}} \\
-%ifarch %{aot_arches}
   --slave %{_bindir}/jaotc jaotc %{sdkbindir -- %{?1}}/jaotc \\
-%endif
   --slave %{_bindir}/jlink jlink %{sdkbindir -- %{?1}}/jlink \\
   --slave %{_bindir}/jmod jmod %{sdkbindir -- %{?1}}/jmod \\
   --slave %{_bindir}/jhsdb jhsdb %{sdkbindir -- %{?1}}/jhsdb \\
@@ -338,6 +273,7 @@ alternatives \\
   --slave %{_bindir}/jdb jdb %{sdkbindir -- %{?1}}/jdb \\
   --slave %{_bindir}/jdeps jdeps %{sdkbindir -- %{?1}}/jdeps \\
   --slave %{_bindir}/jdeprscan jdeprscan %{sdkbindir -- %{?1}}/jdeprscan \\
+  --slave %{_bindir}/jfr jfr %{sdkbindir -- %{?1}}/jfr \\
   --slave %{_bindir}/jimage jimage %{sdkbindir -- %{?1}}/jimage \\
   --slave %{_bindir}/jinfo jinfo %{sdkbindir -- %{?1}}/jinfo \\
   --slave %{_bindir}/jmap jmap %{sdkbindir -- %{?1}}/jmap \\
@@ -478,10 +414,9 @@ exit 0
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/rmiregistry
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/unpack200
 %dir %{_jvmdir}/%{sdkdir -- %{?1}}/lib
-%ifarch %{jit_arches}
 %{_jvmdir}/%{sdkdir -- %{?1}}/lib/classlist
-%endif
 %{_jvmdir}/%{sdkdir -- %{?1}}/lib/jexec
+%{_jvmdir}/%{sdkdir -- %{?1}}/lib/jspawnhelper
 %{_jvmdir}/%{sdkdir -- %{?1}}/lib/jrt-fs.jar
 %{_jvmdir}/%{sdkdir -- %{?1}}/lib/modules
 %{_jvmdir}/%{sdkdir -- %{?1}}/lib/psfont.properties.ja
@@ -516,12 +451,7 @@ exit 0
 %{_jvmdir}/%{sdkdir -- %{?1}}/lib/libnio.so
 %{_jvmdir}/%{sdkdir -- %{?1}}/lib/libprefs.so
 %{_jvmdir}/%{sdkdir -- %{?1}}/lib/librmi.so
-# Zero and S390x don't have SA
-%ifarch %{jit_arches}
-%ifnarch s390x
 %{_jvmdir}/%{sdkdir -- %{?1}}/lib/libsaproc.so
-%endif
-%endif
 %{_jvmdir}/%{sdkdir -- %{?1}}/lib/libsctp.so
 %{_jvmdir}/%{sdkdir -- %{?1}}/lib/libsunec.so
 %{_jvmdir}/%{sdkdir -- %{?1}}/lib/libunpack.so
@@ -538,13 +468,8 @@ exit 0
 %{_mandir}/man1/rmiregistry-%{uniquesuffix -- %{?1}}.1*
 %{_mandir}/man1/unpack200-%{uniquesuffix -- %{?1}}.1*
 %{_jvmdir}/%{sdkdir -- %{?1}}/lib/server/
-%{_jvmdir}/%{sdkdir -- %{?1}}/lib/client/
-%ifarch %{jit_arches}
-%ifnarch %{power64}
 %attr(444, root, root) %ghost %{_jvmdir}/%{sdkdir -- %{?1}}/lib/server/classes.jsa
 %attr(444, root, root) %ghost %{_jvmdir}/%{sdkdir -- %{?1}}/lib/client/classes.jsa
-%endif
-%endif
 %dir %{etcjavasubdir}
 %dir %{etcjavadir -- %{?1}}
 %dir %{etcjavadir -- %{?1}}/lib
@@ -568,6 +493,7 @@ exit 0
 %config(noreplace) %{etcjavadir -- %{?1}}/conf/security/java.policy
 %config(noreplace) %{etcjavadir -- %{?1}}/conf/security/java.security
 %config(noreplace) %{etcjavadir -- %{?1}}/conf/logging.properties
+%config(noreplace) %{etcjavadir -- %{?1}}/conf/security/nss.cfg
 %config(noreplace) %{etcjavadir -- %{?1}}/conf/management/jmxremote.access
 # this is conifg template, thus not config-noreplace
 %config  %{etcjavadir -- %{?1}}/conf/management/jmxremote.password.template
@@ -590,13 +516,9 @@ exit 0
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/jdb
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/jdeps
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/jdeprscan
+%{_jvmdir}/%{sdkdir -- %{?1}}/bin/jfr
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/jimage
-# Zero and S390x don't have SA
-%ifarch %{jit_arches}
-%ifnarch s390x
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/jhsdb
-%endif
-%endif
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/jinfo
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/jlink
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/jmap
@@ -609,14 +531,11 @@ exit 0
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/jstatd
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/rmic
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/serialver
-%ifarch %{aot_arches}
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/jaotc
-%endif
 %{_jvmdir}/%{sdkdir -- %{?1}}/include
 %{_jvmdir}/%{sdkdir -- %{?1}}/lib/ct.sym
-%if %{with_systemtap}
 %{_jvmdir}/%{sdkdir -- %{?1}}/tapset
-%endif
+%{_datadir}/applications/*jconsole%{?1}.desktop
 %{_mandir}/man1/jar-%{uniquesuffix -- %{?1}}.1*
 %{_mandir}/man1/jarsigner-%{uniquesuffix -- %{?1}}.1*
 %{_mandir}/man1/javac-%{uniquesuffix -- %{?1}}.1*
@@ -635,6 +554,10 @@ exit 0
 %{_mandir}/man1/jstatd-%{uniquesuffix -- %{?1}}.1*
 %{_mandir}/man1/rmic-%{uniquesuffix -- %{?1}}.1*
 %{_mandir}/man1/serialver-%{uniquesuffix -- %{?1}}.1*
+%dir %{tapsetroot}
+%dir %{tapsetdirttapset}
+%dir %{tapsetdir}
+%{tapsetdir}/*%{_arch}%{?1}.stp
 }
 
 %define files_jmods() %{expand:
@@ -796,12 +719,9 @@ Provides: java-%{javaver}-src%{?1} = %{epoch}:%{version}-%{release}
 Provides: java-%{javaver}-%{origin}-src%{?1} = %{epoch}:%{version}-%{release}
 }
 
-# Prevent brp-java-repack-jars from being run
-%global __jar_repack 0
-
 Name:    java-%{javaver}-%{origin}
 Version: %{fulljavaver}
-Release: 3
+Release: 4
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -836,11 +756,25 @@ URL:      http://openjdk.java.net/
 
 Source0: openjdk-%{fulljavaver}-ga.tar.xz
 
+# Use 'icedtea_sync.sh' to update the following
+# They are based on code contained in the IcedTea project (3.x).
+# Systemtap tapsets. Zipped up to keep it small.
+Source8: tapsets-icedtea-%{icedteaver}.tar.xz
+
+# Desktop files. Adapted from IcedTea
+Source9: jconsole.desktop.in
+
+# nss configuration file
+Source11: nss.cfg.in
+
 ############################################
 #
 # RPM/distribution specific patches
 #
 ############################################
+# NSS via SunPKCS11 Provider (disabled comment
+# due to memory leak).
+Patch1000: rh1648249-add_commented_out_nss_cfg_provider_to_java_security.patch
 
 #############################################
 #
@@ -869,14 +803,12 @@ Patch25: 8212933-Thread-SMR-requesting-a-VM-operation-whilst-.patch
 Patch26: ZGC-aarch64-fix-system-call-number-of-memfd_create.patch
 
 BuildRequires: autoconf
-BuildRequires: automake
 BuildRequires: alsa-lib-devel
 BuildRequires: binutils
 BuildRequires: cups-devel
 BuildRequires: desktop-file-utils
 # elfutils only are OK for build without AOT
 BuildRequires: elfutils-devel
-BuildRequires: fontconfig
 BuildRequires: freetype-devel
 BuildRequires: giflib-devel
 BuildRequires: gcc-c++
@@ -888,27 +820,21 @@ BuildRequires: libpng-devel
 BuildRequires: libxslt
 BuildRequires: libX11-devel
 BuildRequires: libXi-devel
-BuildRequires: libXinerama-devel
 BuildRequires: libXt-devel
 BuildRequires: libXtst-devel
+# Requirements for setting up the nss.cfg
+BuildRequires: nss-devel
 BuildRequires: pkgconfig
 BuildRequires: xorg-x11-proto-devel
 BuildRequires: zip
-BuildRequires: javapackages-filesystem
 BuildRequires: java-11-openjdk-devel
-# Zero-assembler build requirement
-%ifnarch %{jit_arches}
-BuildRequires: libffi-devel
-%endif
 BuildRequires: tzdata-java >= 2015d
 # Earlier versions have a bug in tree vectorization on PPC
 BuildRequires: gcc >= 4.8.3-8
 # Build requirements for SunEC system NSS support
 BuildRequires: nss-softokn-freebl-devel >= 3.16.1
 
-%if %{with_systemtap}
 BuildRequires: systemtap-sdt-devel
-%endif
 
 # this is always built, also during debug-only build
 # when it is built in debug-only this package is just placeholder
@@ -1139,6 +1065,56 @@ pushd %{top_level_dir_name}
 %patch24 -p1
 %patch25 -p1
 %patch26 -p1
+popd # openjdk
+
+%patch1000
+
+# Extract systemtap tapsets
+%if %{with_systemtap}
+tar --strip-components=1 -x -I xz -f %{SOURCE8}
+%if %{include_debug_build}
+cp -r tapset tapset%{debug_suffix}
+%endif
+
+
+for suffix in %{build_loop} ; do
+  for file in "tapset"$suffix/*.in; do
+    OUTPUT_FILE=`echo $file | sed -e "s:\.stp\.in$:-%{version}-%{release}.%{_arch}.stp:g"`
+    sed -e "s:@ABS_SERVER_LIBJVM_SO@:%{_jvmdir}/%{sdkdir -- $suffix}/lib/server/libjvm.so:g" $file > $file.1
+# TODO find out which architectures other than i686 have a client vm
+%ifarch %{ix86}
+    sed -e "s:@ABS_CLIENT_LIBJVM_SO@:%{_jvmdir}/%{sdkdir -- $suffix}/lib/client/libjvm.so:g" $file.1 > $OUTPUT_FILE
+%else
+    sed -e "/@ABS_CLIENT_LIBJVM_SO@/d" $file.1 > $OUTPUT_FILE
+%endif
+    sed -i -e "s:@ABS_JAVA_HOME_DIR@:%{_jvmdir}/%{sdkdir -- $suffix}:g" $OUTPUT_FILE
+    sed -i -e "s:@INSTALL_ARCH_DIR@:%{archinstall}:g" $OUTPUT_FILE
+    sed -i -e "s:@prefix@:%{_jvmdir}/%{sdkdir -- $suffix}/:g" $OUTPUT_FILE
+  done
+done
+# systemtap tapsets ends
+%endif
+
+# Prepare desktop files
+# The _X_ syntax indicates variables that are replaced by make upstream
+# The @X@ syntax indicates variables that are replaced by configure upstream
+for suffix in %{build_loop} ; do
+for file in %{SOURCE9}; do
+    FILE=`basename $file | sed -e s:\.in$::g`
+    EXT="${FILE##*.}"
+    NAME="${FILE%.*}"
+    OUTPUT_FILE=$NAME$suffix.$EXT
+    sed    -e  "s:_SDKBINDIR_:%{sdkbindir -- $suffix}:g" $file > $OUTPUT_FILE
+    sed -i -e  "s:@target_cpu@:%{_arch}:g" $OUTPUT_FILE
+    sed -i -e  "s:@OPENJDK_VER@:%{version}-%{release}.%{_arch}$suffix:g" $OUTPUT_FILE
+    sed -i -e  "s:@JAVA_VER@:%{javaver}:g" $OUTPUT_FILE
+    sed -i -e  "s:@JAVA_VENDOR@:%{origin}:g" $OUTPUT_FILE
+done
+done
+
+# Setup nss.cfg
+sed -e "s:@NSS_LIBDIR@:%{NSS_LIBDIR}:g" %{SOURCE11} > nss.cfg
+
 
 %build
 # How many CPU's do we have?
@@ -1149,11 +1125,8 @@ export NUM_PROC=${NUM_PROC:-1}
 [ ${NUM_PROC} -gt %{?_smp_ncpus_max} ] && export NUM_PROC=%{?_smp_ncpus_max}
 %endif
 
-%ifarch s390x sparc64 alpha %{power64} %{aarch64}
+%ifarch %{aarch64}
 export ARCH_DATA_MODEL=64
-%endif
-%ifarch alpha
-export CFLAGS="$CFLAGS -mieee"
 %endif
 
 # We use ourcppflags because the OpenJDK build seems to
@@ -1162,10 +1135,6 @@ export CFLAGS="$CFLAGS -mieee"
 EXTRA_CFLAGS="%ourcppflags -Wno-error -fno-delete-null-pointer-checks -fno-lifetime-dse"
 EXTRA_CPP_FLAGS="%ourcppflags -std=gnu++98 -Wno-error -fno-delete-null-pointer-checks -fno-lifetime-dse"
 
-%ifarch %{power64} ppc
-# fix rpmlint warnings
-EXTRA_CFLAGS="$EXTRA_CFLAGS -fno-strict-aliasing"
-%endif
 export EXTRA_CFLAGS
 
 for suffix in %{build_loop} ; do
@@ -1183,12 +1152,6 @@ mkdir -p %{buildoutputdir -- $suffix}
 pushd %{buildoutputdir -- $suffix}
 
 bash ../configure \
-%ifnarch %{jit_arches}
-    --with-jvm-variants=zero \
-%endif
-%ifarch %{ppc64le}
-    --with-jobs=1 \
-%endif
     --with-version-pre="" \
     --with-version-opt="" \
     --with-version-build=%{buildver} \
@@ -1211,14 +1174,19 @@ bash ../configure \
     --disable-warnings-as-errors \
     --with-boot-jdk-jvmargs=-XX:-UsePerfData
 
+# Debug builds don't need same targets as release for
+# build speed-up
+maketargets="%{release_targets}"
+if echo $debugbuild | grep -q "debug" ; then
+  maketargets="%{debug_targets}"
+fi
+
 make \
     JAVAC_FLAGS=-g \
     LOG=trace \
     WARNINGS_ARE_ERRORS="-Wno-error" \
     CFLAGS_WARNINGS_ARE_ERRORS="-Wno-error" \
-    %{targets} || ( pwd; find $top_dir_abs_path -name "hs_err_pid*.log" | xargs cat && false )
-
-make docs-zip
+    $maketargets || ( pwd; find $top_dir_abs_path -name "hs_err_pid*.log" | xargs cat && false )
 
 # the build (erroneously) removes read permissions from some jars
 # this is a regression in OpenJDK 7 (our compiler):
@@ -1233,6 +1201,9 @@ popd >& /dev/null
 
 # Install nss.cfg right away as we will be using the JRE above
 export JAVA_HOME=$(pwd)/%{buildoutputdir -- $suffix}/images/%{jdkimage}
+
+# Install nss.cfg right away as we will be using the JRE above
+install -m 644 nss.cfg $JAVA_HOME/conf/security/
 
 # Use system-wide tzdata
 rm $JAVA_HOME/lib/tzdb.dat
@@ -1335,14 +1306,8 @@ mkdir -p $RPM_BUILD_ROOT%{_jvmdir}
 cp -a %{buildoutputdir -- $suffix}/images/%{jdkimage} \
   $RPM_BUILD_ROOT%{_jvmdir}/%{sdkdir -- $suffix}
 
-# Install jsa directories so we can owe them
-mkdir -p $RPM_BUILD_ROOT%{_jvmdir}/%{sdkdir -- $suffix}/lib/%{archinstall}/server/
-mkdir -p $RPM_BUILD_ROOT%{_jvmdir}/%{sdkdir -- $suffix}/lib/%{archinstall}/client/
-mkdir -p $RPM_BUILD_ROOT%{_jvmdir}/%{sdkdir -- $suffix}/lib/client/ || true  ; # sometimes is here, sometimes not, ifout it or || true it out
-
 pushd %{buildoutputdir $suffix}/images/%{jdkimage}
 
-%if %{with_systemtap}
   # Install systemtap support files
   install -dm 755 $RPM_BUILD_ROOT%{_jvmdir}/%{sdkdir -- $suffix}/tapset
   # note, that uniquesuffix  is in BUILD dir in this case
@@ -1355,7 +1320,6 @@ pushd %{buildoutputdir $suffix}/images/%{jdkimage}
     targetName=`echo $name | sed "s/.stp/$suffix.stp/"`
     ln -sf %{_jvmdir}/%{sdkdir -- $suffix}/tapset/$name $RPM_BUILD_ROOT%{tapsetdir}/$targetName
   done
-%endif
 
   # Remove empty cacerts database
   rm -f $RPM_BUILD_ROOT%{_jvmdir}/%{sdkdir -- $suffix}/lib/security/cacerts
@@ -1385,17 +1349,25 @@ pushd %{buildoutputdir $suffix}/images/%{jdkimage}
 
 popd
 
-
-# Install Javadoc documentation
-install -d -m 755 $RPM_BUILD_ROOT%{_javadocdir}
-cp -a %{buildoutputdir -- $suffix}/images/docs $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}
-cp -a %{buildoutputdir -- $suffix}/bundles/jdk-%{majorver}.0.%{updatever}+%{buildver}-docs.zip  $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}.zip
+if ! echo $suffix | grep -q "debug" ; then
+  # Install Javadoc documentation
+  install -d -m 755 $RPM_BUILD_ROOT%{_javadocdir}
+  cp -a %{buildoutputdir -- $suffix}/images/docs $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}
+  cp -a %{buildoutputdir -- $suffix}/bundles/jdk-%{majorver}.0.%{updatever}+%{buildver}-docs.zip $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}.zip
+fi
 
 # Install icons and menu entries
 for s in 16 24 32 48 ; do
   install -D -p -m 644 \
     %{top_level_dir_name}/src/java.desktop/unix/classes/sun/awt/X11/java-icon${s}.png \
     $RPM_BUILD_ROOT%{_datadir}/icons/hicolor/${s}x${s}/apps/java-%{javaver}-%{origin}.png
+done
+
+# Install desktop files
+install -d -m 755 $RPM_BUILD_ROOT%{_datadir}/{applications,pixmaps}
+for e in jconsole$suffix ; do
+    desktop-file-install --vendor=%{uniquesuffix -- $suffix} --mode=644 \
+        --dir=$RPM_BUILD_ROOT%{_datadir}/applications $e.desktop
 done
 
 # Install /etc/.java/.systemPrefs/ directory
@@ -1608,6 +1580,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Thu May 25 2020 Noah <hedongbo@huawei.com> - 1:11.0.7.10-4
+- Support nss, systemtap and desktop
+
 * Thu May 21 2020 jdkboy <guoge1@huawei.com> - 1:11.0.7.10-3
 - Update to 11.0.7+10 (GA)
 
