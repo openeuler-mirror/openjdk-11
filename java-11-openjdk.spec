@@ -74,7 +74,13 @@
 # is expected in one single case at the end of the build
 %global rev_build_loop  %{build_loop2} %{build_loop1}
 
+%global bootstrap_build 1
+
+%if %{bootstrap_build}
+%global release_targets bootcycle-images docs-zip
+%else
 %global release_targets images docs-zip
+%endif
 # No docs nor bootcycle for debug builds
 %global debug_targets images
 
@@ -108,6 +114,15 @@
 
 # New Version-String scheme-style defines
 %global majorver 11
+%global securityver 7
+# buildjdkver is usually same as %%{majorver},
+# but in time of bootstrap of next jdk, it is majorver-1,
+# and this it is better to change it here, on single place
+%global buildjdkver %{majorver}
+
+#Used via new version scheme. JDK 11 was
+# GA'ed in September 2018 => 18.9
+%global vendor_version_string 18.9
 
 # Define IcedTea version used for SystemTap tapsets and desktop file
 %global icedteaver      3.15.0
@@ -115,26 +130,25 @@
 # Standard JPackage naming and versioning defines
 %global origin          openjdk
 %global origin_nice     OpenJDK
-%global updatever       7
+%global top_level_dir_name   %{origin}
 %global minorver        0
 %global buildver        10
-%global top_level_dir_name   %{origin}
 # priority must be 7 digits in total
 # setting to 1, so debug ones can have 0
 %global priority        00000%{minorver}1
-%global fulljavaver     %{majorver}.%{minorver}.%{updatever}
+%global fulljavaver     %{majorver}.%{minorver}.%{securityver}
 
 %global javaver         %{majorver}
 
 # parametrized macros are order-sensitive
 %global compatiblename  java-%{majorver}-%{origin}
 %global fullversion     %{compatiblename}-%{version}-%{release}
-# images stub
+# images directories from upstream build
 %global jdkimage       jdk
 # output dir stub
 %define buildoutputdir() %{expand:openjdk/build%{?1}}
 # we can copy the javadoc to not arched dir, or make it not noarch
-%define uniquejavadocdir()    %{expand:jdk-%{fulljavaver}+%{updatever}}
+%define uniquejavadocdir()    %{expand:%{fullversion}.%{_arch}%{?1}}
 # main id and dir of this jdk
 %define uniquesuffix()        %{expand:%{fullversion}.%{_arch}%{?1}}
 
@@ -150,6 +164,7 @@
 
 %global rpm_state_dir %{_localstatedir}/lib/rpm-state/
 
+%if %{with_systemtap}
 # Where to install systemtap tapset (links)
 # We would like these to be in a package specific sub-dir,
 # but currently systemtap doesn't support that, so we have to
@@ -161,6 +176,7 @@
 %global tapsetroot /usr/share/systemtap
 %global tapsetdirttapset %{tapsetroot}/tapset/
 %global tapsetdir %{tapsetdirttapset}/%{_build_cpu}
+%endif
 
 # not-duplicated scriptlets for normal/debug packages
 %global update_desktop_icons /usr/bin/gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
@@ -534,7 +550,9 @@ exit 0
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/jaotc
 %{_jvmdir}/%{sdkdir -- %{?1}}/include
 %{_jvmdir}/%{sdkdir -- %{?1}}/lib/ct.sym
+%if %{with_systemtap}
 %{_jvmdir}/%{sdkdir -- %{?1}}/tapset
+%endif
 %{_datadir}/applications/*jconsole%{?1}.desktop
 %{_mandir}/man1/jar-%{uniquesuffix -- %{?1}}.1*
 %{_mandir}/man1/jarsigner-%{uniquesuffix -- %{?1}}.1*
@@ -554,10 +572,12 @@ exit 0
 %{_mandir}/man1/jstatd-%{uniquesuffix -- %{?1}}.1*
 %{_mandir}/man1/rmic-%{uniquesuffix -- %{?1}}.1*
 %{_mandir}/man1/serialver-%{uniquesuffix -- %{?1}}.1*
+%if %{with_systemtap}
 %dir %{tapsetroot}
 %dir %{tapsetdirttapset}
 %dir %{tapsetdir}
 %{tapsetdir}/*%{_arch}%{?1}.stp
+%endif
 }
 
 %define files_jmods() %{expand:
@@ -589,6 +609,9 @@ exit 0
 %define java_rpo() %{expand:
 Requires: fontconfig%{?_isa}
 Requires: xorg-x11-fonts-Type1
+# Require libXcomposite explicitly since it's only dynamically loaded
+# at runtime. Fixes screenshot issues. See JDK-8150954.
+Requires: libXcomposite%{?_isa}
 # Requires rest of java
 Requires: %{name}-headless%{?1}%{?_isa} = %{epoch}:%{version}-%{release}
 OrderWithRequires: %{name}-headless%{?1}%{?_isa} = %{epoch}:%{version}-%{release}
@@ -598,13 +621,13 @@ Recommends: gtk3%{?_isa}
 Provides: java-%{javaver}-%{origin}%{?1} = %{epoch}:%{version}-%{release}
 
 # Standard JPackage base provides
-Provides: jre = %{javaver}%{?1}
-Provides: jre-%{origin}%{?1} = %{epoch}:%{version}-%{release}
 Provides: jre-%{javaver}%{?1} = %{epoch}:%{version}-%{release}
 Provides: jre-%{javaver}-%{origin}%{?1} = %{epoch}:%{version}-%{release}
 Provides: java-%{javaver}%{?1} = %{epoch}:%{version}-%{release}
 Provides: java-%{origin}%{?1} = %{epoch}:%{version}-%{release}
-Provides: java%{?1} = %{epoch}:%{javaver}
+Provides: jre-%{origin}%{?1} = %{epoch}:%{version}-%{release}
+Provides: java%{?1} = %{epoch}:%{version}-%{release}
+Provides: jre%{?1} = %{epoch}:%{version}-%{release}
 }
 
 %define java_headless_rpo() %{expand:
@@ -613,7 +636,8 @@ Requires: ca-certificates
 # Require javapackages-filesystem for ownership of /usr/lib/jvm/ and macros
 Requires: javapackages-filesystem
 # Require zone-info data provided by tzdata-java sub-package
-Requires: tzdata-java >= 2015d
+Requires: tzdata-java >= 2019c
+# for support of kernel stream control
 # libsctp.so.1 is being `dlopen`ed on demand
 Requires: lksctp-tools%{?_isa}
 # tool to copy jdk's configs - should be Recommends only, but then only dnf/yum enforce it,
@@ -621,16 +645,14 @@ Requires: lksctp-tools%{?_isa}
 # considered as regression
 Requires: copy-jdk-configs >= 3.3
 OrderWithRequires: copy-jdk-configs
+# for printing support
+Requires: cups-libs
 # Post requires alternatives to install tool alternatives
 Requires(post):   %{_sbindir}/alternatives
-# in version 1.7 and higher for --family switch
-Requires(post):   chkconfig >= 1.7
 # Postun requires alternatives to uninstall tool alternatives
 Requires(postun): %{_sbindir}/alternatives
-# in version 1.7 and higher for --family switch
-Requires(postun):   chkconfig >= 1.7
 # for optional support of kernel stream control, card reader and printing bindings
-Suggests: lksctp-tools%{?_isa}, pcsc-lite-devel%{?_isa}, cups
+Suggests: lksctp-tools%{?_isa}, pcsc-lite-devel%{?_isa}
 
 # Standard JPackage base provides
 Provides: jre-headless%{?1} = %{epoch}:%{javaver}
@@ -640,10 +662,9 @@ Provides: jre-%{javaver}-headless%{?1} = %{epoch}:%{version}-%{release}
 Provides: java-%{javaver}-%{origin}-headless%{?1} = %{epoch}:%{version}-%{release}
 Provides: java-%{javaver}-headless%{?1} = %{epoch}:%{version}-%{release}
 Provides: java-%{origin}-headless%{?1} = %{epoch}:%{version}-%{release}
-Provides: java-headless%{?1} = %{epoch}:%{javaver}
-
-Provides: /usr/bin/jjs
-
+Provides: jre-%{origin}-headless%{?1} = %{epoch}:%{version}-%{release}
+Provides: java-headless%{?1} = %{epoch}:%{version}-%{release}
+Provides: jre-headless%{?1} = %{epoch}:%{version}-%{release}
 }
 
 %define java_devel_rpo() %{expand:
@@ -652,23 +673,19 @@ Requires:         %{name}%{?1}%{?_isa} = %{epoch}:%{version}-%{release}
 OrderWithRequires: %{name}-headless%{?1}%{?_isa} = %{epoch}:%{version}-%{release}
 # Post requires alternatives to install tool alternatives
 Requires(post):   %{_sbindir}/alternatives
-# in version 1.7 and higher for --family switch
-Requires(post):   chkconfig >= 1.7
 # Postun requires alternatives to uninstall tool alternatives
 Requires(postun): %{_sbindir}/alternatives
-# in version 1.7 and higher for --family switch
-Requires(postun):   chkconfig >= 1.7
 
 # Standard JPackage devel provides
-Provides: java-sdk-%{javaver}-%{origin}%{?1} = %{epoch}:%{version}
-Provides: java-sdk-%{javaver}%{?1} = %{epoch}:%{version}
-#Provides: java-sdk-%%{origin}%%{?1} = %%{epoch}:%%{version}
-#Provides: java-sdk%%{?1} = %%{epoch}:%%{javaver}
-Provides: java-%{javaver}-devel%{?1} = %{epoch}:%{version}
-Provides: java-%{javaver}-%{origin}-devel%{?1} = %{epoch}:%{version}
-#Provides: java-devel-%%{origin}%%{?1} = %%{epoch}:%%{version}
-#Provides: java-devel%%{?1} = %%{epoch}:%%{javaver}
+Provides: java-sdk-%{javaver}-%{origin}%{?1} = %{epoch}:%{version}-%{release}
+Provides: java-sdk-%{javaver}%{?1} = %{epoch}:%{version}-%{release}
+Provides: java-%{javaver}-devel%{?1} = %{epoch}:%{version}-%{release}
+Provides: java-%{javaver}-%{origin}-devel%{?1} = %{epoch}:%{version}-%{release}
 
+Provides: java-devel-%{origin}%{?1} = %{epoch}:%{version}-%{release}
+Provides: java-sdk-%{origin}%{?1} = %{epoch}:%{version}-%{release}
+Provides: java-devel%{?1} = %{epoch}:%{version}-%{release}
+Provides: java-sdk%{?1} = %{epoch}:%{version}-%{release}
 }
 
 %define java_jmods_rpo() %{expand:
@@ -677,51 +694,45 @@ Provides: java-%{javaver}-%{origin}-devel%{?1} = %{epoch}:%{version}
 Requires:         %{name}-devel%{?1} = %{epoch}:%{version}-%{release}
 OrderWithRequires: %{name}-headless%{?1} = %{epoch}:%{version}-%{release}
 
-Provides: java-jmods%{?1} = %{epoch}:%{version}-%{release}
 Provides: java-%{javaver}-jmods%{?1} = %{epoch}:%{version}-%{release}
 Provides: java-%{javaver}-%{origin}-jmods%{?1} = %{epoch}:%{version}-%{release}
-
+Provides: java-jmods%{?1} = %{epoch}:%{version}-%{release}
 }
 
 %define java_demo_rpo() %{expand:
 Requires: %{name}%{?1}%{?_isa} = %{epoch}:%{version}-%{release}
 OrderWithRequires: %{name}-headless%{?1}%{?_isa} = %{epoch}:%{version}-%{release}
 
-Provides: java-demo%{?1} = %{epoch}:%{version}-%{release}
 Provides: java-%{javaver}-demo%{?1} = %{epoch}:%{version}-%{release}
 Provides: java-%{javaver}-%{origin}-demo%{?1} = %{epoch}:%{version}-%{release}
-
+Provides: java-demo%{?1} = %{epoch}:%{version}-%{release}
 }
 
 %define java_javadoc_rpo() %{expand:
 OrderWithRequires: %{name}-headless%{?1}%{?_isa} = %{epoch}:%{version}-%{release}
 # Post requires alternatives to install javadoc alternative
 Requires(post):   %{_sbindir}/alternatives
-# in version 1.7 and higher for --family switch
-Requires(post):   chkconfig >= 1.7
 # Postun requires alternatives to uninstall javadoc alternative
 Requires(postun): %{_sbindir}/alternatives
-# in version 1.7 and higher for --family switch
-Requires(postun):   chkconfig >= 1.7
 
 # Standard JPackage javadoc provides
-Provides: java-javadoc%{?1} = %{epoch}:%{version}-%{release}
 Provides: java-%{javaver}-javadoc%{?1} = %{epoch}:%{version}-%{release}
 Provides: java-%{javaver}-%{origin}-javadoc%{?1} = %{epoch}:%{version}-%{release}
+Provides: java-javadoc%{?1} = %{epoch}:%{version}-%{release}
 }
 
 %define java_src_rpo() %{expand:
 Requires: %{name}-headless%{?1}%{?_isa} = %{epoch}:%{version}-%{release}
 
 # Standard JPackage sources provides
-Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 Provides: java-%{javaver}-src%{?1} = %{epoch}:%{version}-%{release}
 Provides: java-%{javaver}-%{origin}-src%{?1} = %{epoch}:%{version}-%{release}
+Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 }
 
 Name:    java-%{javaver}-%{origin}
-Version: %{fulljavaver}
-Release: 4
+Version: %{fulljavaver}.%{buildver}
+Release: 5
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -802,6 +813,9 @@ Patch24: 8210303-VM_HandshakeAllThreads-fails-assert-with-fai.patch
 Patch25: 8212933-Thread-SMR-requesting-a-VM-operation-whilst-.patch
 Patch26: ZGC-aarch64-fix-system-call-number-of-memfd_create.patch
 
+# 11.0.8
+Patch27: 8228407.patch
+
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
 BuildRequires: binutils
@@ -809,17 +823,20 @@ BuildRequires: cups-devel
 BuildRequires: desktop-file-utils
 # elfutils only are OK for build without AOT
 BuildRequires: elfutils-devel
+BuildRequires: fontconfig-devel
 BuildRequires: freetype-devel
 BuildRequires: giflib-devel
 BuildRequires: gcc-c++
 BuildRequires: gdb
-BuildRequires: gtk3-devel
 BuildRequires: lcms2-devel
 BuildRequires: libjpeg-devel
 BuildRequires: libpng-devel
 BuildRequires: libxslt
 BuildRequires: libX11-devel
 BuildRequires: libXi-devel
+BuildRequires: libXinerama-devel
+BuildRequires: libXrandr-devel
+BuildRequires: libXrender-devel
 BuildRequires: libXt-devel
 BuildRequires: libXtst-devel
 # Requirements for setting up the nss.cfg
@@ -827,14 +844,18 @@ BuildRequires: nss-devel
 BuildRequires: pkgconfig
 BuildRequires: xorg-x11-proto-devel
 BuildRequires: zip
-BuildRequires: java-11-openjdk-devel
-BuildRequires: tzdata-java >= 2015d
+BuildRequires: unzip
+BuildRequires: javapackages-filesystem
+BuildRequires: java-%{buildjdkver}-openjdk-devel
+BuildRequires: tzdata-java >= 2019c
 # Earlier versions have a bug in tree vectorization on PPC
 BuildRequires: gcc >= 4.8.3-8
 # Build requirements for SunEC system NSS support
 BuildRequires: nss-softokn-freebl-devel >= 3.16.1
 
+%if %{with_systemtap}
 BuildRequires: systemtap-sdt-devel
+%endif
 
 # this is always built, also during debug-only build
 # when it is built in debug-only this package is just placeholder
@@ -975,6 +996,7 @@ The java-%{origin}-src-slowdebug sub-package contains the complete %{origin_nice
 Summary: %{origin_nice} %{majorver} API documentation
 Group:   Documentation
 Requires: javapackages-filesystem
+Obsoletes: javadoc-slowdebug < 1:11.0.3.7-4
 
 %{java_javadoc_rpo %{nil}}
 
@@ -987,37 +1009,13 @@ The %{origin_nice} %{majorver} API documentation.
 Summary: %{origin_nice} %{majorver} API documentation compressed in single archive
 Group:   Documentation
 Requires: javapackages-filesystem
+Obsoletes: javadoc-slowdebug < 1:11.0.3.7-4
 
 %{java_javadoc_rpo %{nil}}
 
 %description javadoc-zip
 The %{origin_nice} %{majorver} API documentation compressed in single archive.
 %endif
-
-%if %{include_debug_build}
-%package javadoc-slowdebug
-Summary: %{origin_nice} %{majorver} API documentation %{for_debug}
-Group:   Documentation
-Requires: javapackages-filesystem
-
-%{java_javadoc_rpo -- %{debug_suffix_unquoted}}
-
-%description javadoc-slowdebug
-The %{origin_nice} %{majorver} API documentation %{for_debug}.
-%endif
-
-%if %{include_debug_build}
-%package javadoc-zip-slowdebug
-Summary: %{origin_nice} %{majorver} API documentation compressed in single archive %{for_debug}
-Group:   Documentation
-Requires: javapackages-filesystem
-
-%{java_javadoc_rpo -- %{debug_suffix_unquoted}}
-
-%description javadoc-zip-slowdebug
-The %{origin_nice} %{majorver} API documentation compressed in single archive %{for_debug}.
-%endif
-
 
 %prep
 if [ %{include_normal_build} -eq 0 -o  %{include_normal_build} -eq 1 ] ; then
@@ -1065,6 +1063,7 @@ pushd %{top_level_dir_name}
 %patch24 -p1
 %patch25 -p1
 %patch26 -p1
+%patch27 -p1
 popd # openjdk
 
 %patch1000
@@ -1132,8 +1131,8 @@ export ARCH_DATA_MODEL=64
 # We use ourcppflags because the OpenJDK build seems to
 # pass EXTRA_CFLAGS to the HotSpot C++ compiler...
 # Explicitly set the C++ standard as the default has changed on GCC >= 6
-EXTRA_CFLAGS="%ourcppflags -Wno-error -fno-delete-null-pointer-checks -fno-lifetime-dse"
-EXTRA_CPP_FLAGS="%ourcppflags -std=gnu++98 -Wno-error -fno-delete-null-pointer-checks -fno-lifetime-dse"
+EXTRA_CFLAGS="%ourcppflags -Wno-error"
+EXTRA_CPP_FLAGS="%ourcppflags -Wno-error"
 
 export EXTRA_CFLAGS
 
@@ -1152,11 +1151,11 @@ mkdir -p %{buildoutputdir -- $suffix}
 pushd %{buildoutputdir -- $suffix}
 
 bash ../configure \
+    --with-version-build=%{buildver} \
     --with-version-pre="" \
     --with-version-opt="" \
-    --with-version-build=%{buildver} \
-    --with-version-update=%{updatever} \
-    --with-boot-jdk=/usr/lib/jvm/java-11-openjdk \
+    --with-vendor-version-string="%{vendor_version_string}" \
+    --with-boot-jdk=/usr/lib/jvm/java-%{buildjdkver}-openjdk \
     --with-debug-level=$debugbuild \
     --with-native-debug-symbols=internal \
     --enable-unlimited-crypto \
@@ -1308,6 +1307,7 @@ cp -a %{buildoutputdir -- $suffix}/images/%{jdkimage} \
 
 pushd %{buildoutputdir $suffix}/images/%{jdkimage}
 
+%if %{with_systemtap}
   # Install systemtap support files
   install -dm 755 $RPM_BUILD_ROOT%{_jvmdir}/%{sdkdir -- $suffix}/tapset
   # note, that uniquesuffix  is in BUILD dir in this case
@@ -1320,6 +1320,7 @@ pushd %{buildoutputdir $suffix}/images/%{jdkimage}
     targetName=`echo $name | sed "s/.stp/$suffix.stp/"`
     ln -sf %{_jvmdir}/%{sdkdir -- $suffix}/tapset/$name $RPM_BUILD_ROOT%{tapsetdir}/$targetName
   done
+%endif
 
   # Remove empty cacerts database
   rm -f $RPM_BUILD_ROOT%{_jvmdir}/%{sdkdir -- $suffix}/lib/security/cacerts
@@ -1353,7 +1354,7 @@ if ! echo $suffix | grep -q "debug" ; then
   # Install Javadoc documentation
   install -d -m 755 $RPM_BUILD_ROOT%{_javadocdir}
   cp -a %{buildoutputdir -- $suffix}/images/docs $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}
-  cp -a %{buildoutputdir -- $suffix}/bundles/jdk-%{majorver}.0.%{updatever}+%{buildver}-docs.zip $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}.zip
+  cp -a %{buildoutputdir -- $suffix}/bundles/jdk-%{fulljavaver}+%{buildver}-docs.zip $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}.zip
 fi
 
 # Install icons and menu entries
@@ -1500,18 +1501,6 @@ require "copy_jdk_configs.lua"
 
 %posttrans  devel-slowdebug
 %{posttrans_devel -- %{debug_suffix_unquoted}}
-
-%post javadoc-slowdebug
-%{post_javadoc -- %{debug_suffix_unquoted}}
-
-%postun javadoc-slowdebug
-%{postun_javadoc -- %{debug_suffix_unquoted}}
-
-%post javadoc-zip-slowdebug
-%{post_javadoc_zip -- %{debug_suffix_unquoted}}
-
-%postun javadoc-zip-slowdebug
-%{postun_javadoc_zip -- %{debug_suffix_unquoted}}
 %endif
 
 %if %{include_normal_build}
@@ -1570,16 +1559,16 @@ require "copy_jdk_configs.lua"
 
 %files src-slowdebug
 %{files_src -- %{debug_suffix_unquoted}}
-
-%files javadoc-slowdebug
-%{files_javadoc -- %{debug_suffix_unquoted}}
-
-%files javadoc-zip-slowdebug
-%{files_javadoc_zip -- %{debug_suffix_unquoted}}
 %endif
 
 
 %changelog
+* Thu Jun 9 2020 jdkboy <guoge1@huawei.com> - 1:11.0.7.10-5
+- Version support fulljavaver.buildver
+- Judge with_systemtap
+- 8228407: JVM crashes with shared archive file mismatch
+- Remove javadoc-slowdebug
+
 * Thu May 25 2020 Noah <hedongbo@huawei.com> - 1:11.0.7.10-4
 - Support nss, systemtap and desktop
 
