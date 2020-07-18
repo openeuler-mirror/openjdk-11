@@ -114,15 +114,13 @@
 
 # New Version-String scheme-style defines
 %global majorver 11
-%global securityver 7
+%global securityver 8
 # buildjdkver is usually same as %%{majorver},
 # but in time of bootstrap of next jdk, it is majorver-1,
 # and this it is better to change it here, on single place
 %global buildjdkver %{majorver}
 
-#Used via new version scheme. JDK 11 was
-# GA'ed in September 2018 => 18.9
-%global vendor_version_string 18.9
+%global vendor_version_string Boole
 
 # Define IcedTea version used for SystemTap tapsets and desktop file
 %global icedteaver      3.15.0
@@ -732,7 +730,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{fulljavaver}.%{buildver}
-Release: 5
+Release: 0
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -793,7 +791,6 @@ Patch1000: rh1648249-add_commented_out_nss_cfg_provider_to_java_security.patch
 #
 #############################################
 
-Patch1: change-vendor-to-openEuler_Community.patch
 Patch2: 8225648-TESTBUG-java-lang-annotation-loaderLeak-Main.patch
 Patch5: Add-ability-to-configure-third-port-for-remote-JMX.patch
 Patch6: 8214527-AArch64-ZGC-for-Aarch64.patch
@@ -809,12 +806,7 @@ Patch18: 8209375-ZGC-Use-dynamic-base-address-for-mark-stack-.patch
 Patch20: 8209894-ZGC-Cap-number-of-GC-workers-based-on-heap-s.patch
 Patch22: 8233506-ZGC-the-load-for-Reference.get-can-be-conver.patch
 Patch23: add-missing-inline.patch
-Patch24: 8210303-VM_HandshakeAllThreads-fails-assert-with-fai.patch
-Patch25: 8212933-Thread-SMR-requesting-a-VM-operation-whilst-.patch
 Patch26: ZGC-aarch64-fix-system-call-number-of-memfd_create.patch
-
-# 11.0.8
-Patch27: 8228407.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1044,7 +1036,6 @@ fi
 pushd %{top_level_dir_name}
 
 # OpenJDK patches
-%patch1 -p1
 %patch2 -p1
 %patch5 -p1
 %patch6 -p1
@@ -1060,10 +1051,7 @@ pushd %{top_level_dir_name}
 %patch20 -p1
 %patch22 -p1
 %patch23 -p1
-%patch24 -p1
-%patch25 -p1
 %patch26 -p1
-%patch27 -p1
 popd # openjdk
 
 %patch1000
@@ -1155,6 +1143,10 @@ bash ../configure \
     --with-version-pre="" \
     --with-version-opt="" \
     --with-vendor-version-string="%{vendor_version_string}" \
+    --with-vendor-name="Boole" \
+    --with-vendor-url="https://openeuler.org/" \
+    --with-vendor-bug-url="https://gitee.com/src-openeuler/openjdk-11/issues/" \
+    --with-vendor-vm-bug-url="https://gitee.com/src-openeuler/openjdk-11/issues/" \
     --with-boot-jdk=/usr/lib/jvm/java-%{buildjdkver}-openjdk \
     --with-debug-level=$debugbuild \
     --with-native-debug-symbols=internal \
@@ -1171,7 +1163,6 @@ bash ../configure \
     --with-num-cores="$NUM_PROC" \
     --disable-javac-server \
     --disable-warnings-as-errors \
-    --with-boot-jdk-jvmargs=-XX:-UsePerfData
 
 # Debug builds don't need same targets as release for
 # build speed-up
@@ -1563,6 +1554,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Sat Jul 18 2020 jvmboy <hedongbo@huawei.com> - 1:11.0.8.10-0
+- Update to 11.0.8+10 (GA)
+
 * Thu Jun 9 2020 jdkboy <guoge1@huawei.com> - 1:11.0.7.10-5
 - Version support fulljavaver.buildver
 - Judge with_systemtap

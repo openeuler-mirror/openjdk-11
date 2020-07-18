@@ -1,18 +1,3 @@
-From d1c89ec547d6d59c56874b458fc49f56e25011b2 Mon Sep 17 00:00:00 2001
-Date: Wed, 19 Feb 2020 17:17:43 +0800
-Subject: [PATCH] 8233073: Make BitMap accessors more memory ordering friendly
-
-Summary: <gc>: <the dependency of 8233061 which resolves try_mark and relocate crash>
-LLT: renaissance
-Bug url: https://bugs.openjdk.java.net/browse/JDK-8233073
----
- src/hotspot/share/c1/c1_Instruction.cpp       |  1 +
- src/hotspot/share/opto/graphKit.cpp           |  1 +
- src/hotspot/share/opto/parse1.cpp             |  1 +
- src/hotspot/share/utilities/bitMap.hpp        | 17 +++++++++++---
- src/hotspot/share/utilities/bitMap.inline.hpp | 34 ++++++++++++++++++++++-----
- 5 files changed, 45 insertions(+), 9 deletions(-)
-
 diff --git a/src/hotspot/share/c1/c1_Instruction.cpp b/src/hotspot/share/c1/c1_Instruction.cpp
 index ee3be899a..62d8b48bc 100644
 --- a/src/hotspot/share/c1/c1_Instruction.cpp
@@ -26,7 +11,7 @@ index ee3be899a..62d8b48bc 100644
  
  // Implementation of Instruction
 diff --git a/src/hotspot/share/opto/graphKit.cpp b/src/hotspot/share/opto/graphKit.cpp
-index 2ceb3a6ae..981d6b860 100644
+index 852b763c1..31b8ffa21 100644
 --- a/src/hotspot/share/opto/graphKit.cpp
 +++ b/src/hotspot/share/opto/graphKit.cpp
 @@ -43,6 +43,7 @@
@@ -38,7 +23,7 @@ index 2ceb3a6ae..981d6b860 100644
  //----------------------------GraphKit-----------------------------------------
  // Main utility constructor.
 diff --git a/src/hotspot/share/opto/parse1.cpp b/src/hotspot/share/opto/parse1.cpp
-index a6408b493..0b30303a3 100644
+index 177663653..eae7673f9 100644
 --- a/src/hotspot/share/opto/parse1.cpp
 +++ b/src/hotspot/share/opto/parse1.cpp
 @@ -41,6 +41,7 @@
@@ -50,7 +35,7 @@ index a6408b493..0b30303a3 100644
  
  // Static array so we can figure out which bytecodes stop us from compiling
 diff --git a/src/hotspot/share/utilities/bitMap.hpp b/src/hotspot/share/utilities/bitMap.hpp
-index 656e11fb7..4d6749f5b 100644
+index c671535c9..e26f34687 100644
 --- a/src/hotspot/share/utilities/bitMap.hpp
 +++ b/src/hotspot/share/utilities/bitMap.hpp
 @@ -26,6 +26,7 @@
@@ -59,9 +44,9 @@ index 656e11fb7..4d6749f5b 100644
  #include "memory/allocation.hpp"
 +#include "runtime/atomic.hpp"
  #include "utilities/align.hpp"
+ #include "utilities/globalDefinitions.hpp"
  
- // Forward decl;
-@@ -94,6 +95,8 @@ class BitMap {
+@@ -95,6 +96,8 @@ class BitMap {
    void set_word  (idx_t word)            { set_word(word, ~(bm_word_t)0); }
    void clear_word(idx_t word)            { _map[word] = 0; }
  
@@ -70,7 +55,7 @@ index 656e11fb7..4d6749f5b 100644
    // Utilities for ranges of bits.  Ranges are half-open [beg, end).
  
    // Ranges within a single word.
-@@ -193,6 +196,9 @@ class BitMap {
+@@ -194,6 +197,9 @@ class BitMap {
      return (*word_addr(index) & bit_mask(index)) != 0;
    }
  
@@ -80,7 +65,7 @@ index 656e11fb7..4d6749f5b 100644
    // Align bit index up or down to the next bitmap word boundary, or check
    // alignment.
    static idx_t word_align_up(idx_t bit) {
-@@ -209,9 +215,14 @@ class BitMap {
+@@ -210,9 +216,14 @@ class BitMap {
    inline void set_bit(idx_t bit);
    inline void clear_bit(idx_t bit);
  
@@ -175,6 +160,3 @@ index b10726d18..7a7e2ad43 100644
      if (cur_val == old_val) {
        return true;      // Success.
      }
--- 
-2.12.3
-
