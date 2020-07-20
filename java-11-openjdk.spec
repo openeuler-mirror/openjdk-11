@@ -131,10 +131,15 @@
 %global top_level_dir_name   %{origin}
 %global minorver        0
 %global buildver        10
+
+%global project		jdk-updates
+%global repo		jdk11u
+%global revision	jdk-11.0.8-ga
+%global full_revision %{project}-%{repo}-%{revision}
 # priority must be 7 digits in total
 # setting to 1, so debug ones can have 0
 %global priority        00000%{minorver}1
-%global fulljavaver     %{majorver}.%{minorver}.%{securityver}
+%global newjavaver     %{majorver}.%{minorver}.%{securityver}
 
 %global javaver         %{majorver}
 
@@ -729,8 +734,8 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 }
 
 Name:    java-%{javaver}-%{origin}
-Version: %{fulljavaver}.%{buildver}
-Release: 1
+Version: %{newjavaver}.%{buildver}
+Release: 2
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -763,7 +768,7 @@ License:  ASL 1.1 and ASL 2.0 and BSD and BSD with advertising and GPL+ and GPLv
 URL:      http://openjdk.java.net/
 
 
-Source0: openjdk-%{fulljavaver}-ga.tar.xz
+Source0: %{full_revision}.tar.xz
 
 # Use 'icedtea_sync.sh' to update the following
 # They are based on code contained in the IcedTea project (3.x).
@@ -810,7 +815,7 @@ Patch26: ZGC-aarch64-fix-system-call-number-of-memfd_create.patch
 Patch27: ZGC-aarch64-fix-not-using-load-store-Pre-index.patch
 Patch28: address-s-offset-may-exceed-the-limit-of-ldrw-instru.patch
 Patch29: ZGC-reuse-entries-of-ResolvedMethodTable.patch
-
+Patch30: fast-serializer-jdk11.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -843,7 +848,7 @@ BuildRequires: zip
 BuildRequires: unzip
 BuildRequires: javapackages-filesystem
 BuildRequires: java-%{buildjdkver}-openjdk-devel
-BuildRequires: tzdata-java >= 2019c
+BuildRequires: tzdata-java >= 2020a
 # Earlier versions have a bug in tree vectorization on PPC
 BuildRequires: gcc >= 4.8.3-8
 # Build requirements for SunEC system NSS support
@@ -1059,6 +1064,7 @@ pushd %{top_level_dir_name}
 %patch27 -p1
 %patch28 -p1
 %patch29 -p1
+%patch30 -p1
 popd # openjdk
 
 %patch1000
@@ -1352,7 +1358,7 @@ if ! echo $suffix | grep -q "debug" ; then
   # Install Javadoc documentation
   install -d -m 755 $RPM_BUILD_ROOT%{_javadocdir}
   cp -a %{buildoutputdir -- $suffix}/images/docs $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}
-  cp -a %{buildoutputdir -- $suffix}/bundles/jdk-%{fulljavaver}+%{buildver}-docs.zip $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}.zip
+  cp -a %{buildoutputdir -- $suffix}/bundles/jdk-%{newjavaver}+%{buildver}-docs.zip $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}.zip
 fi
 
 # Install icons and menu entries
@@ -1561,6 +1567,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Mon Jul 20 2020 jdkboy <guoge1@huawei.com> - 1:11.0.8.10-2
+- add fast-serializer-jdk11.patch
+
 * Mon Jul 20 2020 noah <hedongbo@huawei.com> - 1:11.0.8.10-1
 - add ZGC-aarch64-fix-not-using-load-store-Pre-index.patch
 - add address-s-offset-may-exceed-the-limit-of-ldrw-instru.patch
