@@ -730,7 +730,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{fulljavaver}.%{buildver}
-Release: 0
+Release: 1
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -807,6 +807,10 @@ Patch20: 8209894-ZGC-Cap-number-of-GC-workers-based-on-heap-s.patch
 Patch22: 8233506-ZGC-the-load-for-Reference.get-can-be-conver.patch
 Patch23: add-missing-inline.patch
 Patch26: ZGC-aarch64-fix-system-call-number-of-memfd_create.patch
+Patch27: ZGC-aarch64-fix-not-using-load-store-Pre-index.patch
+Patch28: address-s-offset-may-exceed-the-limit-of-ldrw-instru.patch
+Patch29: ZGC-reuse-entries-of-ResolvedMethodTable.patch
+
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1052,6 +1056,9 @@ pushd %{top_level_dir_name}
 %patch22 -p1
 %patch23 -p1
 %patch26 -p1
+%patch27 -p1
+%patch28 -p1
+%patch29 -p1
 popd # openjdk
 
 %patch1000
@@ -1554,6 +1561,11 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Mon Jul 20 2020 noah <hedongbo@huawei.com> - 1:11.0.8.10-1
+- add ZGC-aarch64-fix-not-using-load-store-Pre-index.patch
+- add address-s-offset-may-exceed-the-limit-of-ldrw-instru.patch
+- add ZGC-reuse-entries-of-ResolvedMethodTable.patch
+
 * Sat Jul 18 2020 jvmboy <hedongbo@huawei.com> - 1:11.0.8.10-0
 - Update to 11.0.8+10 (GA)
 
@@ -1563,7 +1575,7 @@ require "copy_jdk_configs.lua"
 - 8228407: JVM crashes with shared archive file mismatch
 - Remove javadoc-slowdebug
 
-* Thu May 25 2020 Noah <hedongbo@huawei.com> - 1:11.0.7.10-4
+* Thu May 25 2020 noah <hedongbo@huawei.com> - 1:11.0.7.10-4
 - Support nss, systemtap and desktop
 
 * Thu May 21 2020 jdkboy <guoge1@huawei.com> - 1:11.0.7.10-3
@@ -1572,5 +1584,5 @@ require "copy_jdk_configs.lua"
 * Tue Apr 28 2020 jdkboy <guoge1@huawei.com> - 1:11.0.6.10-2
 - Adjust some patches
 
-* Sun Apr 26 2020 Noah <hedongbo@huawei.com> - 1:11.0.6.10-1
+* Sun Apr 26 2020 noah <hedongbo@huawei.com> - 1:11.0.6.10-1
 - Initial build from OpenJDK 11.0.6
