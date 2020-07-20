@@ -1,0 +1,31 @@
+From c98fac94c7ce8826dec848d38723eebb192600f1 Mon Sep 17 00:00:00 2001
+Date: Tue, 21 Apr 2020 15:54:35 +0800
+Subject: [PATCH] address's offset may exceed the limit of ldrw instruction in
+ stack2reg
+
+Summary: <c1>: <for 32-bit variant ldr, imm12 field is from 0 to 16380>
+LLT: test/hotspot/jtreg/runtime/handshake/HandshakeWalkSuspendExitTest.java
+Bug url: NA
+d31f3a48
+---
+ src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp
+index cf3ce0a..82abda9 100644
+--- a/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp
++++ b/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp
+@@ -864,7 +864,9 @@ void LIR_Assembler::stack2reg(LIR_Opr src, LIR_Opr dest, BasicType type) {
+     } else if (type == T_METADATA || type == T_ADDRESS) {
+       __ ldr(dest->as_register(), frame_map()->address_for_slot(src->single_stack_ix()));
+     } else {
+-      __ ldrw(dest->as_register(), frame_map()->address_for_slot(src->single_stack_ix()));
++      Address src_addr = frame_map()->address_for_slot(src->single_stack_ix());
++      Address data_addr = __ form_address(rscratch1, sp, src_addr.offset(), 2);
++      __ ldrw(dest->as_register(), data_addr);
+     }
+ 
+   } else if (dest->is_double_cpu()) {
+-- 
+1.8.3.1
+
