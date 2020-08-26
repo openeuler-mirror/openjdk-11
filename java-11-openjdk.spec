@@ -735,7 +735,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 2
+Release: 3
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -816,6 +816,8 @@ Patch27: ZGC-aarch64-fix-not-using-load-store-Pre-index.patch
 Patch28: address-s-offset-may-exceed-the-limit-of-ldrw-instru.patch
 Patch29: ZGC-reuse-entries-of-ResolvedMethodTable.patch
 Patch30: fast-serializer-jdk11.patch
+Patch31: fix-jck-failure-on-FastSerializer.patch
+Patch32: 8240360-NativeLibraryEvent-has-wrong-library-name-on-linux.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1065,6 +1067,8 @@ pushd %{top_level_dir_name}
 %patch28 -p1
 %patch29 -p1
 %patch30 -p1
+%patch31 -p1
+%patch32 -p1
 popd # openjdk
 
 %patch1000
@@ -1567,6 +1571,10 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Tue Aug 25 2020 noah <hedongbo@huawei.com> - 1:11.0.8.10-3
+- add fix-jck-failure-on-FastSerializer.patch
+- add 8240360-NativeLibraryEvent-has-wrong-library-name-on-linux.patch
+
 * Mon Jul 20 2020 jdkboy <guoge1@huawei.com> - 1:11.0.8.10-2
 - add fast-serializer-jdk11.patch
 
