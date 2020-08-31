@@ -1,0 +1,4311 @@
+diff --git a/src/hotspot/os/bsd/os_bsd.cpp b/src/hotspot/os/bsd/os_bsd.cpp
+index e31b52935..b2cf2cde8 100644
+--- a/src/hotspot/os/bsd/os_bsd.cpp
++++ b/src/hotspot/os/bsd/os_bsd.cpp
+@@ -2079,6 +2079,10 @@ size_t os::numa_get_leaf_groups(int *ids, size_t size) {
+   return 0;
+ }
+ 
++int os::numa_get_group_id_for_address(const void* address) {
++  return 0;
++}
++
+ bool os::get_page_info(char *start, page_info* info) {
+   return false;
+ }
+diff --git a/src/hotspot/os/linux/os_linux.cpp b/src/hotspot/os/linux/os_linux.cpp
+index 6ee57c1f8..df637c88c 100644
+--- a/src/hotspot/os/linux/os_linux.cpp
++++ b/src/hotspot/os/linux/os_linux.cpp
+@@ -2989,6 +2989,19 @@ int os::numa_get_group_id() {
+   return 0;
+ }
+ 
++int os::numa_get_group_id_for_address(const void* address) {
++  void** pages = const_cast<void**>(&address);
++  int id = -1;
++
++  if (os::Linux::numa_move_pages(0, 1, pages, NULL, &id, 0) == -1) {
++    return -1;
++  }
++  if (id < 0) {
++    return -1;
++  }
++  return id;
++}
++
+ int os::Linux::get_existing_num_nodes() {
+   int node;
+   int highest_node_number = Linux::numa_max_node();
+@@ -3115,11 +3128,17 @@ bool os::Linux::libnuma_init() {
+                                        libnuma_dlsym(handle, "numa_distance")));
+       set_numa_get_membind(CAST_TO_FN_PTR(numa_get_membind_func_t,
+                                           libnuma_v2_dlsym(handle, "numa_get_membind")));
++      set_numa_get_interleave_mask(CAST_TO_FN_PTR(numa_get_interleave_mask_func_t,
++                                                  libnuma_v2_dlsym(handle, "numa_get_interleave_mask")));
++      set_numa_move_pages(CAST_TO_FN_PTR(numa_move_pages_func_t,
++                                         libnuma_dlsym(handle, "numa_move_pages")));
+ 
+       if (numa_available() != -1) {
+         set_numa_all_nodes((unsigned long*)libnuma_dlsym(handle, "numa_all_nodes"));
+         set_numa_all_nodes_ptr((struct bitmask **)libnuma_dlsym(handle, "numa_all_nodes_ptr"));
+         set_numa_nodes_ptr((struct bitmask **)libnuma_dlsym(handle, "numa_nodes_ptr"));
++        set_numa_interleave_bitmask(_numa_get_interleave_mask());
++        set_numa_membind_bitmask(_numa_get_membind());
+         // Create an index -> node mapping, since nodes are not always consecutive
+         _nindex_to_node = new (ResourceObj::C_HEAP, mtInternal) GrowableArray<int>(0, true);
+         rebuild_nindex_to_node_map();
+@@ -3246,9 +3265,14 @@ os::Linux::numa_set_bind_policy_func_t os::Linux::_numa_set_bind_policy;
+ os::Linux::numa_bitmask_isbitset_func_t os::Linux::_numa_bitmask_isbitset;
+ os::Linux::numa_distance_func_t os::Linux::_numa_distance;
+ os::Linux::numa_get_membind_func_t os::Linux::_numa_get_membind;
++os::Linux::numa_get_interleave_mask_func_t os::Linux::_numa_get_interleave_mask;
++os::Linux::numa_move_pages_func_t os::Linux::_numa_move_pages;
++os::Linux::NumaAllocationPolicy os::Linux::_current_numa_policy;
+ unsigned long* os::Linux::_numa_all_nodes;
+ struct bitmask* os::Linux::_numa_all_nodes_ptr;
+ struct bitmask* os::Linux::_numa_nodes_ptr;
++struct bitmask* os::Linux::_numa_interleave_bitmask;
++struct bitmask* os::Linux::_numa_membind_bitmask;
+ 
+ bool os::pd_uncommit_memory(char* addr, size_t size) {
+   uintptr_t res = (uintptr_t) ::mmap(addr, size, PROT_NONE,
+@@ -5166,6 +5190,75 @@ void os::pd_init_container_support() {
+   OSContainer::init();
+ }
+ 
++void os::Linux::numa_init() {
++
++  // Java can be invoked as
++  // 1. Without numactl and heap will be allocated/configured on all nodes as
++  //    per the system policy.
++  // 2. With numactl --interleave:
++  //      Use numa_get_interleave_mask(v2) API to get nodes bitmask. The same
++  //      API for membind case bitmask is reset.
++  //      Interleave is only hint and Kernel can fallback to other nodes if
++  //      no memory is available on the target nodes.
++  // 3. With numactl --membind:
++  //      Use numa_get_membind(v2) API to get nodes bitmask. The same API for
++  //      interleave case returns bitmask of all nodes.
++  // numa_all_nodes_ptr holds bitmask of all nodes.
++  // numa_get_interleave_mask(v2) and numa_get_membind(v2) APIs returns correct
++  // bitmask when externally configured to run on all or fewer nodes.
++
++  if (!Linux::libnuma_init()) {
++    UseNUMA = false;
++  } else {
++    if ((Linux::numa_max_node() < 1) || Linux::isbound_to_single_node()) {
++      // If there's only one node (they start from 0) or if the process
++      // is bound explicitly to a single node using membind, disable NUMA.
++      UseNUMA = false;
++    } else {
++
++      LogTarget(Info,os) log;
++      LogStream ls(log);
++
++      Linux::set_configured_numa_policy(Linux::identify_numa_policy());
++
++      struct bitmask* bmp = Linux::_numa_membind_bitmask;
++      const char* numa_mode = "membind";
++
++      if (Linux::is_running_in_interleave_mode()) {
++        bmp = Linux::_numa_interleave_bitmask;
++        numa_mode = "interleave";
++      }
++
++      ls.print("UseNUMA is enabled and invoked in '%s' mode."
++               " Heap will be configured using NUMA memory nodes:", numa_mode);
++
++      for (int node = 0; node <= Linux::numa_max_node(); node++) {
++        if (Linux::_numa_bitmask_isbitset(bmp, node)) {
++          ls.print(" %d", node);
++        }
++      }
++      log_info(gc, heap)("UseNUMA enabled for G1");
++    }
++  }
++
++  if (UseParallelGC && UseNUMA && UseLargePages && !can_commit_large_page_memory()) {
++    // With SHM and HugeTLBFS large pages we cannot uncommit a page, so there's no way
++    // we can make the adaptive lgrp chunk resizing work. If the user specified both
++    // UseNUMA and UseLargePages (or UseSHM/UseHugeTLBFS) on the command line - warn
++    // and disable adaptive resizing.
++    if (UseAdaptiveSizePolicy || UseAdaptiveNUMAChunkSizing) {
++      warning("UseNUMA is not fully compatible with SHM/HugeTLBFS large pages, "
++              "disabling adaptive resizing (-XX:-UseAdaptiveSizePolicy -XX:-UseAdaptiveNUMAChunkSizing)");
++      UseAdaptiveSizePolicy = false;
++      UseAdaptiveNUMAChunkSizing = false;
++    }
++  }
++
++  if (!UseNUMA && ForceNUMA) {
++    UseNUMA = true;
++  }
++}
++
+ // this is called _after_ the global arguments have been parsed
+ jint os::init_2(void) {
+ 
+@@ -5209,32 +5302,7 @@ jint os::init_2(void) {
+                Linux::glibc_version(), Linux::libpthread_version());
+ 
+   if (UseNUMA) {
+-    if (!Linux::libnuma_init()) {
+-      UseNUMA = false;
+-    } else {
+-      if ((Linux::numa_max_node() < 1) || Linux::isbound_to_single_node()) {
+-        // If there's only one node (they start from 0) or if the process
+-        // is bound explicitly to a single node using membind, disable NUMA.
+-        UseNUMA = false;
+-      }
+-    }
+-
+-    if (UseParallelGC && UseNUMA && UseLargePages && !can_commit_large_page_memory()) {
+-      // With SHM and HugeTLBFS large pages we cannot uncommit a page, so there's no way
+-      // we can make the adaptive lgrp chunk resizing work. If the user specified both
+-      // UseNUMA and UseLargePages (or UseSHM/UseHugeTLBFS) on the command line - warn
+-      // and disable adaptive resizing.
+-      if (UseAdaptiveSizePolicy || UseAdaptiveNUMAChunkSizing) {
+-        warning("UseNUMA is not fully compatible with SHM/HugeTLBFS large pages, "
+-                "disabling adaptive resizing (-XX:-UseAdaptiveSizePolicy -XX:-UseAdaptiveNUMAChunkSizing)");
+-        UseAdaptiveSizePolicy = false;
+-        UseAdaptiveNUMAChunkSizing = false;
+-      }
+-    }
+-
+-    if (!UseNUMA && ForceNUMA) {
+-      UseNUMA = true;
+-    }
++    Linux::numa_init();
+   }
+ 
+   if (MaxFDLimit) {
+diff --git a/src/hotspot/os/linux/os_linux.hpp b/src/hotspot/os/linux/os_linux.hpp
+index 721a3b649..3c42c23e1 100644
+--- a/src/hotspot/os/linux/os_linux.hpp
++++ b/src/hotspot/os/linux/os_linux.hpp
+@@ -229,6 +229,7 @@ class Linux {
+   // none present
+ 
+  private:
++  static void numa_init();
+   static void expand_stack_to(address bottom);
+ 
+   typedef int (*sched_getcpu_func_t)(void);
+@@ -240,6 +241,8 @@ class Linux {
+   typedef void (*numa_interleave_memory_func_t)(void *start, size_t size, unsigned long *nodemask);
+   typedef void (*numa_interleave_memory_v2_func_t)(void *start, size_t size, struct bitmask* mask);
+   typedef struct bitmask* (*numa_get_membind_func_t)(void);
++  typedef struct bitmask* (*numa_get_interleave_mask_func_t)(void);
++  typedef long (*numa_move_pages_func_t)(int pid, unsigned long count, void **pages, const int *nodes, int *status, int flags);
+ 
+   typedef void (*numa_set_bind_policy_func_t)(int policy);
+   typedef int (*numa_bitmask_isbitset_func_t)(struct bitmask *bmp, unsigned int n);
+@@ -257,9 +260,13 @@ class Linux {
+   static numa_bitmask_isbitset_func_t _numa_bitmask_isbitset;
+   static numa_distance_func_t _numa_distance;
+   static numa_get_membind_func_t _numa_get_membind;
++  static numa_get_interleave_mask_func_t _numa_get_interleave_mask;
++  static numa_move_pages_func_t _numa_move_pages;
+   static unsigned long* _numa_all_nodes;
+   static struct bitmask* _numa_all_nodes_ptr;
+   static struct bitmask* _numa_nodes_ptr;
++  static struct bitmask* _numa_interleave_bitmask;
++  static struct bitmask* _numa_membind_bitmask;
+ 
+   static void set_sched_getcpu(sched_getcpu_func_t func) { _sched_getcpu = func; }
+   static void set_numa_node_to_cpus(numa_node_to_cpus_func_t func) { _numa_node_to_cpus = func; }
+@@ -273,10 +280,22 @@ class Linux {
+   static void set_numa_bitmask_isbitset(numa_bitmask_isbitset_func_t func) { _numa_bitmask_isbitset = func; }
+   static void set_numa_distance(numa_distance_func_t func) { _numa_distance = func; }
+   static void set_numa_get_membind(numa_get_membind_func_t func) { _numa_get_membind = func; }
++  static void set_numa_get_interleave_mask(numa_get_interleave_mask_func_t func) { _numa_get_interleave_mask = func; }
++  static void set_numa_move_pages(numa_move_pages_func_t func) { _numa_move_pages = func; }
+   static void set_numa_all_nodes(unsigned long* ptr) { _numa_all_nodes = ptr; }
+   static void set_numa_all_nodes_ptr(struct bitmask **ptr) { _numa_all_nodes_ptr = (ptr == NULL ? NULL : *ptr); }
+   static void set_numa_nodes_ptr(struct bitmask **ptr) { _numa_nodes_ptr = (ptr == NULL ? NULL : *ptr); }
++  static void set_numa_interleave_bitmask(struct bitmask* ptr)     { _numa_interleave_bitmask = ptr ;   }
++  static void set_numa_membind_bitmask(struct bitmask* ptr)        { _numa_membind_bitmask = ptr ;      }
+   static int sched_getcpu_syscall(void);
++
++  enum NumaAllocationPolicy{
++    NotInitialized,
++    Membind,
++    Interleave
++  };
++  static NumaAllocationPolicy _current_numa_policy;
++
+  public:
+   static int sched_getcpu()  { return _sched_getcpu != NULL ? _sched_getcpu() : -1; }
+   static int numa_node_to_cpus(int node, unsigned long *buffer, int bufferlen) {
+@@ -290,6 +309,24 @@ class Linux {
+   static int numa_tonode_memory(void *start, size_t size, int node) {
+     return _numa_tonode_memory != NULL ? _numa_tonode_memory(start, size, node) : -1;
+   }
++
++  static bool is_running_in_interleave_mode() {
++    return _current_numa_policy == Interleave;
++  }
++
++  static void set_configured_numa_policy(NumaAllocationPolicy numa_policy) {
++    _current_numa_policy = numa_policy;
++  }
++
++  static NumaAllocationPolicy identify_numa_policy() {
++    for (int node = 0; node <= Linux::numa_max_node(); node++) {
++      if (Linux::_numa_bitmask_isbitset(Linux::_numa_interleave_bitmask, node)) {
++        return Interleave;
++      }
++    }
++    return Membind;
++  }
++
+   static void numa_interleave_memory(void *start, size_t size) {
+     // Use v2 api if available
+     if (_numa_interleave_memory_v2 != NULL && _numa_all_nodes_ptr != NULL) {
+@@ -306,6 +343,9 @@ class Linux {
+   static int numa_distance(int node1, int node2) {
+     return _numa_distance != NULL ? _numa_distance(node1, node2) : -1;
+   }
++  static long numa_move_pages(int pid, unsigned long count, void **pages, const int *nodes, int *status, int flags) {
++    return _numa_move_pages != NULL ? _numa_move_pages(pid, count, pages, nodes, status, flags) : -1;
++  }
+   static int get_node_by_cpu(int cpu_id);
+   static int get_existing_num_nodes();
+   // Check if numa node is configured (non-zero memory node).
+diff --git a/src/hotspot/os/solaris/os_solaris.cpp b/src/hotspot/os/solaris/os_solaris.cpp
+index 2266eedaa..c907ec9e4 100644
+--- a/src/hotspot/os/solaris/os_solaris.cpp
++++ b/src/hotspot/os/solaris/os_solaris.cpp
+@@ -2441,6 +2441,10 @@ int os::numa_get_group_id() {
+   return ids[os::random() % r];
+ }
+ 
++int os::numa_get_group_id_for_address(const void* address) {
++  return 0;
++}
++
+ // Request information about the page.
+ bool os::get_page_info(char *start, page_info* info) {
+   const uint_t info_types[] = { MEMINFO_VLGRP, MEMINFO_VPAGESIZE };
+diff --git a/src/hotspot/os/windows/os_windows.cpp b/src/hotspot/os/windows/os_windows.cpp
+index 7d82e09bc..035d77854 100644
+--- a/src/hotspot/os/windows/os_windows.cpp
++++ b/src/hotspot/os/windows/os_windows.cpp
+@@ -3442,6 +3442,10 @@ size_t os::numa_get_leaf_groups(int *ids, size_t size) {
+   }
+ }
+ 
++int os::numa_get_group_id_for_address(const void* address) {
++  return 0;
++}
++
+ bool os::get_page_info(char *start, page_info* info) {
+   return false;
+ }
+diff --git a/src/hotspot/share/gc/g1/g1AllocRegion.cpp b/src/hotspot/share/gc/g1/g1AllocRegion.cpp
+index 174ddcd4e..408b461f9 100644
+--- a/src/hotspot/share/gc/g1/g1AllocRegion.cpp
++++ b/src/hotspot/share/gc/g1/g1AllocRegion.cpp
+@@ -250,15 +250,19 @@ void G1AllocRegion::trace(const char* str, size_t min_word_size, size_t desired_
+ #endif // PRODUCT
+ 
+ G1AllocRegion::G1AllocRegion(const char* name,
+-                             bool bot_updates)
+-  : _name(name), _bot_updates(bot_updates),
+-    _alloc_region(NULL), _count(0),
+-    _used_bytes_before(0) { }
+-
++                             bool bot_updates,
++                             uint node_index)
++  : _alloc_region(NULL),
++    _count(0),
++    _used_bytes_before(0),
++    _bot_updates(bot_updates),
++    _name(name),
++    _node_index(node_index)
++ { }
+ 
+ HeapRegion* MutatorAllocRegion::allocate_new_region(size_t word_size,
+                                                     bool force) {
+-  return _g1h->new_mutator_alloc_region(word_size, force);
++  return _g1h->new_mutator_alloc_region(word_size, force, _node_index);
+ }
+ 
+ void MutatorAllocRegion::retire_region(HeapRegion* alloc_region,
+@@ -345,7 +349,7 @@ HeapRegion* MutatorAllocRegion::release() {
+ HeapRegion* G1GCAllocRegion::allocate_new_region(size_t word_size,
+                                                  bool force) {
+   assert(!force, "not supported for GC alloc regions");
+-  return _g1h->new_gc_alloc_region(word_size, _purpose);
++  return _g1h->new_gc_alloc_region(word_size, _purpose, _node_index);
+ }
+ 
+ void G1GCAllocRegion::retire_region(HeapRegion* alloc_region,
+diff --git a/src/hotspot/share/gc/g1/g1AllocRegion.hpp b/src/hotspot/share/gc/g1/g1AllocRegion.hpp
+index 593612975..28b3e2cda 100644
+--- a/src/hotspot/share/gc/g1/g1AllocRegion.hpp
++++ b/src/hotspot/share/gc/g1/g1AllocRegion.hpp
+@@ -28,6 +28,7 @@
+ #include "gc/g1/heapRegion.hpp"
+ #include "gc/g1/g1EvacStats.hpp"
+ #include "gc/g1/g1InCSetState.hpp"
++#include "gc/g1/g1NUMA.hpp"
+ 
+ class G1CollectedHeap;
+ 
+@@ -91,6 +92,9 @@ private:
+   HeapWord* new_alloc_region_and_allocate(size_t word_size, bool force);
+ 
+ protected:
++  // The memory node index this allocation region belongs to.
++  uint _node_index;
++
+   // Reset the alloc region to point a the dummy region.
+   void reset_alloc_region();
+ 
+@@ -131,7 +135,7 @@ protected:
+   virtual void retire_region(HeapRegion* alloc_region,
+                              size_t allocated_bytes) = 0;
+ 
+-  G1AllocRegion(const char* name, bool bot_updates);
++  G1AllocRegion(const char* name, bool bot_updates, uint node_index);
+ 
+ public:
+   static void setup(G1CollectedHeap* g1h, HeapRegion* dummy_region);
+@@ -220,8 +224,8 @@ protected:
+   virtual void retire_region(HeapRegion* alloc_region, size_t allocated_bytes);
+   virtual size_t retire(bool fill_up);
+ public:
+-  MutatorAllocRegion()
+-    : G1AllocRegion("Mutator Alloc Region", false /* bot_updates */),
++  MutatorAllocRegion(uint node_index)
++    : G1AllocRegion("Mutator Alloc Region", false /* bot_updates */, node_index),
+       _wasted_bytes(0),
+       _retained_alloc_region(NULL) { }
+ 
+@@ -256,16 +260,17 @@ protected:
+ 
+   virtual size_t retire(bool fill_up);
+ 
+-  G1GCAllocRegion(const char* name, bool bot_updates, G1EvacStats* stats, InCSetState::in_cset_state_t purpose)
+-  : G1AllocRegion(name, bot_updates), _stats(stats), _purpose(purpose) {
++  G1GCAllocRegion(const char* name, bool bot_updates, G1EvacStats* stats,
++                  InCSetState::in_cset_state_t purpose, uint node_index = G1NUMA::AnyNodeIndex)
++  : G1AllocRegion(name, bot_updates, node_index), _stats(stats), _purpose(purpose) {
+     assert(stats != NULL, "Must pass non-NULL PLAB statistics");
+   }
+ };
+ 
+ class SurvivorGCAllocRegion : public G1GCAllocRegion {
+ public:
+-  SurvivorGCAllocRegion(G1EvacStats* stats)
+-  : G1GCAllocRegion("Survivor GC Alloc Region", false /* bot_updates */, stats, InCSetState::Young) { }
++  SurvivorGCAllocRegion(G1EvacStats* stats, uint node_index)
++  : G1GCAllocRegion("Survivor GC Alloc Region", false /* bot_updates */, stats, InCSetState::Young, node_index) { }
+ };
+ 
+ class OldGCAllocRegion : public G1GCAllocRegion {
+diff --git a/src/hotspot/share/gc/g1/g1Allocator.cpp b/src/hotspot/share/gc/g1/g1Allocator.cpp
+index 15f20808e..ae1e6ab92 100644
+--- a/src/hotspot/share/gc/g1/g1Allocator.cpp
++++ b/src/hotspot/share/gc/g1/g1Allocator.cpp
+@@ -27,6 +27,7 @@
+ #include "gc/g1/g1AllocRegion.inline.hpp"
+ #include "gc/g1/g1EvacStats.inline.hpp"
+ #include "gc/g1/g1CollectedHeap.inline.hpp"
++#include "gc/g1/g1NUMA.hpp"
+ #include "gc/g1/g1Policy.hpp"
+ #include "gc/g1/heapRegion.inline.hpp"
+ #include "gc/g1/heapRegionSet.inline.hpp"
+@@ -35,21 +36,53 @@
+ 
+ G1Allocator::G1Allocator(G1CollectedHeap* heap) :
+   _g1h(heap),
++  _numa(heap->numa()),
+   _survivor_is_full(false),
+   _old_is_full(false),
+-  _retained_old_gc_alloc_region(NULL),
+-  _survivor_gc_alloc_region(heap->alloc_buffer_stats(InCSetState::Young)),
+-  _old_gc_alloc_region(heap->alloc_buffer_stats(InCSetState::Old)) {
++  _num_alloc_regions(_numa->num_active_nodes()),
++  _mutator_alloc_regions(NULL),
++  _survivor_gc_alloc_regions(NULL),
++  _old_gc_alloc_region(heap->alloc_buffer_stats(InCSetState::Old)),
++  _retained_old_gc_alloc_region(NULL) {
++
++  _mutator_alloc_regions = NEW_C_HEAP_ARRAY(MutatorAllocRegion, _num_alloc_regions, mtGC);
++  _survivor_gc_alloc_regions = NEW_C_HEAP_ARRAY(SurvivorGCAllocRegion, _num_alloc_regions, mtGC);
++  G1EvacStats* stat = heap->alloc_buffer_stats(InCSetState::Young);
++
++  for (uint i = 0; i < _num_alloc_regions; i++) {
++    ::new(_mutator_alloc_regions + i) MutatorAllocRegion(i);
++    ::new(_survivor_gc_alloc_regions + i) SurvivorGCAllocRegion(stat, i);
++  }
++}
++
++G1Allocator::~G1Allocator() {
++  for (uint i = 0; i < _num_alloc_regions; i++) {
++    _mutator_alloc_regions[i].~MutatorAllocRegion();
++    _survivor_gc_alloc_regions[i].~SurvivorGCAllocRegion();
++  }
++  FREE_C_HEAP_ARRAY(MutatorAllocRegion, _mutator_alloc_regions);
++  FREE_C_HEAP_ARRAY(SurvivorGCAllocRegion, _survivor_gc_alloc_regions);
+ }
+ 
+-void G1Allocator::init_mutator_alloc_region() {
+-  assert(_mutator_alloc_region.get() == NULL, "pre-condition");
+-  _mutator_alloc_region.init();
++#ifdef ASSERT
++bool G1Allocator::has_mutator_alloc_region() {
++  uint node_index = current_node_index();
++  return mutator_alloc_region(node_index)->get() != NULL;
+ }
++#endif
+ 
+-void G1Allocator::release_mutator_alloc_region() {
+-  _mutator_alloc_region.release();
+-  assert(_mutator_alloc_region.get() == NULL, "post-condition");
++void G1Allocator::init_mutator_alloc_regions() {
++  for (uint i = 0; i < _num_alloc_regions; i++) {
++    assert(mutator_alloc_region(i)->get() == NULL, "pre-condition");
++    mutator_alloc_region(i)->init();
++  }
++}
++
++void G1Allocator::release_mutator_alloc_regions() {
++  for (uint i = 0; i < _num_alloc_regions; i++) {
++    mutator_alloc_region(i)->release();
++    assert(mutator_alloc_region(i)->get() == NULL, "post-condition");
++  }
+ }
+ 
+ bool G1Allocator::is_retained_old_region(HeapRegion* hr) {
+@@ -97,7 +130,10 @@ void G1Allocator::init_gc_alloc_regions(EvacuationInfo& evacuation_info) {
+   _survivor_is_full = false;
+   _old_is_full = false;
+ 
+-  _survivor_gc_alloc_region.init();
++  for (uint i = 0; i < _num_alloc_regions; i++) {
++    survivor_gc_alloc_region(i)->init();
++  }
++
+   _old_gc_alloc_region.init();
+   reuse_retained_old_region(evacuation_info,
+                             &_old_gc_alloc_region,
+@@ -105,9 +141,14 @@ void G1Allocator::init_gc_alloc_regions(EvacuationInfo& evacuation_info) {
+ }
+ 
+ void G1Allocator::release_gc_alloc_regions(EvacuationInfo& evacuation_info) {
+-  evacuation_info.set_allocation_regions(survivor_gc_alloc_region()->count() +
++  uint survivor_region_count = 0;
++  for (uint node_index = 0; node_index < _num_alloc_regions; node_index++) {
++    survivor_region_count += survivor_gc_alloc_region(node_index)->count();
++    survivor_gc_alloc_region(node_index)->release();
++  }
++  evacuation_info.set_allocation_regions(survivor_region_count +
+                                          old_gc_alloc_region()->count());
+-  survivor_gc_alloc_region()->release();
++
+   // If we have an old GC alloc region to release, we'll save it in
+   // _retained_old_gc_alloc_region. If we don't
+   // _retained_old_gc_alloc_region will become NULL. This is what we
+@@ -117,7 +158,9 @@ void G1Allocator::release_gc_alloc_regions(EvacuationInfo& evacuation_info) {
+ }
+ 
+ void G1Allocator::abandon_gc_alloc_regions() {
+-  assert(survivor_gc_alloc_region()->get() == NULL, "pre-condition");
++  for (uint i = 0; i < _num_alloc_regions; i++) {
++    assert(survivor_gc_alloc_region(i)->get() == NULL, "pre-condition");
++  }
+   assert(old_gc_alloc_region()->get() == NULL, "pre-condition");
+   _retained_old_gc_alloc_region = NULL;
+ }
+@@ -146,7 +189,8 @@ size_t G1Allocator::unsafe_max_tlab_alloc() {
+   // since we can't allow tlabs to grow big enough to accommodate
+   // humongous objects.
+ 
+-  HeapRegion* hr = mutator_alloc_region()->get();
++  uint node_index = current_node_index();
++  HeapRegion* hr = mutator_alloc_region(node_index)->get();
+   size_t max_tlab = _g1h->max_tlab_size() * wordSize;
+   if (hr == NULL) {
+     return max_tlab;
+@@ -157,14 +201,19 @@ size_t G1Allocator::unsafe_max_tlab_alloc() {
+ 
+ size_t G1Allocator::used_in_alloc_regions() {
+   assert(Heap_lock->owner() != NULL, "Should be owned on this thread's behalf.");
+-  return mutator_alloc_region()->used_in_alloc_regions();
++  size_t used = 0;
++  for (uint i = 0; i < _num_alloc_regions; i++) {
++    used += mutator_alloc_region(i)->used_in_alloc_regions();
++  }
++  return used;
+ }
+ 
+ 
+ HeapWord* G1Allocator::par_allocate_during_gc(InCSetState dest,
+-                                              size_t word_size) {
++                                              size_t word_size,
++                                              uint node_index) {
+   size_t temp = 0;
+-  HeapWord* result = par_allocate_during_gc(dest, word_size, word_size, &temp);
++  HeapWord* result = par_allocate_during_gc(dest, word_size, word_size, &temp, node_index);
+   assert(result == NULL || temp == word_size,
+          "Requested " SIZE_FORMAT " words, but got " SIZE_FORMAT " at " PTR_FORMAT,
+          word_size, temp, p2i(result));
+@@ -174,10 +223,11 @@ HeapWord* G1Allocator::par_allocate_during_gc(InCSetState dest,
+ HeapWord* G1Allocator::par_allocate_during_gc(InCSetState dest,
+                                               size_t min_word_size,
+                                               size_t desired_word_size,
+-                                              size_t* actual_word_size) {
++                                              size_t* actual_word_size,
++                                              uint node_index) {
+   switch (dest.value()) {
+     case InCSetState::Young:
+-      return survivor_attempt_allocation(min_word_size, desired_word_size, actual_word_size);
++      return survivor_attempt_allocation(min_word_size, desired_word_size, actual_word_size, node_index);
+     case InCSetState::Old:
+       return old_attempt_allocation(min_word_size, desired_word_size, actual_word_size);
+     default:
+@@ -188,18 +238,19 @@ HeapWord* G1Allocator::par_allocate_during_gc(InCSetState dest,
+ 
+ HeapWord* G1Allocator::survivor_attempt_allocation(size_t min_word_size,
+                                                    size_t desired_word_size,
+-                                                   size_t* actual_word_size) {
++                                                   size_t* actual_word_size,
++                                                   uint node_index) {
+   assert(!_g1h->is_humongous(desired_word_size),
+          "we should not be seeing humongous-size allocations in this path");
+ 
+-  HeapWord* result = survivor_gc_alloc_region()->attempt_allocation(min_word_size,
+-                                                                    desired_word_size,
+-                                                                    actual_word_size);
++  HeapWord* result = survivor_gc_alloc_region(node_index)->attempt_allocation(min_word_size,
++                                                                              desired_word_size,
++                                                                              actual_word_size);
+   if (result == NULL && !survivor_is_full()) {
+     MutexLockerEx x(FreeList_lock, Mutex::_no_safepoint_check_flag);
+-    result = survivor_gc_alloc_region()->attempt_allocation_locked(min_word_size,
+-                                                                   desired_word_size,
+-                                                                   actual_word_size);
++    result = survivor_gc_alloc_region(node_index)->attempt_allocation_locked(min_word_size,
++                                                                             desired_word_size,
++                                                                             actual_word_size);
+     if (result == NULL) {
+       set_survivor_full();
+     }
+@@ -246,15 +297,25 @@ uint G1PLABAllocator::calc_survivor_alignment_bytes() {
+ G1PLABAllocator::G1PLABAllocator(G1Allocator* allocator) :
+   _g1h(G1CollectedHeap::heap()),
+   _allocator(allocator),
+-  _surviving_alloc_buffer(_g1h->desired_plab_sz(InCSetState::Young)),
+-  _tenured_alloc_buffer(_g1h->desired_plab_sz(InCSetState::Old)),
+   _survivor_alignment_bytes(calc_survivor_alignment_bytes()) {
+-  for (uint state = 0; state < InCSetState::Num; state++) {
++  for (in_cset_state_t state = 0; state < InCSetState::Num; state++) {
+     _direct_allocated[state] = 0;
+-    _alloc_buffers[state] = NULL;
++    uint length = alloc_buffers_length(state);
++    _alloc_buffers[state] = NEW_C_HEAP_ARRAY(PLAB*, length, mtGC);
++    for (uint node_index = 0; node_index < length; node_index++) {
++      _alloc_buffers[state][node_index] = new PLAB(_g1h->desired_plab_sz(state));
++    }
++  }
++}
++
++G1PLABAllocator::~G1PLABAllocator() {
++  for (in_cset_state_t state = 0; state < InCSetState::Num; state++) {
++    uint length = alloc_buffers_length(state);
++    for (uint node_index = 0; node_index < length; node_index++) {
++      delete _alloc_buffers[state][node_index];
++    }
++    FREE_C_HEAP_ARRAY(PLAB*, _alloc_buffers[state]);
+   }
+-  _alloc_buffers[InCSetState::Young] = &_surviving_alloc_buffer;
+-  _alloc_buffers[InCSetState::Old]  = &_tenured_alloc_buffer;
+ }
+ 
+ bool G1PLABAllocator::may_throw_away_buffer(size_t const allocation_word_sz, size_t const buffer_size) const {
+@@ -263,7 +324,8 @@ bool G1PLABAllocator::may_throw_away_buffer(size_t const allocation_word_sz, siz
+ 
+ HeapWord* G1PLABAllocator::allocate_direct_or_new_plab(InCSetState dest,
+                                                        size_t word_sz,
+-                                                       bool* plab_refill_failed) {
++                                                       bool* plab_refill_failed,
++                                                       uint node_index) {
+   size_t plab_word_size = _g1h->desired_plab_sz(dest);
+   size_t required_in_plab = PLAB::size_required_for_allocation(word_sz);
+ 
+@@ -272,14 +334,15 @@ HeapWord* G1PLABAllocator::allocate_direct_or_new_plab(InCSetState dest,
+   if ((required_in_plab <= plab_word_size) &&
+     may_throw_away_buffer(required_in_plab, plab_word_size)) {
+ 
+-    PLAB* alloc_buf = alloc_buffer(dest);
++    PLAB* alloc_buf = alloc_buffer(dest, node_index);
+     alloc_buf->retire();
+ 
+     size_t actual_plab_size = 0;
+     HeapWord* buf = _allocator->par_allocate_during_gc(dest,
+                                                        required_in_plab,
+                                                        plab_word_size,
+-                                                       &actual_plab_size);
++                                                       &actual_plab_size,
++                                                       node_index);
+ 
+     assert(buf == NULL || ((actual_plab_size >= required_in_plab) && (actual_plab_size <= plab_word_size)),
+            "Requested at minimum " SIZE_FORMAT ", desired " SIZE_FORMAT " words, but got " SIZE_FORMAT " at " PTR_FORMAT,
+@@ -298,39 +361,55 @@ HeapWord* G1PLABAllocator::allocate_direct_or_new_plab(InCSetState dest,
+     *plab_refill_failed = true;
+   }
+   // Try direct allocation.
+-  HeapWord* result = _allocator->par_allocate_during_gc(dest, word_sz);
++  HeapWord* result = _allocator->par_allocate_during_gc(dest, word_sz, node_index);
+   if (result != NULL) {
+     _direct_allocated[dest.value()] += word_sz;
+   }
+   return result;
+ }
+ 
+-void G1PLABAllocator::undo_allocation(InCSetState dest, HeapWord* obj, size_t word_sz) {
+-  alloc_buffer(dest)->undo_allocation(obj, word_sz);
++void G1PLABAllocator::undo_allocation(InCSetState dest, HeapWord* obj, size_t word_sz, uint node_index) {
++  alloc_buffer(dest, node_index)->undo_allocation(obj, word_sz);
+ }
+ 
+ void G1PLABAllocator::flush_and_retire_stats() {
+-  for (uint state = 0; state < InCSetState::Num; state++) {
+-    PLAB* const buf = _alloc_buffers[state];
+-    if (buf != NULL) {
+-      G1EvacStats* stats = _g1h->alloc_buffer_stats(state);
+-      buf->flush_and_retire_stats(stats);
+-      stats->add_direct_allocated(_direct_allocated[state]);
+-      _direct_allocated[state] = 0;
++  for (in_cset_state_t state = 0; state < InCSetState::Num; state++) {
++    G1EvacStats* stats = _g1h->alloc_buffer_stats(state);
++    for (uint node_index = 0; node_index < alloc_buffers_length(state); node_index++) {
++      PLAB* const buf = alloc_buffer(state, node_index);
++      if (buf != NULL) {
++        buf->flush_and_retire_stats(stats);
++      }
+     }
++    stats->add_direct_allocated(_direct_allocated[state]);
++    _direct_allocated[state] = 0;
+   }
+ }
+ 
+-void G1PLABAllocator::waste(size_t& wasted, size_t& undo_wasted) {
+-  wasted = 0;
+-  undo_wasted = 0;
+-  for (uint state = 0; state < InCSetState::Num; state++) {
+-    PLAB * const buf = _alloc_buffers[state];
+-    if (buf != NULL) {
+-      wasted += buf->waste();
+-      undo_wasted += buf->undo_waste();
++size_t G1PLABAllocator::waste() const {
++  size_t result = 0;
++  for (in_cset_state_t state = 0; state < InCSetState::Num; state++) {
++    for (uint node_index = 0; node_index < alloc_buffers_length(state); node_index++) {
++      PLAB* const buf = alloc_buffer(state, node_index);
++      if (buf != NULL) {
++        result += buf->waste();
++      }
++    }
++  }
++  return result;
++}
++
++size_t G1PLABAllocator::undo_waste() const {
++  size_t result = 0;
++  for (in_cset_state_t state = 0; state < InCSetState::Num; state++) {
++    for (uint node_index = 0; node_index < alloc_buffers_length(state); node_index++) {
++      PLAB* const buf = alloc_buffer(state, node_index);
++      if (buf != NULL) {
++        result += buf->undo_waste();
++      }
+     }
+   }
++  return result;
+ }
+ 
+ bool G1ArchiveAllocator::_archive_check_enabled = false;
+diff --git a/src/hotspot/share/gc/g1/g1Allocator.hpp b/src/hotspot/share/gc/g1/g1Allocator.hpp
+index 75fa50e55..69a098655 100644
+--- a/src/hotspot/share/gc/g1/g1Allocator.hpp
++++ b/src/hotspot/share/gc/g1/g1Allocator.hpp
+@@ -31,6 +31,7 @@
+ #include "gc/shared/plab.hpp"
+ 
+ class EvacuationInfo;
++class G1NUMA;
+ 
+ // Interface to keep track of which regions G1 is currently allocating into. Provides
+ // some accessors (e.g. allocating into them, or getting their occupancy).
+@@ -40,16 +41,20 @@ class G1Allocator : public CHeapObj<mtGC> {
+ 
+ private:
+   G1CollectedHeap* _g1h;
++  G1NUMA* _numa;
+ 
+   bool _survivor_is_full;
+   bool _old_is_full;
+ 
++  // The number of MutatorAllocRegions used, one per memory node.
++  size_t _num_alloc_regions;
++
+   // Alloc region used to satisfy mutator allocation requests.
+-  MutatorAllocRegion _mutator_alloc_region;
++  MutatorAllocRegion* _mutator_alloc_regions;
+ 
+   // Alloc region used to satisfy allocation requests by the GC for
+   // survivor objects.
+-  SurvivorGCAllocRegion _survivor_gc_alloc_region;
++  SurvivorGCAllocRegion* _survivor_gc_alloc_regions;
+ 
+   // Alloc region used to satisfy allocation requests by the GC for
+   // old objects.
+@@ -68,14 +73,15 @@ private:
+                                  HeapRegion** retained);
+ 
+   // Accessors to the allocation regions.
+-  inline MutatorAllocRegion* mutator_alloc_region();
+-  inline SurvivorGCAllocRegion* survivor_gc_alloc_region();
++  inline MutatorAllocRegion* mutator_alloc_region(uint node_index);
++  inline SurvivorGCAllocRegion* survivor_gc_alloc_region(uint node_index);
+   inline OldGCAllocRegion* old_gc_alloc_region();
+ 
+   // Allocation attempt during GC for a survivor object / PLAB.
+   HeapWord* survivor_attempt_allocation(size_t min_word_size,
+-                                               size_t desired_word_size,
+-                                               size_t* actual_word_size);
++                                        size_t desired_word_size,
++                                        size_t* actual_word_size,
++                                        uint node_index);
+ 
+   // Allocation attempt during GC for an old object / PLAB.
+   HeapWord* old_attempt_allocation(size_t min_word_size,
+@@ -83,14 +89,20 @@ private:
+                                           size_t* actual_word_size);
+ public:
+   G1Allocator(G1CollectedHeap* heap);
++  ~G1Allocator();
++
++  uint num_nodes() { return (uint)_num_alloc_regions; }
++
++  // Node index of current thread.
++  inline uint current_node_index() const;
+ 
+ #ifdef ASSERT
+   // Do we currently have an active mutator region to allocate into?
+-  bool has_mutator_alloc_region() { return mutator_alloc_region()->get() != NULL; }
++  bool has_mutator_alloc_region();
+ #endif
+ 
+-  void init_mutator_alloc_region();
+-  void release_mutator_alloc_region();
++  void init_mutator_alloc_regions();
++  void release_mutator_alloc_regions();
+ 
+   void init_gc_alloc_regions(EvacuationInfo& evacuation_info);
+   void release_gc_alloc_regions(EvacuationInfo& evacuation_info);
+@@ -102,8 +114,8 @@ public:
+   inline HeapWord* attempt_allocation(size_t min_word_size,
+                                       size_t desired_word_size,
+                                       size_t* actual_word_size);
+-  inline HeapWord* attempt_allocation_locked(size_t word_size);
+-  inline HeapWord* attempt_allocation_force(size_t word_size);
++  inline HeapWord* attempt_allocation_locked(size_t word_size, uint &node);
++  inline HeapWord* attempt_allocation_force(size_t word_size, uint node = G1NUMA::AnyNodeIndex);
+ 
+   size_t unsafe_max_tlab_alloc();
+   size_t used_in_alloc_regions();
+@@ -113,12 +125,14 @@ public:
+   // heap, and then allocate a block of the given size. The block
+   // may not be a humongous - it must fit into a single heap region.
+   HeapWord* par_allocate_during_gc(InCSetState dest,
+-                                   size_t word_size);
++                                   size_t word_size,
++                                   uint node_index);
+ 
+   HeapWord* par_allocate_during_gc(InCSetState dest,
+                                    size_t min_word_size,
+                                    size_t desired_word_size,
+-                                   size_t* actual_word_size);
++                                   size_t* actual_word_size,
++                                   uint node_index);
+ };
+ 
+ // Manages the PLABs used during garbage collection. Interface for allocation from PLABs.
+@@ -127,12 +141,12 @@ public:
+ class G1PLABAllocator : public CHeapObj<mtGC> {
+   friend class G1ParScanThreadState;
+ private:
++  typedef InCSetState::in_cset_state_t in_cset_state_t;
++
+   G1CollectedHeap* _g1h;
+   G1Allocator* _allocator;
+ 
+-  PLAB  _surviving_alloc_buffer;
+-  PLAB  _tenured_alloc_buffer;
+-  PLAB* _alloc_buffers[InCSetState::Num];
++  PLAB** _alloc_buffers[InCSetState::Num];
+ 
+   // The survivor alignment in effect in bytes.
+   // == 0 : don't align survivors
+@@ -145,7 +159,13 @@ private:
+   size_t _direct_allocated[InCSetState::Num];
+ 
+   void flush_and_retire_stats();
+-  inline PLAB* alloc_buffer(InCSetState dest);
++  inline PLAB* alloc_buffer(InCSetState dest, uint node_index) const;
++  inline PLAB* alloc_buffer(in_cset_state_t dest, uint node_index) const;
++
++  // Returns the number of allocation buffers for the given dest.
++  // There is only 1 buffer for Old while Young may have multiple buffers depending on
++  // active NUMA nodes.
++  inline uint alloc_buffers_length(in_cset_state_t dest) const;
+ 
+   // Calculate the survivor space object alignment in bytes. Returns that or 0 if
+   // there are no restrictions on survivor alignment.
+@@ -154,8 +174,10 @@ private:
+   bool may_throw_away_buffer(size_t const allocation_word_sz, size_t const buffer_size) const;
+ public:
+   G1PLABAllocator(G1Allocator* allocator);
++  ~G1PLABAllocator();
+ 
+-  void waste(size_t& wasted, size_t& undo_wasted);
++  size_t waste() const;
++  size_t undo_waste() const;
+ 
+   // Allocate word_sz words in dest, either directly into the regions or by
+   // allocating a new PLAB. Returns the address of the allocated memory, NULL if
+@@ -163,18 +185,21 @@ public:
+   // PLAB failed or not.
+   HeapWord* allocate_direct_or_new_plab(InCSetState dest,
+                                         size_t word_sz,
+-                                        bool* plab_refill_failed);
++                                        bool* plab_refill_failed,
++                                        uint node_index);
+ 
+   // Allocate word_sz words in the PLAB of dest.  Returns the address of the
+   // allocated memory, NULL if not successful.
+   inline HeapWord* plab_allocate(InCSetState dest,
+-                                 size_t word_sz);
++                                 size_t word_sz,
++                                 uint node_index);
+ 
+   inline HeapWord* allocate(InCSetState dest,
+                             size_t word_sz,
+-                            bool* refill_failed);
++                            bool* refill_failed,
++                            uint node_index);
+ 
+-  void undo_allocation(InCSetState dest, HeapWord* obj, size_t word_sz);
++  void undo_allocation(InCSetState dest, HeapWord* obj, size_t word_sz, uint node_index);
+ };
+ 
+ // G1ArchiveRegionMap is a boolean array used to mark G1 regions as
+diff --git a/src/hotspot/share/gc/g1/g1Allocator.inline.hpp b/src/hotspot/share/gc/g1/g1Allocator.inline.hpp
+index 3eda8eb20..66baebc68 100644
+--- a/src/hotspot/share/gc/g1/g1Allocator.inline.hpp
++++ b/src/hotspot/share/gc/g1/g1Allocator.inline.hpp
+@@ -29,12 +29,18 @@
+ #include "gc/g1/g1AllocRegion.inline.hpp"
+ #include "gc/shared/plab.inline.hpp"
+ 
+-inline MutatorAllocRegion* G1Allocator::mutator_alloc_region() {
+-  return &_mutator_alloc_region;
++inline uint G1Allocator::current_node_index() const {
++  return _numa->index_of_current_thread();
+ }
+ 
+-inline SurvivorGCAllocRegion* G1Allocator::survivor_gc_alloc_region() {
+-  return &_survivor_gc_alloc_region;
++inline MutatorAllocRegion* G1Allocator::mutator_alloc_region(uint node_index) {
++  assert(node_index < _num_alloc_regions, "Invalid index: %u", node_index);
++  return &_mutator_alloc_regions[node_index];
++}
++
++inline SurvivorGCAllocRegion* G1Allocator::survivor_gc_alloc_region(uint node_index) {
++  assert(node_index < _num_alloc_regions, "Invalid index: %u", node_index);
++  return &_survivor_gc_alloc_regions[node_index];
+ }
+ 
+ inline OldGCAllocRegion* G1Allocator::old_gc_alloc_region() {
+@@ -44,35 +50,63 @@ inline OldGCAllocRegion* G1Allocator::old_gc_alloc_region() {
+ inline HeapWord* G1Allocator::attempt_allocation(size_t min_word_size,
+                                                  size_t desired_word_size,
+                                                  size_t* actual_word_size) {
+-  HeapWord* result = mutator_alloc_region()->attempt_retained_allocation(min_word_size, desired_word_size, actual_word_size);
++  uint node_index = current_node_index();
++  HeapWord* result = mutator_alloc_region(node_index)->attempt_retained_allocation(min_word_size, desired_word_size, actual_word_size);
+   if (result != NULL) {
+     return result;
+   }
+-  return mutator_alloc_region()->attempt_allocation(min_word_size, desired_word_size, actual_word_size);
++  return mutator_alloc_region(node_index)->attempt_allocation(min_word_size, desired_word_size, actual_word_size);
+ }
+ 
+-inline HeapWord* G1Allocator::attempt_allocation_locked(size_t word_size) {
+-  HeapWord* result = mutator_alloc_region()->attempt_allocation_locked(word_size);
+-  assert(result != NULL || mutator_alloc_region()->get() == NULL,
+-         "Must not have a mutator alloc region if there is no memory, but is " PTR_FORMAT, p2i(mutator_alloc_region()->get()));
++inline HeapWord* G1Allocator::attempt_allocation_locked(size_t word_size, uint &node_index) {
++  node_index = current_node_index();
++  HeapWord* result = mutator_alloc_region(node_index)->attempt_allocation_locked(word_size);
++  assert(result != NULL || mutator_alloc_region(node_index)->get() == NULL,
++         "Must not have a mutator alloc region if there is no memory, but is " PTR_FORMAT, p2i(mutator_alloc_region(node_index)->get()));
+   return result;
+ }
+ 
+-inline HeapWord* G1Allocator::attempt_allocation_force(size_t word_size) {
+-  return mutator_alloc_region()->attempt_allocation_force(word_size);
++inline HeapWord* G1Allocator::attempt_allocation_force(size_t word_size, uint node_index) {
++  if (node_index == G1NUMA::AnyNodeIndex) {
++    return NULL;
++  }
++  assert(node_index < _num_alloc_regions, "Invalid index: %u", node_index);
++  return mutator_alloc_region(node_index)->attempt_allocation_force(word_size);
+ }
+ 
+-inline PLAB* G1PLABAllocator::alloc_buffer(InCSetState dest) {
++inline PLAB* G1PLABAllocator::alloc_buffer(InCSetState dest, uint node_index) const {
+   assert(dest.is_valid(),
+-         "Allocation buffer index out of bounds: " CSETSTATE_FORMAT, dest.value());
++         "Allocation buffer index out of bounds: %s", dest.get_type_str());
+   assert(_alloc_buffers[dest.value()] != NULL,
+-         "Allocation buffer is NULL: " CSETSTATE_FORMAT, dest.value());
+-  return _alloc_buffers[dest.value()];
++         "Allocation buffer is NULL: %s", dest.get_type_str());
++  return alloc_buffer(dest.value(), node_index);
++}
++
++inline PLAB* G1PLABAllocator::alloc_buffer(in_cset_state_t dest, uint node_index) const {
++  assert(dest < InCSetState::Num,
++         "Allocation buffer index out of bounds: %u", dest);
++
++  if (dest == InCSetState::Young) {
++    assert(node_index < alloc_buffers_length(dest),
++           "Allocation buffer index out of bounds: %u, %u", dest, node_index);
++    return _alloc_buffers[dest][node_index];
++  } else {
++    return _alloc_buffers[dest][0];
++  }
++}
++
++inline uint G1PLABAllocator::alloc_buffers_length(in_cset_state_t dest) const {
++  if (dest == InCSetState::Young) {
++    return _allocator->num_nodes();
++  } else {
++    return 1;
++  }
+ }
+ 
+ inline HeapWord* G1PLABAllocator::plab_allocate(InCSetState dest,
+-                                                size_t word_sz) {
+-  PLAB* buffer = alloc_buffer(dest);
++                                                size_t word_sz,
++                                                uint node_index) {
++  PLAB* buffer = alloc_buffer(dest, node_index);
+   if (_survivor_alignment_bytes == 0 || !dest.is_young()) {
+     return buffer->allocate(word_sz);
+   } else {
+@@ -82,12 +116,13 @@ inline HeapWord* G1PLABAllocator::plab_allocate(InCSetState dest,
+ 
+ inline HeapWord* G1PLABAllocator::allocate(InCSetState dest,
+                                            size_t word_sz,
+-                                           bool* refill_failed) {
+-  HeapWord* const obj = plab_allocate(dest, word_sz);
++                                           bool* refill_failed,
++                                           uint node_index) {
++  HeapWord* const obj = plab_allocate(dest, word_sz, node_index);
+   if (obj != NULL) {
+     return obj;
+   }
+-  return allocate_direct_or_new_plab(dest, word_sz, refill_failed);
++  return allocate_direct_or_new_plab(dest, word_sz, refill_failed, node_index);
+ }
+ 
+ // Create the maps which is used to identify archive objects.
+diff --git a/src/hotspot/share/gc/g1/g1CollectedHeap.cpp b/src/hotspot/share/gc/g1/g1CollectedHeap.cpp
+index dea8d9fdb..3bb5b56e8 100644
+--- a/src/hotspot/share/gc/g1/g1CollectedHeap.cpp
++++ b/src/hotspot/share/gc/g1/g1CollectedHeap.cpp
+@@ -97,6 +97,7 @@
+ 
+ size_t G1CollectedHeap::_humongous_object_threshold_in_words = 0;
+ 
++#define THREAD_MIGRATION_MAX_TIMES 1
+ // INVARIANTS/NOTES
+ //
+ // All allocation activity covered by the G1CollectedHeap interface is
+@@ -160,12 +161,15 @@ HeapRegion* G1CollectedHeap::new_heap_region(uint hrs_index,
+ 
+ // Private methods.
+ 
+-HeapRegion* G1CollectedHeap::new_region(size_t word_size, bool is_old, bool do_expand) {
++HeapRegion* G1CollectedHeap::new_region(size_t word_size,
++                                        HeapRegionType type,
++                                        bool do_expand,
++                                        uint node_index) {
+   assert(!is_humongous(word_size) || word_size <= HeapRegion::GrainWords,
+          "the only time we use this to allocate a humongous region is "
+          "when we are allocating a single humongous region");
+ 
+-  HeapRegion* res = _hrm.allocate_free_region(is_old);
++  HeapRegion* res = _hrm.allocate_free_region(type, node_index);
+ 
+   if (res == NULL && do_expand && _expand_heap_after_alloc_failure) {
+     // Currently, only attempts to allocate GC alloc regions set
+@@ -177,12 +181,15 @@ HeapRegion* G1CollectedHeap::new_region(size_t word_size, bool is_old, bool do_e
+     log_debug(gc, ergo, heap)("Attempt heap expansion (region allocation request failed). Allocation request: " SIZE_FORMAT "B",
+                               word_size * HeapWordSize);
+ 
+-    if (expand(word_size * HeapWordSize)) {
+-      // Given that expand() succeeded in expanding the heap, and we
++    assert(word_size * HeapWordSize < HeapRegion::GrainBytes,
++           "This kind of expansion should never be more than one region. Size: " SIZE_FORMAT,
++           word_size * HeapWordSize);
++    if (expand_single_region(node_index)) {
++      // Given that expand_single_region() succeeded in expanding the heap, and we
+       // always expand the heap by an amount aligned to the heap
+       // region size, the free list should in theory not be empty.
+       // In either case allocate_free_region() will check for NULL.
+-      res = _hrm.allocate_free_region(is_old);
++      res = _hrm.allocate_free_region(type, node_index);
+     } else {
+       _expand_heap_after_alloc_failure = false;
+     }
+@@ -329,7 +336,7 @@ HeapWord* G1CollectedHeap::humongous_obj_allocate(size_t word_size) {
+     // Only one region to allocate, try to use a fast path by directly allocating
+     // from the free lists. Do not try to expand here, we will potentially do that
+     // later.
+-    HeapRegion* hr = new_region(word_size, true /* is_old */, false /* do_expand */);
++    HeapRegion* hr = new_region(word_size, HeapRegionType::Humongous, false /* do_expand */);
+     if (hr != NULL) {
+       first = hr->hrm_index();
+     }
+@@ -430,7 +437,8 @@ HeapWord* G1CollectedHeap::attempt_allocation_slow(size_t word_size) {
+ 
+     {
+       MutexLockerEx x(Heap_lock);
+-      result = _allocator->attempt_allocation_locked(word_size);
++      uint node_idx_by_locked_alloc = G1NUMA::AnyNodeIndex;
++      result = _allocator->attempt_allocation_locked(word_size, node_idx_by_locked_alloc);
+       if (result != NULL) {
+         return result;
+       }
+@@ -441,7 +449,17 @@ HeapWord* G1CollectedHeap::attempt_allocation_slow(size_t word_size) {
+       if (GCLocker::is_active_and_needs_gc() && g1_policy()->can_expand_young_list()) {
+         // No need for an ergo message here, can_expand_young_list() does this when
+         // it returns true.
+-        result = _allocator->attempt_allocation_force(word_size);
++        uint curr_node_index = _allocator->current_node_index();
++        uint thread_migration_times = 0;
++        while (curr_node_index != node_idx_by_locked_alloc && thread_migration_times < THREAD_MIGRATION_MAX_TIMES) {
++          result = _allocator->attempt_allocation_locked(word_size, node_idx_by_locked_alloc);
++          if (result != NULL) {
++            return result;
++          }
++          thread_migration_times++;
++          curr_node_index = _allocator->current_node_index();
++        }
++        result = _allocator->attempt_allocation_force(word_size, node_idx_by_locked_alloc);
+         if (result != NULL) {
+           return result;
+         }
+@@ -958,7 +976,8 @@ HeapWord* G1CollectedHeap::attempt_allocation_at_safepoint(size_t word_size,
+          "the current alloc region was unexpectedly found to be non-NULL");
+ 
+   if (!is_humongous(word_size)) {
+-    return _allocator->attempt_allocation_locked(word_size);
++    uint node_index;
++    return _allocator->attempt_allocation_locked(word_size, node_index);
+   } else {
+     HeapWord* result = humongous_obj_allocate(word_size);
+     if (result != NULL && g1_policy()->need_to_start_conc_mark("STW humongous allocation")) {
+@@ -1013,10 +1032,9 @@ void G1CollectedHeap::abort_concurrent_cycle() {
+ 
+ void G1CollectedHeap::prepare_heap_for_full_collection() {
+   // Make sure we'll choose a new allocation region afterwards.
+-  _allocator->release_mutator_alloc_region();
++  _allocator->release_mutator_alloc_regions();
+   _allocator->abandon_gc_alloc_regions();
+   g1_rem_set()->cleanupHRRS();
+-
+   // We may have added regions to the current incremental collection
+   // set between the last GC or pause and now. We need to clear the
+   // incremental collection set and then start rebuilding it afresh
+@@ -1051,7 +1069,7 @@ void G1CollectedHeap::prepare_heap_for_mutators() {
+   // Start a new incremental collection set for the next pause
+   start_new_collection_set();
+ 
+-  _allocator->init_mutator_alloc_region();
++  _allocator->init_mutator_alloc_regions();
+ 
+   // Post collection state updates.
+   MetaspaceGC::compute_new_size();
+@@ -1367,6 +1385,19 @@ bool G1CollectedHeap::expand(size_t expand_bytes, WorkGang* pretouch_workers, do
+   return regions_to_expand > 0;
+ }
+ 
++bool G1CollectedHeap::expand_single_region(uint node_index) {
++  uint expanded_by = _hrm.expand_on_preferred_node(node_index);
++
++  if (expanded_by == 0) {
++    assert(is_maximal_no_gc(), "Should be no regions left, available: %u", _hrm.available());
++    log_debug(gc, ergo, heap)("Did not expand the heap (heap already fully expanded)");
++    return false;
++  }
++
++  g1_policy()->record_new_heap_size(num_regions());
++  return true;
++}
++
+ void G1CollectedHeap::shrink_helper(size_t shrink_bytes) {
+   size_t aligned_shrink_bytes =
+     ReservedSpace::page_align_size_down(shrink_bytes);
+@@ -1406,7 +1437,67 @@ void G1CollectedHeap::shrink(size_t shrink_bytes) {
+   _verifier->verify_region_sets_optional();
+ }
+ 
+-// Public methods.
++class OldRegionSetChecker : public HeapRegionSetChecker {
++public:
++  void check_mt_safety() {
++    // Master Old Set MT safety protocol:
++    // (a) If we're at a safepoint, operations on the master old set
++    // should be invoked:
++    // - by the VM thread (which will serialize them), or
++    // - by the GC workers while holding the FreeList_lock, if we're
++    //   at a safepoint for an evacuation pause (this lock is taken
++    //   anyway when an GC alloc region is retired so that a new one
++    //   is allocated from the free list), or
++    // - by the GC workers while holding the OldSets_lock, if we're at a
++    //   safepoint for a cleanup pause.
++    // (b) If we're not at a safepoint, operations on the master old set
++    // should be invoked while holding the Heap_lock.
++
++    if (SafepointSynchronize::is_at_safepoint()) {
++      guarantee(Thread::current()->is_VM_thread() ||
++                FreeList_lock->owned_by_self() || OldSets_lock->owned_by_self(),
++                "master old set MT safety protocol at a safepoint");
++    } else {
++      guarantee(Heap_lock->owned_by_self(), "master old set MT safety protocol outside a safepoint");
++    }
++  }
++  bool is_correct_type(HeapRegion* hr) { return hr->is_old(); }
++  const char* get_description() { return "Old Regions"; }
++};
++
++class ArchiveRegionSetChecker : public HeapRegionSetChecker {
++public:
++  void check_mt_safety() {
++    guarantee(!Universe::is_fully_initialized() || SafepointSynchronize::is_at_safepoint(),
++              "May only change archive regions during initialization or safepoint.");
++  }
++  bool is_correct_type(HeapRegion* hr) { return hr->is_archive(); }
++  const char* get_description() { return "Archive Regions"; }
++};
++
++class HumongousRegionSetChecker : public HeapRegionSetChecker {
++public:
++  void check_mt_safety() {
++    // Humongous Set MT safety protocol:
++    // (a) If we're at a safepoint, operations on the master humongous
++    // set should be invoked by either the VM thread (which will
++    // serialize them) or by the GC workers while holding the
++    // OldSets_lock.
++    // (b) If we're not at a safepoint, operations on the master
++    // humongous set should be invoked while holding the Heap_lock.
++
++    if (SafepointSynchronize::is_at_safepoint()) {
++      guarantee(Thread::current()->is_VM_thread() ||
++                OldSets_lock->owned_by_self(),
++                "master humongous set MT safety protocol at a safepoint");
++    } else {
++      guarantee(Heap_lock->owned_by_self(),
++                "master humongous set MT safety protocol outside a safepoint");
++    }
++  }
++  bool is_correct_type(HeapRegion* hr) { return hr->is_humongous(); }
++  const char* get_description() { return "Humongous Regions"; }
++};
+ 
+ G1CollectedHeap::G1CollectedHeap(G1CollectorPolicy* collector_policy) :
+   CollectedHeap(),
+@@ -1431,13 +1522,14 @@ G1CollectedHeap::G1CollectedHeap(G1CollectorPolicy* collector_policy) :
+   _is_alive_closure_cm(this),
+   _is_subject_to_discovery_cm(this),
+   _bot(NULL),
++  _numa(G1NUMA::create()),
+   _hot_card_cache(NULL),
+   _g1_rem_set(NULL),
+   _cr(NULL),
+   _g1mm(NULL),
+   _preserved_marks_set(true /* in_c_heap */),
+-  _old_set("Old Set", false /* humongous */, new OldRegionSetMtSafeChecker()),
+-  _humongous_set("Master Humongous Set", true /* humongous */, new HumongousRegionSetMtSafeChecker()),
++  _old_set("Old Set", new OldRegionSetChecker()),
++  _humongous_set("Master Humongous Set", new HumongousRegionSetChecker()),
+   _humongous_reclaim_candidates(),
+   _has_humongous_reclaim_candidates(false),
+   _archive_allocator(NULL),
+@@ -1650,6 +1742,7 @@ jint G1CollectedHeap::initialize() {
+     _in_cset_fast_test.initialize(start, end, granularity);
+     _humongous_reclaim_candidates.initialize(start, end, granularity);
+   }
++  _numa->set_region_info(HeapRegion::GrainBytes, page_size);
+ 
+   // Create the G1ConcurrentMark data structure and thread.
+   // (Must do this late, so that "max_regions" is defined.)
+@@ -1712,7 +1805,7 @@ jint G1CollectedHeap::initialize() {
+   dummy_region->set_top(dummy_region->end());
+   G1AllocRegion::setup(this, dummy_region);
+ 
+-  _allocator->init_mutator_alloc_region();
++  _allocator->init_mutator_alloc_regions();
+ 
+   // Do create of the monitoring and management support so that
+   // values in the heap have been properly initialized.
+@@ -2275,6 +2368,15 @@ void G1CollectedHeap::print_on(outputStream* st) const {
+   st->print("%u survivors (" SIZE_FORMAT "K)", survivor_regions,
+             (size_t) survivor_regions * HeapRegion::GrainBytes / K);
+   st->cr();
++  if (_numa->is_enabled()) {
++    uint num_nodes = _numa->num_active_nodes();
++    st->print("  remaining free region(s) on each NUMA node: ");
++    const int* node_ids = _numa->node_ids();
++    for (uint node_index = 0; node_index < num_nodes; node_index++) {
++      st->print("%d=%u ", node_ids[node_index], _hrm.num_free_regions(node_index));
++    }
++    st->cr();
++  }
+   MetaspaceUtils::print_on(st);
+ }
+ 
+@@ -2462,6 +2564,9 @@ void G1CollectedHeap::gc_epilogue(bool full) {
+   // We have just completed a GC. Update the soft reference
+   // policy with the new heap occupancy
+   Universe::update_heap_info_at_gc();
++
++  // Print NUMA statistics.
++  _numa->print_statistics();
+ }
+ 
+ HeapWord* G1CollectedHeap::do_collection_pause(size_t word_size,
+@@ -2889,7 +2994,7 @@ G1CollectedHeap::do_collection_pause_at_safepoint(double target_pause_time_ms) {
+ 
+         // Forget the current alloc region (we might even choose it to be part
+         // of the collection set!).
+-        _allocator->release_mutator_alloc_region();
++        _allocator->release_mutator_alloc_regions();
+ 
+         // This timing is only used by the ergonomics to handle our pause target.
+         // It is unclear why this should not include the full pause. We will
+@@ -2983,7 +3088,7 @@ G1CollectedHeap::do_collection_pause_at_safepoint(double target_pause_time_ms) {
+ 
+         allocate_dummy_regions();
+ 
+-        _allocator->init_mutator_alloc_region();
++        _allocator->init_mutator_alloc_regions();
+ 
+         {
+           size_t expand_bytes = _heap_sizing_policy->expansion_amount();
+@@ -3196,9 +3301,8 @@ public:
+ 
+       if (log_is_enabled(Debug, gc, task, stats)) {
+         MutexLockerEx x(ParGCRareEvent_lock, Mutex::_no_safepoint_check_flag);
+-        size_t lab_waste;
+-        size_t lab_undo_waste;
+-        pss->waste(lab_waste, lab_undo_waste);
++        size_t lab_waste = pss->lab_waste_words();
++        size_t lab_undo_waste = pss->lab_undo_waste_words();
+         _g1h->print_termination_stats(worker_id,
+                                       (os::elapsedTime() - start_sec) * 1000.0,   /* elapsed time */
+                                       strong_roots_sec * 1000.0,                  /* strong roots time */
+@@ -4719,7 +4823,7 @@ public:
+                            HeapRegionSet* old_set, HeapRegionManager* hrm) :
+     _free_list_only(free_list_only),
+     _old_set(old_set), _hrm(hrm), _total_used(0) {
+-    assert(_hrm->num_free_regions() == 0, "pre-condition");
++    assert(_hrm.num_free_regions() == 0, "pre-condition");
+     if (!free_list_only) {
+       assert(_old_set->is_empty(), "pre-condition");
+     }
+@@ -4784,13 +4888,15 @@ bool G1CollectedHeap::is_in_closed_subset(const void* p) const {
+ // Methods for the mutator alloc region
+ 
+ HeapRegion* G1CollectedHeap::new_mutator_alloc_region(size_t word_size,
+-                                                      bool force) {
++                                                      bool force,
++                                                      uint node_index) {
+   assert_heap_locked_or_at_safepoint(true /* should_be_vm_thread */);
+   bool should_allocate = g1_policy()->should_allocate_mutator_region();
+   if (force || should_allocate) {
+     HeapRegion* new_alloc_region = new_region(word_size,
+-                                              false /* is_old */,
+-                                              false /* do_expand */);
++                                              HeapRegionType::Eden,
++                                              false /* do_expand */,
++                                              node_index);
+     if (new_alloc_region != NULL) {
+       set_region_short_lived_locked(new_alloc_region);
+       _hr_printer.alloc(new_alloc_region, !should_allocate);
+@@ -4826,20 +4932,27 @@ bool G1CollectedHeap::has_more_regions(InCSetState dest) {
+   }
+ }
+ 
+-HeapRegion* G1CollectedHeap::new_gc_alloc_region(size_t word_size, InCSetState dest) {
++HeapRegion* G1CollectedHeap::new_gc_alloc_region(size_t word_size, InCSetState dest, uint node_index) {
+   assert(FreeList_lock->owned_by_self(), "pre-condition");
+ 
+   if (!has_more_regions(dest)) {
+     return NULL;
+   }
+ 
+-  const bool is_survivor = dest.is_young();
++  HeapRegionType type;
++  if (dest.is_young()) {
++    type = HeapRegionType::Survivor;
++  } else {
++    type = HeapRegionType::Old;
++  }
+ 
+   HeapRegion* new_alloc_region = new_region(word_size,
+-                                            !is_survivor,
+-                                            true /* do_expand */);
++                                            type,
++                                            true /* do_expand */,
++                                            node_index);
++
+   if (new_alloc_region != NULL) {
+-    if (is_survivor) {
++    if (type.is_survivor()) {
+       new_alloc_region->set_survivor();
+       _survivor.add(new_alloc_region);
+       _verifier->check_bitmaps("Survivor Region Allocation", new_alloc_region);
+diff --git a/src/hotspot/share/gc/g1/g1CollectedHeap.hpp b/src/hotspot/share/gc/g1/g1CollectedHeap.hpp
+index 8a171dc6b..aafaf6a08 100644
+--- a/src/hotspot/share/gc/g1/g1CollectedHeap.hpp
++++ b/src/hotspot/share/gc/g1/g1CollectedHeap.hpp
+@@ -40,6 +40,7 @@
+ #include "gc/g1/g1HRPrinter.hpp"
+ #include "gc/g1/g1InCSetState.hpp"
+ #include "gc/g1/g1MonitoringSupport.hpp"
++#include "gc/g1/g1NUMA.hpp"
+ #include "gc/g1/g1SurvivorRegions.hpp"
+ #include "gc/g1/g1YCTypes.hpp"
+ #include "gc/g1/heapRegionManager.hpp"
+@@ -206,6 +207,9 @@ private:
+   // Callback for region mapping changed events.
+   G1RegionMappingChangedListener _listener;
+ 
++  // Handle G1 NUMA support.
++  G1NUMA* _numa;
++
+   // The sequence of all heap regions in the heap.
+   HeapRegionManager _hrm;
+ 
+@@ -382,9 +386,12 @@ private:
+   // Try to allocate a single non-humongous HeapRegion sufficient for
+   // an allocation of the given word_size. If do_expand is true,
+   // attempt to expand the heap if necessary to satisfy the allocation
+-  // request. If the region is to be used as an old region or for a
+-  // humongous object, set is_old to true. If not, to false.
+-  HeapRegion* new_region(size_t word_size, bool is_old, bool do_expand);
++  // request. 'type' takes the type of region to be allocated. (Use constants
++  // Old, Eden, Humongous, Survivor defined in HeapRegionType.)
++  HeapRegion* new_region(size_t word_size,
++                         HeapRegionType type,
++                         bool do_expand,
++                         uint node_index = G1NUMA::AnyNodeIndex);
+ 
+   // Initialize a contiguous set of free regions of length num_regions
+   // and starting at index first so that they appear as a single
+@@ -459,13 +466,13 @@ private:
+   // These methods are the "callbacks" from the G1AllocRegion class.
+ 
+   // For mutator alloc regions.
+-  HeapRegion* new_mutator_alloc_region(size_t word_size, bool force);
++  HeapRegion* new_mutator_alloc_region(size_t word_size, bool force, uint node_index);
+   void retire_mutator_alloc_region(HeapRegion* alloc_region,
+                                    size_t allocated_bytes);
+ 
+   // For GC alloc regions.
+   bool has_more_regions(InCSetState dest);
+-  HeapRegion* new_gc_alloc_region(size_t word_size, InCSetState dest);
++  HeapRegion* new_gc_alloc_region(size_t word_size, InCSetState dest, uint node_index);
+   void retire_gc_alloc_region(HeapRegion* alloc_region,
+                               size_t allocated_bytes, InCSetState dest);
+ 
+@@ -541,11 +548,13 @@ public:
+     return _g1mm;
+   }
+ 
++  G1NUMA* numa() const { return _numa; }
+   // Expand the garbage-first heap by at least the given size (in bytes!).
+   // Returns true if the heap was expanded by the requested amount;
+   // false otherwise.
+   // (Rounds up to a HeapRegion boundary.)
+   bool expand(size_t expand_bytes, WorkGang* pretouch_workers = NULL, double* expand_time_ms = NULL);
++  bool expand_single_region(uint node_index);
+ 
+   // Returns the PLAB statistics for a given destination.
+   inline G1EvacStats* alloc_buffer_stats(InCSetState dest);
+@@ -1235,20 +1244,12 @@ public:
+ 
+   const G1SurvivorRegions* survivor() const { return &_survivor; }
+ 
+-  uint survivor_regions_count() const {
+-    return _survivor.length();
+-  }
+-
+-  uint eden_regions_count() const {
+-    return _eden.length();
+-  }
+-
+-  uint young_regions_count() const {
+-    return _eden.length() + _survivor.length();
+-  }
+-
++  uint eden_regions_count() const { return _eden.length(); }
++  uint eden_regions_count(uint node_index) const { return _eden.regions_on_node(node_index); }
++  uint survivor_regions_count() const { return _survivor.length(); }
++  uint survivor_regions_count(uint node_index) const { return _survivor.regions_on_node(node_index); }
++  uint young_regions_count() const { return _eden.length() + _survivor.length(); }
+   uint old_regions_count() const { return _old_set.length(); }
+-
+   uint humongous_regions_count() const { return _humongous_set.length(); }
+ 
+ #ifdef ASSERT
+diff --git a/src/hotspot/share/gc/g1/g1EdenRegions.hpp b/src/hotspot/share/gc/g1/g1EdenRegions.hpp
+index 6d16f8c59..8f4989265 100644
+--- a/src/hotspot/share/gc/g1/g1EdenRegions.hpp
++++ b/src/hotspot/share/gc/g1/g1EdenRegions.hpp
+@@ -25,6 +25,7 @@
+ #ifndef SHARE_VM_GC_G1_G1EDENREGIONS_HPP
+ #define SHARE_VM_GC_G1_G1EDENREGIONS_HPP
+ 
++#include "gc/g1/g1RegionsOnNodes.hpp"
+ #include "gc/g1/heapRegion.hpp"
+ #include "runtime/globals.hpp"
+ #include "utilities/debug.hpp"
+@@ -32,18 +33,24 @@
+ class G1EdenRegions {
+ private:
+   int _length;
++  G1RegionsOnNodes  _regions_on_node;
+ 
+ public:
+-  G1EdenRegions() : _length(0) {}
++  G1EdenRegions() : _length(0), _regions_on_node() { }
+ 
+-  void add(HeapRegion* hr) {
++  virtual uint add(HeapRegion* hr) {
+     assert(!hr->is_eden(), "should not already be set");
+     _length++;
++    return _regions_on_node.add(hr);
+   }
+ 
+-  void clear() { _length = 0; }
++  void clear() {
++    _length = 0;
++    _regions_on_node.clear();
++  }
+ 
+   uint length() const { return _length; }
++  uint regions_on_node(uint node_index) const { return _regions_on_node.count(node_index); }
+ };
+ 
+ #endif // SHARE_VM_GC_G1_G1EDENREGIONS_HPP
+diff --git a/src/hotspot/share/gc/g1/g1HeapTransition.cpp b/src/hotspot/share/gc/g1/g1HeapTransition.cpp
+index 907289f28..3ef4ff7fb 100644
+--- a/src/hotspot/share/gc/g1/g1HeapTransition.cpp
++++ b/src/hotspot/share/gc/g1/g1HeapTransition.cpp
+@@ -26,15 +26,38 @@
+ #include "gc/g1/g1CollectedHeap.hpp"
+ #include "gc/g1/g1HeapTransition.hpp"
+ #include "gc/g1/g1Policy.hpp"
+-#include "logging/log.hpp"
++#include "logging/logStream.hpp"
+ #include "memory/metaspace.hpp"
+ 
+-G1HeapTransition::Data::Data(G1CollectedHeap* g1_heap) {
+-  _eden_length = g1_heap->eden_regions_count();
+-  _survivor_length = g1_heap->survivor_regions_count();
+-  _old_length = g1_heap->old_regions_count();
+-  _humongous_length = g1_heap->humongous_regions_count();
+-  _metaspace_used_bytes = MetaspaceUtils::used_bytes();
++G1HeapTransition::Data::Data(G1CollectedHeap* g1_heap) :
++  _eden_length(g1_heap->eden_regions_count()),
++  _survivor_length(g1_heap->survivor_regions_count()),
++  _old_length(g1_heap->old_regions_count()),
++  _metaspace_used_bytes(MetaspaceUtils::used_bytes()),
++  _humongous_length(g1_heap->humongous_regions_count()),
++  _eden_length_per_node(NULL),
++  _survivor_length_per_node(NULL) {
++
++  uint node_count = G1NUMA::numa()->num_active_nodes();
++
++  if (node_count > 1) {
++    LogTarget(Debug, gc, heap, numa) lt;
++
++    if (lt.is_enabled()) {
++      _eden_length_per_node = NEW_C_HEAP_ARRAY(uint, node_count, mtGC);
++      _survivor_length_per_node = NEW_C_HEAP_ARRAY(uint, node_count, mtGC);
++
++      for (uint i = 0; i < node_count; i++) {
++        _eden_length_per_node[i] = g1_heap->eden_regions_count(i);
++        _survivor_length_per_node[i] = g1_heap->survivor_regions_count(i);
++      }
++    }
++  }
++}
++
++G1HeapTransition::Data::~Data() {
++  FREE_C_HEAP_ARRAY(uint, _eden_length_per_node);
++  FREE_C_HEAP_ARRAY(uint, _survivor_length_per_node);
+ }
+ 
+ G1HeapTransition::G1HeapTransition(G1CollectedHeap* g1_heap) : _g1_heap(g1_heap), _before(g1_heap) { }
+@@ -78,6 +101,34 @@ public:
+   }
+ };
+ 
++static void log_regions(const char* msg, size_t before_length, size_t after_length, size_t capacity,
++                        uint* before_per_node_length, uint* after_per_node_length) {
++  LogTarget(Info, gc, heap) lt;
++
++  if (lt.is_enabled()) {
++    LogStream ls(lt);
++
++    ls.print("%s regions: " SIZE_FORMAT "->" SIZE_FORMAT "("  SIZE_FORMAT ")",
++             msg, before_length, after_length, capacity);
++    // Not NULL only if gc+heap+numa at Debug level is enabled.
++    if (before_per_node_length != NULL && after_per_node_length != NULL) {
++      G1NUMA* numa = G1NUMA::numa();
++      uint num_nodes = numa->num_active_nodes();
++      const int* node_ids = numa->node_ids();
++      ls.print(" (");
++      for (uint i = 0; i < num_nodes; i++) {
++        ls.print("%d: %u->%u", node_ids[i], before_per_node_length[i], after_per_node_length[i]);
++        // Skip adding below if it is the last one.
++        if (i != num_nodes - 1) {
++          ls.print(", ");
++        }
++      }
++      ls.print(")");
++    }
++    ls.print_cr("");
++  }
++}
++
+ void G1HeapTransition::print() {
+   Data after(_g1_heap);
+ 
+@@ -98,12 +149,12 @@ void G1HeapTransition::print() {
+         after._humongous_length, usage._humongous_region_count);
+   }
+ 
+-  log_info(gc, heap)("Eden regions: " SIZE_FORMAT "->" SIZE_FORMAT "("  SIZE_FORMAT ")",
+-                     _before._eden_length, after._eden_length, eden_capacity_length_after_gc);
++  log_regions("Eden", _before._eden_length, after._eden_length, eden_capacity_length_after_gc,
++              _before._eden_length_per_node, after._eden_length_per_node);
+   log_trace(gc, heap)(" Used: 0K, Waste: 0K");
+ 
+-  log_info(gc, heap)("Survivor regions: " SIZE_FORMAT "->" SIZE_FORMAT "("  SIZE_FORMAT ")",
+-                     _before._survivor_length, after._survivor_length, survivor_capacity_length_after_gc);
++  log_regions("Survivor", _before._survivor_length, after._survivor_length, survivor_capacity_length_after_gc,
++              _before._survivor_length_per_node, after._survivor_length_per_node);
+   log_trace(gc, heap)(" Used: " SIZE_FORMAT "K, Waste: " SIZE_FORMAT "K",
+       usage._survivor_used / K, ((after._survivor_length * HeapRegion::GrainBytes) - usage._survivor_used) / K);
+ 
+diff --git a/src/hotspot/share/gc/g1/g1HeapTransition.hpp b/src/hotspot/share/gc/g1/g1HeapTransition.hpp
+index 97db50769..572dbd869 100644
+--- a/src/hotspot/share/gc/g1/g1HeapTransition.hpp
++++ b/src/hotspot/share/gc/g1/g1HeapTransition.hpp
+@@ -37,7 +37,13 @@ class G1HeapTransition {
+     size_t _humongous_length;
+     size_t _metaspace_used_bytes;
+ 
++    // Only includes current eden regions.
++    uint* _eden_length_per_node;
++    // Only includes current survivor regions.
++    uint* _survivor_length_per_node;
++
+     Data(G1CollectedHeap* g1_heap);
++    ~Data();
+   };
+ 
+   G1CollectedHeap* _g1_heap;
+diff --git a/src/hotspot/share/gc/g1/g1HeapVerifier.cpp b/src/hotspot/share/gc/g1/g1HeapVerifier.cpp
+index 22fd0bd95..71342b4d2 100644
+--- a/src/hotspot/share/gc/g1/g1HeapVerifier.cpp
++++ b/src/hotspot/share/gc/g1/g1HeapVerifier.cpp
+@@ -777,7 +777,7 @@ class G1CheckCSetFastTableClosure : public HeapRegionClosure {
+ 
+ bool G1HeapVerifier::check_cset_fast_test() {
+   G1CheckCSetFastTableClosure cl;
+-  _g1h->_hrm.iterate(&cl);
++  _g1h->_hrm->iterate(&cl);
+   return !cl.failures();
+ }
+ #endif // PRODUCT
+diff --git a/src/hotspot/share/gc/g1/g1InCSetState.hpp b/src/hotspot/share/gc/g1/g1InCSetState.hpp
+index cdba396b1..c60609617 100644
+--- a/src/hotspot/share/gc/g1/g1InCSetState.hpp
++++ b/src/hotspot/share/gc/g1/g1InCSetState.hpp
+@@ -57,10 +57,10 @@ struct InCSetState {
+     // used to index into arrays.
+     // The negative values are used for objects requiring various special cases,
+     // for example eager reclamation of humongous objects.
+-    Humongous    = -1,    // The region is humongous
+-    NotInCSet    =  0,    // The region is not in the collection set.
+-    Young        =  1,    // The region is in the collection set and a young region.
+-    Old          =  2,    // The region is in the collection set and an old region.
++    Humongous    = -2,    // The region is humongous
++    NotInCSet    = -1,    // The region is not in the collection set.
++    Young        =  0,    // The region is in the collection set and a young region.
++    Old          =  1,    // The region is in the collection set and an old region.
+     Num
+   };
+ 
+@@ -68,6 +68,17 @@ struct InCSetState {
+     assert(is_valid(), "Invalid state %d", _value);
+   }
+ 
++  const char* get_type_str() const {
++    switch (value()) {
++      //case Optional: return "Optional";
++      case Humongous: return "Humongous";
++      case NotInCSet: return "NotInCSet";
++      case Young: return "Young";
++      case Old: return "Old";
++      default: ShouldNotReachHere(); return "";
++    }
++  }
++
+   in_cset_state_t value() const        { return _value; }
+ 
+   void set_old()                       { _value = Old; }
+diff --git a/src/hotspot/share/gc/g1/g1NUMA.cpp b/src/hotspot/share/gc/g1/g1NUMA.cpp
+new file mode 100644
+index 000000000..95d9d8c15
+--- /dev/null
++++ b/src/hotspot/share/gc/g1/g1NUMA.cpp
+@@ -0,0 +1,305 @@
++/*
++ * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ *
++ */
++
++#include "precompiled.hpp"
++#include "gc/g1/g1NUMA.hpp"
++#include "logging/logStream.hpp"
++#include "runtime/globals.hpp"
++#include "runtime/os.hpp"
++
++G1NUMA* G1NUMA::_inst = NULL;
++
++size_t G1NUMA::region_size() const {
++  assert(_region_size > 0, "Heap region size is not yet set");
++  return _region_size;
++}
++
++size_t G1NUMA::page_size() const {
++  assert(_page_size > 0, "Page size not is yet set");
++  return _page_size;
++}
++
++bool G1NUMA::is_enabled() const { return num_active_nodes() > 1; }
++
++G1NUMA* G1NUMA::create() {
++  guarantee(_inst == NULL, "Should be called once.");
++  _inst = new G1NUMA();
++
++  // NUMA only supported on Linux.
++#ifdef LINUX
++  _inst->initialize(UseNUMA);
++#else
++  _inst->initialize(false);
++#endif /* LINUX */
++
++  return _inst;
++}
++
++  // Returns memory node ids
++const int* G1NUMA::node_ids() const {
++  return _node_ids;
++}
++
++uint G1NUMA::index_of_node_id(int node_id) const {
++  assert(node_id >= 0, "invalid node id %d", node_id);
++  assert(node_id < _len_node_id_to_index_map, "invalid node id %d", node_id);
++  uint node_index = _node_id_to_index_map[node_id];
++  assert(node_index != G1NUMA::UnknownNodeIndex,
++         "invalid node id %d", node_id);
++  return node_index;
++}
++
++G1NUMA::G1NUMA() :
++  _node_id_to_index_map(NULL), _len_node_id_to_index_map(0),
++  _node_ids(NULL), _num_active_node_ids(0),
++  _region_size(0), _page_size(0), _stats(NULL) {
++}
++
++void G1NUMA::initialize_without_numa() {
++  // If NUMA is not enabled or supported, initialize as having a singel node.
++  _num_active_node_ids = 1;
++  _node_ids = NEW_C_HEAP_ARRAY(int, _num_active_node_ids, mtGC);
++  _node_ids[0] = 0;
++  // Map index 0 to node 0
++  _len_node_id_to_index_map = 1;
++  _node_id_to_index_map = NEW_C_HEAP_ARRAY(uint, _len_node_id_to_index_map, mtGC);
++  _node_id_to_index_map[0] = 0;
++}
++
++void G1NUMA::initialize(bool use_numa) {
++  if (!use_numa) {
++    initialize_without_numa();
++    return;
++  }
++
++  assert(UseNUMA, "Invariant");
++  size_t num_node_ids = os::numa_get_groups_num();
++
++  // Create an array of active node ids.
++  _node_ids = NEW_C_HEAP_ARRAY(int, num_node_ids, mtGC);
++  _num_active_node_ids = (uint)os::numa_get_leaf_groups(_node_ids, num_node_ids);
++
++  int max_node_id = 0;
++  for (uint i = 0; i < _num_active_node_ids; i++) {
++    max_node_id = MAX2(max_node_id, _node_ids[i]);
++  }
++
++  // Create a mapping between node_id and index.
++  _len_node_id_to_index_map = max_node_id + 1;
++  _node_id_to_index_map = NEW_C_HEAP_ARRAY(uint, _len_node_id_to_index_map, mtGC);
++
++  // Set all indices with unknown node id.
++  for (int i = 0; i < _len_node_id_to_index_map; i++) {
++    _node_id_to_index_map[i] = G1NUMA::UnknownNodeIndex;
++  }
++
++  // Set the indices for the actually retrieved node ids.
++  for (uint i = 0; i < _num_active_node_ids; i++) {
++    _node_id_to_index_map[_node_ids[i]] = i;
++  }
++
++  _stats = new G1NUMAStats(_node_ids, _num_active_node_ids);
++}
++
++G1NUMA::~G1NUMA() {
++  delete _stats;
++  FREE_C_HEAP_ARRAY(int, _node_id_to_index_map);
++  FREE_C_HEAP_ARRAY(int, _node_ids);
++}
++
++void G1NUMA::set_region_info(size_t region_size, size_t page_size) {
++  _region_size = region_size;
++  _page_size = page_size;
++}
++
++uint G1NUMA::num_active_nodes() const {
++  assert(_num_active_node_ids > 0, "just checking");
++  return _num_active_node_ids;
++}
++
++uint G1NUMA::index_of_current_thread() const {
++  if (!is_enabled()) {
++    return 0;
++  }
++  return index_of_node_id(os::numa_get_group_id());
++}
++
++uint G1NUMA::preferred_node_index_for_index(uint region_index) const {
++  if (region_size() >= page_size()) {
++    // Simple case, pages are smaller than the region so we
++    // can just alternate over the nodes.
++    return region_index % _num_active_node_ids;
++  } else {
++    // Multiple regions in one page, so we need to make sure the
++    // regions within a page is preferred on the same node.
++    size_t regions_per_page = page_size() / region_size();
++    return (region_index / regions_per_page) % _num_active_node_ids;
++  }
++}
++
++int G1NUMA::numa_id(int index) const {
++  assert(index < _len_node_id_to_index_map, "Index %d out of range: [0,%d)",
++         index, _len_node_id_to_index_map);
++  return _node_ids[index];
++}
++
++uint G1NUMA::index_of_address(HeapWord *address) const {
++  int numa_id = os::numa_get_group_id_for_address((const void*)address);
++  if (numa_id == -1) {
++    return UnknownNodeIndex;
++  } else {
++    return index_of_node_id(numa_id);
++  }
++}
++
++uint G1NUMA::index_for_region(HeapRegion* hr) const {
++  if (!is_enabled()) {
++    return 0;
++  }
++
++  if (AlwaysPreTouch) {
++    // If we already pretouched, we can check actual node index here.
++    // However, if node index is still unknown, use preferred node index.
++    uint node_index = index_of_address(hr->bottom());
++    if (node_index != UnknownNodeIndex) {
++      return node_index;
++    }
++  }
++
++  return preferred_node_index_for_index(hr->hrm_index());
++}
++
++// Request to spread the given memory evenly across the available NUMA
++// nodes. Which node to request for a given address is given by the
++// region size and the page size. Below are two examples on 4 NUMA nodes system:
++//   1. G1HeapRegionSize(_region_size) is larger than or equal to page size.
++//      * Page #:       |-0--||-1--||-2--||-3--||-4--||-5--||-6--||-7--||-8--||-9--||-10-||-11-||-12-||-13-||-14-||-15-|
++//      * HeapRegion #: |----#0----||----#1----||----#2----||----#3----||----#4----||----#5----||----#6----||----#7----|
++//      * NUMA node #:  |----#0----||----#1----||----#2----||----#3----||----#0----||----#1----||----#2----||----#3----|
++//   2. G1HeapRegionSize(_region_size) is smaller than page size.
++//      Memory will be touched one page at a time because G1RegionToSpaceMapper commits
++//      pages one by one.
++//      * Page #:       |-----0----||-----1----||-----2----||-----3----||-----4----||-----5----||-----6----||-----7----|
++//      * HeapRegion #: |-#0-||-#1-||-#2-||-#3-||-#4-||-#5-||-#6-||-#7-||-#8-||-#9-||#10-||#11-||#12-||#13-||#14-||#15-|
++//      * NUMA node #:  |----#0----||----#1----||----#2----||----#3----||----#0----||----#1----||----#2----||----#3----|
++void G1NUMA::request_memory_on_node(void* aligned_address, size_t size_in_bytes, uint region_index) {
++  if (!is_enabled()) {
++    return;
++  }
++
++  if (size_in_bytes == 0) {
++    return;
++  }
++
++  uint node_index = preferred_node_index_for_index(region_index);
++
++  assert(is_aligned(aligned_address, page_size()), "Given address (" PTR_FORMAT ") should be aligned.", p2i(aligned_address));
++  assert(is_aligned(size_in_bytes, page_size()), "Given size (" SIZE_FORMAT ") should be aligned.", size_in_bytes);
++
++  log_trace(gc, heap, numa)("Request memory [" PTR_FORMAT ", " PTR_FORMAT ") to be NUMA id (%d)",
++                            p2i(aligned_address), p2i((char*)aligned_address + size_in_bytes), _node_ids[node_index]);
++  os::numa_make_local((char*)aligned_address, size_in_bytes, _node_ids[node_index]);
++}
++
++uint G1NUMA::max_search_depth() const {
++  // Multiple of 3 is just random number to limit iterations.
++  // There would be some cases that 1 page may be consisted of multiple HeapRegions.
++  return 3 * MAX2((uint)(page_size() / region_size()), (uint)1) * num_active_nodes();
++}
++
++void G1NUMA::update_statistics(G1NUMAStats::NodeDataItems phase,
++                               uint requested_node_index,
++                               uint allocated_node_index) {
++  if (_stats == NULL) {
++    return;
++  }
++
++  uint converted_req_index;
++  if(requested_node_index < _num_active_node_ids) {
++    converted_req_index = requested_node_index;
++  } else {
++    assert(requested_node_index == AnyNodeIndex,
++           "Requested node index %u should be AnyNodeIndex.", requested_node_index);
++    converted_req_index = _num_active_node_ids;
++  }
++  _stats->update(phase, converted_req_index, allocated_node_index);
++}
++
++void G1NUMA::copy_statistics(G1NUMAStats::NodeDataItems phase,
++                             uint requested_node_index,
++                             size_t* allocated_stat) {
++  if (_stats == NULL) {
++    return;
++  }
++
++  _stats->copy(phase, requested_node_index, allocated_stat);
++}
++
++void G1NUMA::print_statistics() const {
++  if (_stats == NULL) {
++    return;
++  }
++
++  _stats->print_statistics();
++}
++
++G1NodeIndexCheckClosure::G1NodeIndexCheckClosure(const char* desc, G1NUMA* numa, LogStream* ls) :
++  _desc(desc), _numa(numa), _ls(ls) {
++
++  uint num_nodes = _numa->num_active_nodes();
++  _matched = NEW_C_HEAP_ARRAY(uint, num_nodes, mtGC);
++  _mismatched = NEW_C_HEAP_ARRAY(uint, num_nodes, mtGC);
++  _total = NEW_C_HEAP_ARRAY(uint, num_nodes, mtGC);
++  memset(_matched, 0, sizeof(uint) * num_nodes);
++  memset(_mismatched, 0, sizeof(uint) * num_nodes);
++  memset(_total, 0, sizeof(uint) * num_nodes);
++}
++
++G1NodeIndexCheckClosure::~G1NodeIndexCheckClosure() {
++  _ls->print("%s: NUMA region verification (id: matched/mismatched/total): ", _desc);
++  const int* numa_ids = _numa->node_ids();
++  for (uint i = 0; i < _numa->num_active_nodes(); i++) {
++    _ls->print("%d: %u/%u/%u ", numa_ids[i], _matched[i], _mismatched[i], _total[i]);
++  }
++
++  FREE_C_HEAP_ARRAY(uint, _matched);
++  FREE_C_HEAP_ARRAY(uint, _mismatched);
++  FREE_C_HEAP_ARRAY(uint, _total);
++}
++
++bool G1NodeIndexCheckClosure::do_heap_region(HeapRegion* hr) {
++  // Preferred node index will only have valid node index.
++  uint preferred_node_index = _numa->preferred_node_index_for_index(hr->hrm_index());
++  // Active node index may have UnknownNodeIndex.
++  uint active_node_index = _numa->index_of_address(hr->bottom());
++
++  if (preferred_node_index == active_node_index) {
++    _matched[preferred_node_index]++;
++  } else if (active_node_index != G1NUMA::UnknownNodeIndex) {
++    _mismatched[preferred_node_index]++;
++  }
++  _total[preferred_node_index]++;
++
++  return false;
++}
+diff --git a/src/hotspot/share/gc/g1/g1NUMA.hpp b/src/hotspot/share/gc/g1/g1NUMA.hpp
+new file mode 100644
+index 000000000..2bfad205b
+--- /dev/null
++++ b/src/hotspot/share/gc/g1/g1NUMA.hpp
+@@ -0,0 +1,152 @@
++/*
++ * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ *
++ */
++
++#ifndef SHARE_VM_GC_G1_NUMA_HPP
++#define SHARE_VM_GC_G1_NUMA_HPP
++
++#include "gc/g1/g1NUMAStats.hpp"
++#include "gc/g1/heapRegion.hpp"
++#include "memory/allocation.hpp"
++#include "runtime/os.hpp"
++
++class LogStream;
++
++class G1NUMA: public CHeapObj<mtGC> {
++  // Mapping of available node ids to  0-based index which can be used for
++  // fast resource management. I.e. for every node id provides a unique value in
++  // the range from [0, {# of nodes-1}].
++  // For invalid node id, return UnknownNodeIndex.
++  uint* _node_id_to_index_map;
++  // Length of _num_active_node_ids_id to index map.
++  int _len_node_id_to_index_map;
++
++  // Current active node ids.
++  int* _node_ids;
++  // Total number of node ids.
++  uint _num_active_node_ids;
++
++  // HeapRegion size
++  size_t _region_size;
++  // Necessary when touching memory.
++  size_t _page_size;
++
++  // Stores statistic data.
++  G1NUMAStats* _stats;
++
++  size_t region_size() const;
++  size_t page_size() const;
++
++  // Returns node index of the given node id.
++  // Precondition: node_id is an active node id.
++  inline uint index_of_node_id(int node_id) const;
++
++  // Creates node id and node index mapping table of _node_id_to_index_map.
++  void init_node_id_to_index_map(const int* node_ids, uint num_node_ids);
++
++  static G1NUMA* _inst;
++
++  G1NUMA();
++  void initialize(bool use_numa);
++  void initialize_without_numa();
++
++public:
++  static const uint UnknownNodeIndex = UINT_MAX;
++  static const uint AnyNodeIndex = UnknownNodeIndex - 1;
++
++  static G1NUMA* numa() { return _inst; }
++
++  static G1NUMA* create();
++
++  ~G1NUMA();
++
++  // Sets heap region size and page size after those values
++  // are determined at G1CollectedHeap::initialize().
++  void set_region_info(size_t region_size, size_t page_size);
++
++  // Returns active memory node count.
++  uint num_active_nodes() const;
++
++  bool is_enabled() const;
++
++  int numa_id(int index) const;
++
++  // Returns memory node ids
++  const int* node_ids() const;
++
++  // Returns node index of current calling thread.
++  uint index_of_current_thread() const;
++
++  // Returns the preferred index for the given HeapRegion index.
++  // This assumes that HeapRegions are evenly spit, so we can decide preferred index
++  // with the given HeapRegion index.
++  // Result is less than num_active_nodes().
++  uint preferred_node_index_for_index(uint region_index) const;
++
++  // Retrieves node index of the given address.
++  // Result is less than num_active_nodes() or is UnknownNodeIndex.
++  // Precondition: address is in reserved range for heap.
++  uint index_of_address(HeapWord* address) const;
++
++  // If AlwaysPreTouch is enabled, return actual node index via system call.
++  // If disabled, return preferred node index of the given heap region.
++  uint index_for_region(HeapRegion* hr) const;
++
++  // Requests the given memory area to be located at the given node index.
++  void request_memory_on_node(void* aligned_address, size_t size_in_bytes, uint region_index);
++
++  // Returns maximum search depth which is used to limit heap region search iterations.
++  // The number of active nodes, page size and heap region size are considered.
++  uint max_search_depth() const;
++
++  // Update the given phase of requested and allocated node index.
++  void update_statistics(G1NUMAStats::NodeDataItems phase, uint requested_node_index, uint allocated_node_index);
++
++  // Copy all allocated statistics of the given phase and requested node.
++  // Precondition: allocated_stat should have same length of active nodes.
++  void copy_statistics(G1NUMAStats::NodeDataItems phase, uint requested_node_index, size_t* allocated_stat);
++
++  // Print all statistics.
++  void print_statistics() const;
++};
++
++class G1NodeIndexCheckClosure : public HeapRegionClosure {
++  const char* _desc;
++  G1NUMA* _numa;
++  // Records matched count of each node.
++  uint* _matched;
++  // Records mismatched count of each node.
++  uint* _mismatched;
++  // Records total count of each node.
++  // Total = matched + mismatched + unknown.
++  uint* _total;
++  LogStream* _ls;
++
++public:
++  G1NodeIndexCheckClosure(const char* desc, G1NUMA* numa, LogStream* ls);
++  ~G1NodeIndexCheckClosure();
++
++  bool do_heap_region(HeapRegion* hr);
++};
++
++#endif // SHARE_VM_GC_G1_NUMA_HPP
+diff --git a/src/hotspot/share/gc/g1/g1NUMAStats.cpp b/src/hotspot/share/gc/g1/g1NUMAStats.cpp
+new file mode 100644
+index 000000000..03bc28b4e
+--- /dev/null
++++ b/src/hotspot/share/gc/g1/g1NUMAStats.cpp
+@@ -0,0 +1,232 @@
++/*
++ * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ *
++ */
++
++#include "precompiled.hpp"
++#include "gc/g1/g1NUMAStats.hpp"
++#include "logging/logStream.hpp"
++
++double G1NUMAStats::Stat::rate() const {
++  return _requested == 0 ? 0 : (double)_hit / _requested * 100;
++}
++
++G1NUMAStats::NodeDataArray::NodeDataArray(uint num_nodes) {
++  guarantee(num_nodes > 1, "Number of nodes (%u) should be set", num_nodes);
++
++  // The row represents the number of nodes.
++  _num_column = num_nodes;
++  // +1 for G1MemoryNodeManager::AnyNodeIndex.
++  _num_row = num_nodes + 1;
++
++  _data = NEW_C_HEAP_ARRAY(size_t*, _num_row, mtGC);
++  for (uint row = 0; row < _num_row; row++) {
++    _data[row] = NEW_C_HEAP_ARRAY(size_t, _num_column, mtGC);
++  }
++
++  clear();
++}
++
++G1NUMAStats::NodeDataArray::~NodeDataArray() {
++  for (uint row = 0; row < _num_row; row++) {
++    FREE_C_HEAP_ARRAY(size_t, _data[row]);
++  }
++  FREE_C_HEAP_ARRAY(size_t*, _data);
++}
++
++void G1NUMAStats::NodeDataArray::create_hit_rate(Stat* result) const {
++  size_t requested = 0;
++  size_t hit = 0;
++
++  for (size_t row = 0; row < _num_row; row++) {
++    for (size_t column = 0; column < _num_column; column++) {
++      requested += _data[row][column];
++      if (row == column) {
++        hit += _data[row][column];
++      }
++    }
++  }
++
++  assert(result != NULL, "Invariant");
++  result->_hit = hit;
++  result->_requested = requested;
++}
++
++void G1NUMAStats::NodeDataArray::create_hit_rate(Stat* result, uint req_index) const {
++  size_t requested = 0;
++  size_t hit = _data[req_index][req_index];
++
++  for (size_t column = 0; column < _num_column; column++) {
++    requested += _data[req_index][column];
++  }
++
++  assert(result != NULL, "Invariant");
++  result->_hit = hit;
++  result->_requested = requested;
++}
++
++size_t G1NUMAStats::NodeDataArray::sum(uint req_index) const {
++  size_t sum = 0;
++  for (size_t column = 0; column < _num_column; column++) {
++    sum += _data[req_index][column];
++  }
++
++  return sum;
++}
++
++void G1NUMAStats::NodeDataArray::increase(uint req_index, uint alloc_index) {
++  assert(req_index < _num_row,
++         "Requested index %u should be less than the row size %u",
++         req_index, _num_row);
++  assert(alloc_index < _num_column,
++         "Allocated index %u should be less than the column size %u",
++         alloc_index, _num_column);
++  _data[req_index][alloc_index] += 1;
++}
++
++void G1NUMAStats::NodeDataArray::clear() {
++  for (uint row = 0; row < _num_row; row++) {
++    memset((void*)_data[row], 0, sizeof(size_t) * _num_column);
++  }
++}
++
++size_t G1NUMAStats::NodeDataArray::get(uint req_index, uint alloc_index) {
++  return _data[req_index][alloc_index];
++}
++
++void G1NUMAStats::NodeDataArray::copy(uint req_index, size_t* stat) {
++  assert(stat != NULL, "Invariant");
++
++  for (uint column = 0; column < _num_column; column++) {
++    _data[req_index][column] += stat[column];
++  }
++}
++
++G1NUMAStats::G1NUMAStats(const int* node_ids, uint num_node_ids) :
++  _node_ids(node_ids), _num_node_ids(num_node_ids), _node_data() {
++
++  assert(_num_node_ids  > 1, "Should have more than one active memory nodes %u", _num_node_ids);
++
++  for (int i = 0; i < NodeDataItemsSentinel; i++) {
++    _node_data[i] = new NodeDataArray(_num_node_ids);
++  }
++}
++
++G1NUMAStats::~G1NUMAStats() {
++  for (int i = 0; i < NodeDataItemsSentinel; i++) {
++    delete _node_data[i];
++  }
++}
++
++void G1NUMAStats::clear(G1NUMAStats::NodeDataItems phase) {
++  _node_data[phase]->clear();
++}
++
++void G1NUMAStats::update(G1NUMAStats::NodeDataItems phase,
++                         uint requested_node_index,
++                         uint allocated_node_index) {
++  _node_data[phase]->increase(requested_node_index, allocated_node_index);
++}
++
++void G1NUMAStats::copy(G1NUMAStats::NodeDataItems phase,
++                       uint requested_node_index,
++                       size_t* allocated_stat) {
++  _node_data[phase]->copy(requested_node_index, allocated_stat);
++}
++
++static const char* phase_to_explanatory_string(G1NUMAStats::NodeDataItems phase) {
++  switch(phase) {
++    case G1NUMAStats::NewRegionAlloc:
++      return "Placement match ratio";
++    case G1NUMAStats::LocalObjProcessAtCopyToSurv:
++      return "Worker task locality match ratio";
++    default:
++      return "";
++  }
++}
++
++#define RATE_TOTAL_FORMAT "%0.0f%% " SIZE_FORMAT "/" SIZE_FORMAT
++
++void G1NUMAStats::print_info(G1NUMAStats::NodeDataItems phase) {
++  LogTarget(Info, gc, heap, numa) lt;
++
++  if (lt.is_enabled()) {
++    LogStream ls(lt);
++    Stat result;
++    size_t array_width = _num_node_ids;
++
++    _node_data[phase]->create_hit_rate(&result);
++
++    ls.print("%s: " RATE_TOTAL_FORMAT " (",
++             phase_to_explanatory_string(phase), result.rate(), result._hit, result._requested);
++
++    for (uint i = 0; i < array_width; i++) {
++      if (i != 0) {
++        ls.print(", ");
++      }
++      _node_data[phase]->create_hit_rate(&result, i);
++      ls.print("%d: " RATE_TOTAL_FORMAT,
++               _node_ids[i], result.rate(), result._hit, result._requested);
++    }
++    ls.print_cr(")");
++  }
++}
++
++void G1NUMAStats::print_mutator_alloc_stat_debug() {
++  LogTarget(Debug, gc, heap, numa) lt;
++
++  if (lt.is_enabled()) {
++    LogStream ls(lt);
++    uint array_width = _num_node_ids;
++
++    ls.print("Allocated NUMA ids    ");
++    for (uint i = 0; i < array_width; i++) {
++      ls.print("%8d", _node_ids[i]);
++    }
++    ls.print_cr("   Total");
++
++    ls.print("Requested NUMA id ");
++    for (uint req = 0; req < array_width; req++) {
++      ls.print("%3d ", _node_ids[req]);
++      for (uint alloc = 0; alloc < array_width; alloc++) {
++        ls.print(SIZE_FORMAT_W(8), _node_data[NewRegionAlloc]->get(req, alloc));
++      }
++      ls.print(SIZE_FORMAT_W(8), _node_data[NewRegionAlloc]->sum(req));
++      ls.print_cr("");
++      // Add padding to align with the string 'Requested NUMA id'.
++      ls.print("                  ");
++    }
++    ls.print("Any ");
++    for (uint alloc = 0; alloc < array_width; alloc++) {
++      ls.print(SIZE_FORMAT_W(8), _node_data[NewRegionAlloc]->get(array_width, alloc));
++    }
++    ls.print(SIZE_FORMAT_W(8), _node_data[NewRegionAlloc]->sum(array_width));
++    ls.print_cr("");
++  }
++}
++
++void G1NUMAStats::print_statistics() {
++  print_info(NewRegionAlloc);
++  print_mutator_alloc_stat_debug();
++
++  print_info(LocalObjProcessAtCopyToSurv);
++}
+diff --git a/src/hotspot/share/gc/g1/g1NUMAStats.hpp b/src/hotspot/share/gc/g1/g1NUMAStats.hpp
+new file mode 100644
+index 000000000..fba9442c8
+--- /dev/null
++++ b/src/hotspot/share/gc/g1/g1NUMAStats.hpp
+@@ -0,0 +1,119 @@
++/*
++ * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ *
++ */
++
++#ifndef SHARE_VM_GC_G1_NODE_TIMES_HPP
++#define SHARE_VM_GC_G1_NODE_TIMES_HPP
++
++#include "memory/allocation.hpp"
++
++// Manages statistics of multi nodes.
++class G1NUMAStats : public CHeapObj<mtGC> {
++  struct Stat {
++    // Hit count: if requested id equals to returned id.
++    size_t _hit;
++    // Total request count
++    size_t _requested;
++
++    // Hit count / total request count
++    double rate() const;
++  };
++
++  // Holds data array which has a size of (node count) * (node count + 1) to
++  // represent request node * allocated node. The request node includes any node case.
++  // All operations are NOT thread-safe.
++  // The row index indicates a requested node index while the column node index
++  // indicates an allocated node index. The last row is for any node index request.
++  // E.g. (req, alloc) = (0,0) (1,0) (2,0) (0,1) (Any, 3) (0,2) (0,3) (0,3) (3,3)
++  // Allocated node index      0    1    2    3  Total
++  // Requested node index 0    1    1    1    2    5
++  //                      1    1    0    0    0    1
++  //                      2    1    0    0    0    1
++  //                      3    0    0    0    1    1
++  //                    Any    0    0    0    1    1
++  class NodeDataArray : public CHeapObj<mtGC> {
++    // The number of nodes.
++    uint _num_column;
++    // The number of nodes + 1 (for any node request)
++    uint _num_row;
++    // 2-dimension array that holds count of allocated / requested node index.
++    size_t** _data;
++
++  public:
++    NodeDataArray(uint num_nodes);
++    ~NodeDataArray();
++
++    // Create Stat result of hit count, requested count and hit rate.
++    // The result is copied to the given result parameter.
++    void create_hit_rate(Stat* result) const;
++    // Create Stat result of hit count, requested count and hit rate of the given index.
++    // The result is copied to the given result parameter.
++    void create_hit_rate(Stat* result, uint req_index) const;
++    // Return sum of the given index.
++    size_t sum(uint req_index) const;
++    // Increase at the request / allocated index.
++    void increase(uint req_index, uint alloc_index);
++    // Clear all data.
++    void clear();
++    // Return current value of the given request / allocated index.
++    size_t get(uint req_index, uint alloc_index);
++    // Copy values of the given request index.
++    void copy(uint req_index, size_t* stat);
++  };
++
++public:
++  enum NodeDataItems {
++    // Statistics of a new region allocation.
++    NewRegionAlloc,
++    // Statistics of object processing during copy to survivor region.
++    LocalObjProcessAtCopyToSurv,
++    NodeDataItemsSentinel
++  };
++
++private:
++  const int* _node_ids;
++  uint _num_node_ids;
++
++  NodeDataArray* _node_data[NodeDataItemsSentinel];
++
++  void print_info(G1NUMAStats::NodeDataItems phase);
++
++  void print_mutator_alloc_stat_debug();
++
++public:
++  G1NUMAStats(const int* node_ids, uint num_node_ids);
++  ~G1NUMAStats();
++
++  void clear(G1NUMAStats::NodeDataItems phase);
++
++  // Update the given phase of requested and allocated node index.
++  void update(G1NUMAStats::NodeDataItems phase, uint requested_node_index, uint allocated_node_index);
++
++  // Copy all allocated statistics of the given phase and requested node.
++  // Precondition: allocated_stat should have same length of active nodes.
++  void copy(G1NUMAStats::NodeDataItems phase, uint requested_node_index, size_t* allocated_stat);
++
++  void print_statistics();
++};
++
++#endif // SHARE_VM_GC_G1_NODE_TIMES_HPP
+diff --git a/src/hotspot/share/gc/g1/g1PageBasedVirtualSpace.cpp b/src/hotspot/share/gc/g1/g1PageBasedVirtualSpace.cpp
+index 108180654..69c76967a 100644
+--- a/src/hotspot/share/gc/g1/g1PageBasedVirtualSpace.cpp
++++ b/src/hotspot/share/gc/g1/g1PageBasedVirtualSpace.cpp
+@@ -118,6 +118,11 @@ char* G1PageBasedVirtualSpace::page_start(size_t index) const {
+   return _low_boundary + index * _page_size;
+ }
+ 
++size_t G1PageBasedVirtualSpace::page_size() const {
++  assert(_page_size > 0, "Page size is not yet initialized.");
++  return _page_size;
++}
++
+ bool G1PageBasedVirtualSpace::is_after_last_page(size_t index) const {
+   guarantee(index <= _committed.size(),
+             "Given boundary page " SIZE_FORMAT " is beyond managed page count " SIZE_FORMAT, index, _committed.size());
+diff --git a/src/hotspot/share/gc/g1/g1PageBasedVirtualSpace.hpp b/src/hotspot/share/gc/g1/g1PageBasedVirtualSpace.hpp
+index 538467992..e7ac64911 100644
+--- a/src/hotspot/share/gc/g1/g1PageBasedVirtualSpace.hpp
++++ b/src/hotspot/share/gc/g1/g1PageBasedVirtualSpace.hpp
+@@ -92,8 +92,6 @@ class G1PageBasedVirtualSpace {
+ 
+   // Returns the index of the page which contains the given address.
+   size_t  addr_to_page_index(char* addr) const;
+-  // Returns the address of the given page index.
+-  char*  page_start(size_t index) const;
+ 
+   // Is the given page index the last page?
+   bool is_last_page(size_t index) const { return index == (_committed.size() - 1); }
+@@ -145,6 +143,10 @@ class G1PageBasedVirtualSpace {
+ 
+   void check_for_contiguity() PRODUCT_RETURN;
+ 
++  // Returns the address of the given page index.
++  char*  page_start(size_t index) const;
++  size_t page_size() const;
++
+   // Debugging
+   void print_on(outputStream* out) PRODUCT_RETURN;
+   void print();
+diff --git a/src/hotspot/share/gc/g1/g1ParScanThreadState.cpp b/src/hotspot/share/gc/g1/g1ParScanThreadState.cpp
+index 72a607168..1551c70fe 100644
+--- a/src/hotspot/share/gc/g1/g1ParScanThreadState.cpp
++++ b/src/hotspot/share/gc/g1/g1ParScanThreadState.cpp
+@@ -52,7 +52,9 @@ G1ParScanThreadState::G1ParScanThreadState(G1CollectedHeap* g1h, uint worker_id,
+     _stack_trim_upper_threshold(GCDrainStackTargetSize * 2 + 1),
+     _stack_trim_lower_threshold(GCDrainStackTargetSize),
+     _trim_ticks(),
+-    _old_gen_is_full(false)
++    _old_gen_is_full(false),
++    _numa(g1h->numa()),
++    _obj_alloc_stat(NULL)
+ {
+   // we allocate G1YoungSurvRateNumRegions plus one entries, since
+   // we "sacrifice" entry 0 to keep track of surviving bytes for
+@@ -72,13 +74,13 @@ G1ParScanThreadState::G1ParScanThreadState(G1CollectedHeap* g1h, uint worker_id,
+ 
+   _plab_allocator = new G1PLABAllocator(_g1h->allocator());
+ 
+-  _dest[InCSetState::NotInCSet]    = InCSetState::NotInCSet;
+   // The dest for Young is used when the objects are aged enough to
+   // need to be moved to the next space.
+   _dest[InCSetState::Young]        = InCSetState::Old;
+   _dest[InCSetState::Old]          = InCSetState::Old;
+ 
+   _closures = G1EvacuationRootClosures::create_root_closures(this, _g1h);
++  initialize_numa_stats();
+ }
+ 
+ // Pass locally gathered statistics to global state.
+@@ -92,16 +94,22 @@ void G1ParScanThreadState::flush(size_t* surviving_young_words) {
+   for (uint region_index = 0; region_index < length; region_index++) {
+     surviving_young_words[region_index] += _surviving_young_words[region_index];
+   }
++  flush_numa_stats();
+ }
+ 
+ G1ParScanThreadState::~G1ParScanThreadState() {
+   delete _plab_allocator;
+   delete _closures;
+   FREE_C_HEAP_ARRAY(size_t, _surviving_young_words_base);
++  FREE_C_HEAP_ARRAY(size_t, _obj_alloc_stat);
+ }
+ 
+-void G1ParScanThreadState::waste(size_t& wasted, size_t& undo_wasted) {
+-  _plab_allocator->waste(wasted, undo_wasted);
++size_t G1ParScanThreadState::lab_waste_words() const {
++  return _plab_allocator->waste();
++}
++
++size_t G1ParScanThreadState::lab_undo_waste_words() const {
++  return _plab_allocator->undo_waste();
+ }
+ 
+ #ifdef ASSERT
+@@ -150,7 +158,8 @@ void G1ParScanThreadState::trim_queue() {
+ HeapWord* G1ParScanThreadState::allocate_in_next_plab(InCSetState const state,
+                                                       InCSetState* dest,
+                                                       size_t word_sz,
+-                                                      bool previous_plab_refill_failed) {
++                                                      bool previous_plab_refill_failed,
++                                                      uint node_index) {
+   assert(state.is_in_cset_or_humongous(), "Unexpected state: " CSETSTATE_FORMAT, state.value());
+   assert(dest->is_in_cset_or_humongous(), "Unexpected dest: " CSETSTATE_FORMAT, dest->value());
+ 
+@@ -160,7 +169,8 @@ HeapWord* G1ParScanThreadState::allocate_in_next_plab(InCSetState const state,
+     bool plab_refill_in_old_failed = false;
+     HeapWord* const obj_ptr = _plab_allocator->allocate(InCSetState::Old,
+                                                         word_sz,
+-                                                        &plab_refill_in_old_failed);
++                                                        &plab_refill_in_old_failed,
++                                                        node_index);
+     // Make sure that we won't attempt to copy any other objects out
+     // of a survivor region (given that apparently we cannot allocate
+     // any new ones) to avoid coming into this slow path again and again.
+@@ -199,8 +209,8 @@ InCSetState G1ParScanThreadState::next_state(InCSetState const state, markOop co
+ 
+ void G1ParScanThreadState::report_promotion_event(InCSetState const dest_state,
+                                                   oop const old, size_t word_sz, uint age,
+-                                                  HeapWord * const obj_ptr) const {
+-  PLAB* alloc_buf = _plab_allocator->alloc_buffer(dest_state);
++                                                  HeapWord * const obj_ptr, uint node_index) const {
++  PLAB* alloc_buf = _plab_allocator->alloc_buffer(dest_state, node_index);
+   if (alloc_buf->contains(obj_ptr)) {
+     _g1h->_gc_tracer_stw->report_promotion_in_new_plab_event(old->klass(), word_sz, age,
+                                                              dest_state.value() == InCSetState::Old,
+@@ -215,11 +225,6 @@ oop G1ParScanThreadState::copy_to_survivor_space(InCSetState const state,
+                                                  oop const old,
+                                                  markOop const old_mark) {
+   const size_t word_sz = old->size();
+-  HeapRegion* const from_region = _g1h->heap_region_containing(old);
+-  // +1 to make the -1 indexes valid...
+-  const int young_index = from_region->young_index_in_cset()+1;
+-  assert( (from_region->is_young() && young_index >  0) ||
+-         (!from_region->is_young() && young_index == 0), "invariant" );
+ 
+   uint age = 0;
+   InCSetState dest_state = next_state(state, old_mark, age);
+@@ -228,24 +233,30 @@ oop G1ParScanThreadState::copy_to_survivor_space(InCSetState const state,
+   if (_old_gen_is_full && dest_state.is_old()) {
+     return handle_evacuation_failure_par(old, old_mark);
+   }
+-  HeapWord* obj_ptr = _plab_allocator->plab_allocate(dest_state, word_sz);
++  HeapRegion* const from_region = _g1h->heap_region_containing(old);
++  uint node_index = from_region->node_index();
++
++  HeapWord* obj_ptr = _plab_allocator->plab_allocate(dest_state, word_sz, node_index);
+ 
+   // PLAB allocations should succeed most of the time, so we'll
+   // normally check against NULL once and that's it.
+   if (obj_ptr == NULL) {
+     bool plab_refill_failed = false;
+-    obj_ptr = _plab_allocator->allocate_direct_or_new_plab(dest_state, word_sz, &plab_refill_failed);
++    obj_ptr = _plab_allocator->allocate_direct_or_new_plab(dest_state, word_sz, &plab_refill_failed, node_index);
+     if (obj_ptr == NULL) {
+-      obj_ptr = allocate_in_next_plab(state, &dest_state, word_sz, plab_refill_failed);
++      assert(state.is_in_cset(), "Unexpected region attr type: %s", state.get_type_str());
++      obj_ptr = allocate_in_next_plab(state, &dest_state, word_sz, plab_refill_failed, node_index);
+       if (obj_ptr == NULL) {
+         // This will either forward-to-self, or detect that someone else has
+         // installed a forwarding pointer.
+         return handle_evacuation_failure_par(old, old_mark);
+       }
+     }
++    update_numa_stats(node_index);
++
+     if (_g1h->_gc_tracer_stw->should_report_promotion_events()) {
+       // The events are checked individually as part of the actual commit
+-      report_promotion_event(dest_state, old, word_sz, age, obj_ptr);
++      report_promotion_event(dest_state, old, word_sz, age, obj_ptr, node_index);
+     }
+   }
+ 
+@@ -257,7 +268,7 @@ oop G1ParScanThreadState::copy_to_survivor_space(InCSetState const state,
+   if (_g1h->evacuation_should_fail()) {
+     // Doing this after all the allocation attempts also tests the
+     // undo_allocation() method too.
+-    _plab_allocator->undo_allocation(dest_state, obj_ptr, word_sz);
++    _plab_allocator->undo_allocation(dest_state, obj_ptr, word_sz, node_index);
+     return handle_evacuation_failure_par(old, old_mark);
+   }
+ #endif // !PRODUCT
+@@ -270,6 +281,11 @@ oop G1ParScanThreadState::copy_to_survivor_space(InCSetState const state,
+   if (forward_ptr == NULL) {
+     Copy::aligned_disjoint_words((HeapWord*) old, obj_ptr, word_sz);
+ 
++    const int young_index = from_region->young_index_in_cset() + 1;
++
++    assert((from_region->is_young() && young_index >  0) ||
++           (!from_region->is_young() && young_index == 0), "invariant" );
++
+     if (dest_state.is_young()) {
+       if (age < markOopDesc::max_age) {
+         age++;
+@@ -318,7 +334,7 @@ oop G1ParScanThreadState::copy_to_survivor_space(InCSetState const state,
+     }
+     return obj;
+   } else {
+-    _plab_allocator->undo_allocation(dest_state, obj_ptr, word_sz);
++    _plab_allocator->undo_allocation(dest_state, obj_ptr, word_sz, node_index);
+     return forward_ptr;
+   }
+ }
+diff --git a/src/hotspot/share/gc/g1/g1ParScanThreadState.hpp b/src/hotspot/share/gc/g1/g1ParScanThreadState.hpp
+index 7e6369269..ed80fb0c2 100644
+--- a/src/hotspot/share/gc/g1/g1ParScanThreadState.hpp
++++ b/src/hotspot/share/gc/g1/g1ParScanThreadState.hpp
+@@ -88,6 +88,15 @@ class G1ParScanThreadState : public CHeapObj<mtGC> {
+     return _dest[original.value()];
+   }
+ 
++  size_t _num_optional_regions;
++
++  G1NUMA* _numa;
++
++  // Records how many object allocations happened at each node during copy to survivor.
++  // Only starts recording when log of gc+heap+numa is enabled and its data is
++  // transferred when flushed.
++  size_t* _obj_alloc_stat;
++
+ public:
+   G1ParScanThreadState(G1CollectedHeap* g1h, uint worker_id, size_t young_cset_length);
+   virtual ~G1ParScanThreadState();
+@@ -122,16 +131,11 @@ public:
+   G1EvacuationRootClosures* closures() { return _closures; }
+   uint worker_id() { return _worker_id; }
+ 
+-  // Returns the current amount of waste due to alignment or not being able to fit
+-  // objects within LABs and the undo waste.
+-  virtual void waste(size_t& wasted, size_t& undo_wasted);
+-
+-  size_t* surviving_young_words() {
+-    // We add one to hide entry 0 which accumulates surviving words for
+-    // age -1 regions (i.e. non-young ones)
+-    return _surviving_young_words + 1;
+-  }
++  size_t lab_waste_words() const;
++  size_t lab_undo_waste_words() const;
+ 
++  // Pass locally gathered statistics to global state. Returns the total number of
++  // HeapWords copied.
+   void flush(size_t* surviving_young_words);
+ 
+ private:
+@@ -183,18 +187,25 @@ private:
+   HeapWord* allocate_in_next_plab(InCSetState const state,
+                                   InCSetState* dest,
+                                   size_t word_sz,
+-                                  bool previous_plab_refill_failed);
++                                  bool previous_plab_refill_failed,
++                                  uint node_index);
+ 
+   inline InCSetState next_state(InCSetState const state, markOop const m, uint& age);
+ 
+   void report_promotion_event(InCSetState const dest_state,
+                               oop const old, size_t word_sz, uint age,
+-                              HeapWord * const obj_ptr) const;
++                              HeapWord * const obj_ptr, uint node_index) const;
+ 
+   inline bool needs_partial_trimming() const;
+   inline bool is_partially_trimmed() const;
+ 
+   inline void trim_queue_to_threshold(uint threshold);
++
++  // NUMA statistics related methods.
++  inline void initialize_numa_stats();
++  inline void flush_numa_stats();
++  inline void update_numa_stats(uint node_index);
++
+ public:
+   oop copy_to_survivor_space(InCSetState const state, oop const obj, markOop const old_mark);
+ 
+diff --git a/src/hotspot/share/gc/g1/g1ParScanThreadState.inline.hpp b/src/hotspot/share/gc/g1/g1ParScanThreadState.inline.hpp
+index f1fba8e94..094267516 100644
+--- a/src/hotspot/share/gc/g1/g1ParScanThreadState.inline.hpp
++++ b/src/hotspot/share/gc/g1/g1ParScanThreadState.inline.hpp
+@@ -193,4 +193,29 @@ inline void G1ParScanThreadState::reset_trim_ticks() {
+   _trim_ticks = Tickspan();
+ }
+ 
++void G1ParScanThreadState::initialize_numa_stats() {
++  if (_numa->is_enabled()) {
++    LogTarget(Info, gc, heap, numa) lt;
++
++    if (lt.is_enabled()) {
++      uint num_nodes = _numa->num_active_nodes();
++      // Record only if there are multiple active nodes.
++      _obj_alloc_stat = NEW_C_HEAP_ARRAY(size_t, num_nodes, mtGC);
++      memset(_obj_alloc_stat, 0, sizeof(size_t) * num_nodes);
++    }
++  }
++}
++
++void G1ParScanThreadState::flush_numa_stats() {
++  if (_obj_alloc_stat != NULL) {
++    uint node_index = _numa->index_of_current_thread();
++    _numa->copy_statistics(G1NUMAStats::LocalObjProcessAtCopyToSurv, node_index, _obj_alloc_stat);
++  }
++}
++
++void G1ParScanThreadState::update_numa_stats(uint node_index) {
++  if (_obj_alloc_stat != NULL) {
++    _obj_alloc_stat[node_index]++;
++  }
++}
+ #endif // SHARE_VM_GC_G1_G1PARSCANTHREADSTATE_INLINE_HPP
+diff --git a/src/hotspot/share/gc/g1/g1RegionToSpaceMapper.cpp b/src/hotspot/share/gc/g1/g1RegionToSpaceMapper.cpp
+index 367563db0..dba2d1734 100644
+--- a/src/hotspot/share/gc/g1/g1RegionToSpaceMapper.cpp
++++ b/src/hotspot/share/gc/g1/g1RegionToSpaceMapper.cpp
+@@ -24,6 +24,7 @@
+ 
+ #include "precompiled.hpp"
+ #include "gc/g1/g1BiasedArray.hpp"
++#include "gc/g1/g1NUMA.hpp"
+ #include "gc/g1/g1RegionToSpaceMapper.hpp"
+ #include "memory/allocation.inline.hpp"
+ #include "memory/virtualspace.hpp"
+@@ -37,10 +38,11 @@ G1RegionToSpaceMapper::G1RegionToSpaceMapper(ReservedSpace rs,
+                                              size_t region_granularity,
+                                              size_t commit_factor,
+                                              MemoryType type) :
++  _listener(NULL),
+   _storage(rs, used_size, page_size),
+   _region_granularity(region_granularity),
+-  _listener(NULL),
+-  _commit_map(rs.size() * commit_factor / region_granularity, mtGC) {
++  _commit_map(rs.size() * commit_factor / region_granularity, mtGC),
++  _memory_type(type) {
+   guarantee(is_power_of_2(page_size), "must be");
+   guarantee(is_power_of_2(region_granularity), "must be");
+ 
+@@ -68,10 +70,18 @@ class G1RegionsLargerThanCommitSizeMapper : public G1RegionToSpaceMapper {
+   }
+ 
+   virtual void commit_regions(uint start_idx, size_t num_regions, WorkGang* pretouch_gang) {
+-    size_t const start_page = (size_t)start_idx * _pages_per_region;
+-    bool zero_filled = _storage.commit(start_page, num_regions * _pages_per_region);
++    const size_t start_page = (size_t)start_idx * _pages_per_region;
++    const size_t size_in_pages = num_regions * _pages_per_region;
++    bool zero_filled = _storage.commit(start_page, size_in_pages);
++    if (_memory_type == mtJavaHeap) {
++      for (uint region_index = start_idx; region_index < start_idx + num_regions; region_index++ ) {
++        void* address = _storage.page_start(region_index * _pages_per_region);
++        size_t size_in_bytes = _storage.page_size() * _pages_per_region;
++        G1NUMA::numa()->request_memory_on_node(address, size_in_bytes, region_index);
++      }
++    }
+     if (AlwaysPreTouch) {
+-      _storage.pretouch(start_page, num_regions * _pages_per_region, pretouch_gang);
++      _storage.pretouch(start_page, size_in_pages, pretouch_gang);
+     }
+     _commit_map.set_range(start_idx, start_idx + num_regions);
+     fire_on_commit(start_idx, num_regions, zero_filled);
+@@ -122,26 +132,32 @@ class G1RegionsSmallerThanCommitSizeMapper : public G1RegionToSpaceMapper {
+     size_t num_committed = 0;
+ 
+     bool all_zero_filled = true;
++    G1NUMA* numa = G1NUMA::numa();
+ 
+-    for (uint i = start_idx; i < start_idx + num_regions; i++) {
+-      assert(!_commit_map.at(i), "Trying to commit storage at region %u that is already committed", i);
+-      size_t idx = region_idx_to_page_idx(i);
+-      uint old_refcount = _refcounts.get_by_index(idx);
++    for (uint region_idx = start_idx; region_idx < start_idx + num_regions; region_idx++) {
++      assert(!_commit_map.at(region_idx), "Trying to commit storage at region %u that is already committed", region_idx);
++      size_t page_idx = region_idx_to_page_idx(region_idx);
++      uint old_refcount = _refcounts.get_by_index(page_idx);
+ 
+       bool zero_filled = false;
+       if (old_refcount == 0) {
+         if (first_committed == NoPage) {
+-          first_committed = idx;
++          first_committed = page_idx;
+           num_committed = 1;
+         } else {
+           num_committed++;
+         }
+-        zero_filled = _storage.commit(idx, 1);
++        zero_filled = _storage.commit(page_idx, 1);
++        if (_memory_type == mtJavaHeap) {
++          void* address = _storage.page_start(page_idx);
++          size_t size_in_bytes = _storage.page_size();
++          numa->request_memory_on_node(address, size_in_bytes, region_idx);
++        }
+       }
+       all_zero_filled &= zero_filled;
+ 
+-      _refcounts.set_by_index(idx, old_refcount + 1);
+-      _commit_map.set_bit(i);
++      _refcounts.set_by_index(page_idx, old_refcount + 1);
++      _commit_map.set_bit(region_idx);
+     }
+     if (AlwaysPreTouch && num_committed > 0) {
+       _storage.pretouch(first_committed, num_committed, pretouch_gang);
+diff --git a/src/hotspot/share/gc/g1/g1RegionToSpaceMapper.hpp b/src/hotspot/share/gc/g1/g1RegionToSpaceMapper.hpp
+index 0a5227c77..30f7bf54c 100644
+--- a/src/hotspot/share/gc/g1/g1RegionToSpaceMapper.hpp
++++ b/src/hotspot/share/gc/g1/g1RegionToSpaceMapper.hpp
+@@ -53,6 +53,8 @@ class G1RegionToSpaceMapper : public CHeapObj<mtGC> {
+   // Mapping management
+   CHeapBitMap _commit_map;
+ 
++  MemoryType _memory_type;
++
+   G1RegionToSpaceMapper(ReservedSpace rs, size_t used_size, size_t page_size, size_t region_granularity, size_t commit_factor, MemoryType type);
+ 
+   void fire_on_commit(uint start_idx, size_t num_regions, bool zero_filled);
+diff --git a/src/hotspot/share/gc/g1/g1RegionsOnNodes.cpp b/src/hotspot/share/gc/g1/g1RegionsOnNodes.cpp
+new file mode 100644
+index 000000000..b580b9252
+--- /dev/null
++++ b/src/hotspot/share/gc/g1/g1RegionsOnNodes.cpp
+@@ -0,0 +1,59 @@
++/*
++ * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ *
++ */
++
++#include "precompiled.hpp"
++#include "gc/g1/g1NUMA.hpp"
++#include "gc/g1/g1RegionsOnNodes.hpp"
++#include "gc/g1/heapRegion.hpp"
++
++G1RegionsOnNodes::G1RegionsOnNodes() : _count_per_node(NULL), _numa(G1NUMA::numa()) {
++  _count_per_node = NEW_C_HEAP_ARRAY(uint, _numa->num_active_nodes(), mtGC);
++  clear();
++}
++
++G1RegionsOnNodes::~G1RegionsOnNodes() {
++  FREE_C_HEAP_ARRAY(uint, _count_per_node);
++}
++
++uint G1RegionsOnNodes::add(HeapRegion* hr) {
++  uint node_index = hr->node_index();
++
++  // Update only if the node index is valid.
++  if (node_index < _numa->num_active_nodes()) {
++    *(_count_per_node + node_index) += 1;
++    return node_index;
++  }
++
++  return G1NUMA::UnknownNodeIndex;
++}
++
++void G1RegionsOnNodes::clear() {
++  for (uint i = 0; i < _numa->num_active_nodes(); i++) {
++    _count_per_node[i] = 0;
++  }
++}
++
++uint G1RegionsOnNodes::count(uint node_index) const {
++  return _count_per_node[node_index];
++}
+diff --git a/src/hotspot/share/gc/g1/g1RegionsOnNodes.hpp b/src/hotspot/share/gc/g1/g1RegionsOnNodes.hpp
+new file mode 100644
+index 000000000..27f96e497
+--- /dev/null
++++ b/src/hotspot/share/gc/g1/g1RegionsOnNodes.hpp
+@@ -0,0 +1,51 @@
++/*
++ * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ *
++ */
++
++#ifndef SHARE_VM_GC_G1_G1REGIONS_HPP
++#define SHARE_VM_GC_G1_G1REGIONS_HPP
++
++#include "memory/allocation.hpp"
++
++class G1NUMA;
++class HeapRegion;
++
++// Contains per node index region count
++class G1RegionsOnNodes : public StackObj {
++  volatile uint* _count_per_node;
++  G1NUMA*        _numa;
++
++public:
++  G1RegionsOnNodes();
++
++  ~G1RegionsOnNodes();
++
++  // Increase _count_per_node for the node of given heap region and returns node index.
++  uint add(HeapRegion* hr);
++
++  void clear();
++
++  uint count(uint node_index) const;
++};
++
++#endif // SHARE_VM_GC_G1_G1REGIONS_HPP
+diff --git a/src/hotspot/share/gc/g1/g1SurvivorRegions.cpp b/src/hotspot/share/gc/g1/g1SurvivorRegions.cpp
+index ec49aea98..fb989164d 100644
+--- a/src/hotspot/share/gc/g1/g1SurvivorRegions.cpp
++++ b/src/hotspot/share/gc/g1/g1SurvivorRegions.cpp
+@@ -28,17 +28,25 @@
+ #include "utilities/growableArray.hpp"
+ #include "utilities/debug.hpp"
+ 
+-G1SurvivorRegions::G1SurvivorRegions() : _regions(new (ResourceObj::C_HEAP, mtGC) GrowableArray<HeapRegion*>(8, true, mtGC)) {}
++G1SurvivorRegions::G1SurvivorRegions() :
++  _regions(new (ResourceObj::C_HEAP, mtGC) GrowableArray<HeapRegion*>(8, true, mtGC)),
++  _used_bytes(0),
++  _regions_on_node() {}
+ 
+-void G1SurvivorRegions::add(HeapRegion* hr) {
++uint G1SurvivorRegions::add(HeapRegion* hr) {
+   assert(hr->is_survivor(), "should be flagged as survivor region");
+   _regions->append(hr);
++  return _regions_on_node.add(hr);
+ }
+ 
+ uint G1SurvivorRegions::length() const {
+   return (uint)_regions->length();
+ }
+ 
++uint G1SurvivorRegions::regions_on_node(uint node_index) const {
++  return _regions_on_node.count(node_index);
++}
++
+ void G1SurvivorRegions::convert_to_eden() {
+   for (GrowableArrayIterator<HeapRegion*> it = _regions->begin();
+        it != _regions->end();
+@@ -51,5 +59,7 @@ void G1SurvivorRegions::convert_to_eden() {
+ 
+ void G1SurvivorRegions::clear() {
+   _regions->clear();
++  _used_bytes = 0;
++  _regions_on_node.clear();
+ }
+ 
+diff --git a/src/hotspot/share/gc/g1/g1SurvivorRegions.hpp b/src/hotspot/share/gc/g1/g1SurvivorRegions.hpp
+index 6c3759977..53eea98c4 100644
+--- a/src/hotspot/share/gc/g1/g1SurvivorRegions.hpp
++++ b/src/hotspot/share/gc/g1/g1SurvivorRegions.hpp
+@@ -25,6 +25,7 @@
+ #ifndef SHARE_VM_GC_G1_G1SURVIVORREGIONS_HPP
+ #define SHARE_VM_GC_G1_G1SURVIVORREGIONS_HPP
+ 
++#include "gc/g1/g1RegionsOnNodes.hpp"
+ #include "runtime/globals.hpp"
+ 
+ template <typename T>
+@@ -34,17 +35,20 @@ class HeapRegion;
+ class G1SurvivorRegions {
+ private:
+   GrowableArray<HeapRegion*>* _regions;
++  volatile size_t             _used_bytes;
++  G1RegionsOnNodes            _regions_on_node;
+ 
+ public:
+   G1SurvivorRegions();
+ 
+-  void add(HeapRegion* hr);
++  virtual uint add(HeapRegion* hr);
+ 
+   void convert_to_eden();
+ 
+   void clear();
+ 
+   uint length() const;
++  uint regions_on_node(uint node_index) const;
+ 
+   const GrowableArray<HeapRegion*>* regions() const {
+     return _regions;
+diff --git a/src/hotspot/share/gc/g1/heapRegion.cpp b/src/hotspot/share/gc/g1/heapRegion.cpp
+index 1e712f90c..85840bc6f 100644
+--- a/src/hotspot/share/gc/g1/heapRegion.cpp
++++ b/src/hotspot/share/gc/g1/heapRegion.cpp
+@@ -27,6 +27,7 @@
+ #include "gc/g1/g1BlockOffsetTable.inline.hpp"
+ #include "gc/g1/g1CollectedHeap.inline.hpp"
+ #include "gc/g1/g1HeapRegionTraceType.hpp"
++#include "gc/g1/g1NUMA.hpp"
+ #include "gc/g1/g1OopClosures.inline.hpp"
+ #include "gc/g1/heapRegion.inline.hpp"
+ #include "gc/g1/heapRegionBounds.inline.hpp"
+@@ -238,8 +239,11 @@ HeapRegion::HeapRegion(uint hrm_index,
+ #ifdef ASSERT
+     _containing_set(NULL),
+ #endif // ASSERT
+-     _young_index_in_cset(-1), _surv_rate_group(NULL), _age_index(-1),
+-    _rem_set(NULL), _recorded_rs_length(0), _predicted_elapsed_time_ms(0)
++    _young_index_in_cset(-1),
++    _surv_rate_group(NULL), _age_index(-1),
++    _prev_top_at_mark_start(NULL), _next_top_at_mark_start(NULL),
++    _recorded_rs_length(0), _predicted_elapsed_time_ms(0),
++    _node_index(G1NUMA::UnknownNodeIndex)
+ {
+   _rem_set = new HeapRegionRemSet(bot, this);
+ 
+@@ -448,6 +452,15 @@ void HeapRegion::print_on(outputStream* st) const {
+   }
+   st->print_cr("|TAMS " PTR_FORMAT ", " PTR_FORMAT "| %s ",
+                p2i(prev_top_at_mark_start()), p2i(next_top_at_mark_start()), rem_set()->get_state_str());
++  if (UseNUMA) {
++    G1NUMA* numa = G1NUMA::numa();
++    if (node_index() < numa->num_active_nodes()) {
++      st->print("|%d", numa->numa_id(node_index()));
++    } else {
++      st->print("|-");
++    }
++  }
++  st->print_cr("");
+ }
+ 
+ class G1VerificationClosure : public BasicOopIterateClosure {
+diff --git a/src/hotspot/share/gc/g1/heapRegion.hpp b/src/hotspot/share/gc/g1/heapRegion.hpp
+index 01d3c4d87..12a4eb8c3 100644
+--- a/src/hotspot/share/gc/g1/heapRegion.hpp
++++ b/src/hotspot/share/gc/g1/heapRegion.hpp
+@@ -279,6 +279,7 @@ class HeapRegion: public G1ContiguousSpace {
+   // The RSet length that was added to the total value
+   // for the collection set.
+   size_t _recorded_rs_length;
++  uint _node_index;
+ 
+   // The predicted elapsed time that was added to total value
+   // for the collection set.
+@@ -671,6 +672,9 @@ class HeapRegion: public G1ContiguousSpace {
+   // the strong code roots list for this region
+   void strong_code_roots_do(CodeBlobClosure* blk) const;
+ 
++  uint node_index() const { return _node_index; }
++  void set_node_index(uint node_index) { _node_index = node_index; }
++
+   // Verify that the entries on the strong code root list for this
+   // region are live and include at least one pointer into this region.
+   void verify_strong_code_roots(VerifyOption vo, bool* failures) const;
+diff --git a/src/hotspot/share/gc/g1/heapRegionManager.cpp b/src/hotspot/share/gc/g1/heapRegionManager.cpp
+index ffe2f04ec..10a0d58a5 100644
+--- a/src/hotspot/share/gc/g1/heapRegionManager.cpp
++++ b/src/hotspot/share/gc/g1/heapRegionManager.cpp
+@@ -23,13 +23,47 @@
+  */
+ 
+ #include "precompiled.hpp"
++#include "gc/g1/g1Arguments.hpp"
+ #include "gc/g1/g1CollectedHeap.inline.hpp"
+ #include "gc/g1/g1ConcurrentRefine.hpp"
++#include "gc/g1/g1NUMAStats.hpp"
+ #include "gc/g1/heapRegion.hpp"
+ #include "gc/g1/heapRegionManager.inline.hpp"
+ #include "gc/g1/heapRegionSet.inline.hpp"
++#include "logging/logStream.hpp"
+ #include "memory/allocation.hpp"
+ #include "utilities/bitMap.inline.hpp"
++#include "runtime/atomic.hpp"
++#include "runtime/orderAccess.hpp"
++#include "utilities/bitMap.inline.hpp"
++
++class MasterFreeRegionListChecker : public HeapRegionSetChecker {
++public:
++  void check_mt_safety() {
++    // Master Free List MT safety protocol:
++    // (a) If we're at a safepoint, operations on the master free list
++    // should be invoked by either the VM thread (which will serialize
++    // them) or by the GC workers while holding the
++    // FreeList_lock.
++    // (b) If we're not at a safepoint, operations on the master free
++    // list should be invoked while holding the Heap_lock.
++
++    if (SafepointSynchronize::is_at_safepoint()) {
++      guarantee(Thread::current()->is_VM_thread() ||
++                FreeList_lock->owned_by_self(), "master free list MT safety protocol at a safepoint");
++    } else {
++      guarantee(Heap_lock->owned_by_self(), "master free list MT safety protocol outside a safepoint");
++    }
++  }
++  bool is_correct_type(HeapRegion* hr) { return hr->is_free(); }
++  const char* get_description() { return "Free Regions"; }
++};
++
++HeapRegionManager::HeapRegionManager() : _regions(), _heap_mapper(NULL), _num_committed(0),
++                    _next_bitmap_mapper(NULL), _prev_bitmap_mapper(NULL), _bot_mapper(NULL),
++                    _allocated_heapregions_length(0), _available_map(mtGC),
++                    _free_list("Free list", new MasterFreeRegionListChecker())
++{}
+ 
+ void HeapRegionManager::initialize(G1RegionToSpaceMapper* heap_storage,
+                                G1RegionToSpaceMapper* prev_bitmap,
+@@ -59,6 +93,34 @@ bool HeapRegionManager::is_available(uint region) const {
+   return _available_map.at(region);
+ }
+ 
++HeapRegion* HeapRegionManager::allocate_free_region(HeapRegionType type, uint requested_node_index) {
++  HeapRegion* hr = NULL;
++  bool from_head = !type.is_young();
++  G1NUMA* numa = G1NUMA::numa();
++
++  if (requested_node_index != G1NUMA::AnyNodeIndex && numa->is_enabled()) {
++    // Try to allocate with requested node index.
++    hr = _free_list.remove_region_with_node_index(from_head, requested_node_index);
++  }
++
++  if (hr == NULL) {
++    // If there's a single active node or we did not get a region from our requested node,
++    // try without requested node index.
++    hr = _free_list.remove_region(from_head);
++  }
++
++  if (hr != NULL) {
++    assert(hr->next() == NULL, "Single region should not have next");
++    assert(is_available(hr->hrm_index()), "Must be committed");
++
++    if (numa->is_enabled() && hr->node_index() < numa->num_active_nodes()) {
++      numa->update_statistics(G1NUMAStats::NewRegionAlloc, requested_node_index, hr->node_index());
++    }
++  }
++
++  return hr;
++}
++
+ #ifdef ASSERT
+ bool HeapRegionManager::is_free(HeapRegion* hr) const {
+   return _free_list.contains(hr);
+@@ -72,7 +134,7 @@ HeapRegion* HeapRegionManager::new_heap_region(uint hrm_index) {
+   assert(reserved().contains(mr), "invariant");
+   return g1h->new_heap_region(hrm_index, mr);
+ }
+-
++ 
+ void HeapRegionManager::commit_regions(uint index, size_t num_regions, WorkGang* pretouch_gang) {
+   guarantee(num_regions > 0, "Must commit more than zero regions");
+   guarantee(_num_committed + num_regions <= max_length(), "Cannot commit more than the maximum amount of regions");
+@@ -95,6 +157,11 @@ void HeapRegionManager::uncommit_regions(uint start, size_t num_regions) {
+   guarantee(num_regions >= 1, "Need to specify at least one region to uncommit, tried to uncommit zero regions at %u", start);
+   guarantee(_num_committed >= num_regions, "pre-condition");
+ 
++  // Reset node index to distinguish with committed regions.
++  for (uint i = start; i < start + num_regions; i++) {
++    at(i)->set_node_index(G1NUMA::UnknownNodeIndex);
++  }
++
+   // Print before uncommitting.
+   if (G1CollectedHeap::heap()->hr_printer()->is_active()) {
+     for (uint i = start; i < start + num_regions; i++) {
+@@ -142,6 +209,7 @@ void HeapRegionManager::make_regions_available(uint start, uint num_regions, Wor
+     MemRegion mr(bottom, bottom + HeapRegion::GrainWords);
+ 
+     hr->initialize(mr);
++    hr->set_node_index(G1NUMA::numa()->index_for_region(hr));
+     insert_into_free_list(at(i));
+   }
+ }
+@@ -191,6 +259,35 @@ uint HeapRegionManager::expand_at(uint start, uint num_regions, WorkGang* pretou
+   return expanded;
+ }
+ 
++uint HeapRegionManager::expand_on_preferred_node(uint preferred_index) {
++  uint expand_candidate = UINT_MAX;
++  for (uint i = 0; i < max_length(); i++) {
++    if (is_available(i)) {
++      // Already in use continue
++      continue;
++    }
++    // Always save the candidate so we can expand later on.
++    expand_candidate = i;
++    if (is_on_preferred_index(expand_candidate, preferred_index)) {
++      // We have found a candidate on the preffered node, break.
++      break;
++    }
++  }
++
++  if (expand_candidate == UINT_MAX) {
++     // No regions left, expand failed.
++    return 0;
++  }
++
++  make_regions_available(expand_candidate, 1, NULL);
++  return 1;
++}
++
++bool HeapRegionManager::is_on_preferred_index(uint region_index, uint preferred_node_index) {
++  uint region_node_index = G1NUMA::numa()->preferred_node_index_for_index(region_index);
++  return region_node_index == preferred_node_index;
++}
++
+ uint HeapRegionManager::find_contiguous(size_t num, bool empty_only) {
+   uint found = 0;
+   size_t length_found = 0;
+diff --git a/src/hotspot/share/gc/g1/heapRegionManager.hpp b/src/hotspot/share/gc/g1/heapRegionManager.hpp
+index 1dc719dc9..216fcbc92 100644
+--- a/src/hotspot/share/gc/g1/heapRegionManager.hpp
++++ b/src/hotspot/share/gc/g1/heapRegionManager.hpp
+@@ -117,6 +117,10 @@ class HeapRegionManager: public CHeapObj<mtGC> {
+   // the heap. Returns the length of the sequence found. If this value is zero, no
+   // sequence could be found, otherwise res_idx contains the start index of this range.
+   uint find_empty_from_idx_reverse(uint start_idx, uint* res_idx) const;
++  // Checks the G1MemoryNodeManager to see if this region is on the preferred node.
++  bool is_on_preferred_index(uint region_index, uint preferred_node_index);
++
++protected:
+   // Allocate a new HeapRegion for the given index.
+   HeapRegion* new_heap_region(uint hrm_index);
+ #ifdef ASSERT
+@@ -128,11 +132,7 @@ public:
+ 
+  public:
+   // Empty constructor, we'll initialize it with the initialize() method.
+-  HeapRegionManager() : _regions(), _heap_mapper(NULL), _num_committed(0),
+-                    _next_bitmap_mapper(NULL), _prev_bitmap_mapper(NULL), _bot_mapper(NULL),
+-                    _allocated_heapregions_length(0), _available_map(mtGC),
+-                    _free_list("Free list", new MasterFreeRegionListMtSafeChecker())
+-  { }
++  HeapRegionManager();
+ 
+   void initialize(G1RegionToSpaceMapper* heap_storage,
+                   G1RegionToSpaceMapper* prev_bitmap,
+@@ -167,15 +167,8 @@ public:
+     _free_list.add_ordered(list);
+   }
+ 
+-  HeapRegion* allocate_free_region(bool is_old) {
+-    HeapRegion* hr = _free_list.remove_region(is_old);
+-
+-    if (hr != NULL) {
+-      assert(hr->next() == NULL, "Single region should not have next");
+-      assert(is_available(hr->hrm_index()), "Must be committed");
+-    }
+-    return hr;
+-  }
++  // Allocate a free region with specific node index. If fails allocate with next node index.
++  virtual HeapRegion* allocate_free_region(HeapRegionType type, uint requested_node_index);
+ 
+   inline void allocate_free_regions_starting_at(uint first, uint num_regions);
+ 
+@@ -189,6 +182,10 @@ public:
+     return _free_list.length();
+   }
+ 
++  uint num_free_regions(uint node_index) const {
++    return _free_list.length(node_index);
++  }
++
+   size_t total_free_bytes() const {
+     return num_free_regions() * HeapRegion::GrainBytes;
+   }
+@@ -217,6 +214,9 @@ public:
+   // this.
+   uint expand_at(uint start, uint num_regions, WorkGang* pretouch_workers);
+ 
++  // Try to expand on the given node index.
++  virtual uint expand_on_preferred_node(uint node_index);
++
+   // Find a contiguous set of empty regions of length num. Returns the start index of
+   // that set, or G1_NO_HRM_INDEX.
+   uint find_contiguous_only_empty(size_t num) { return find_contiguous(num, true); }
+diff --git a/src/hotspot/share/gc/g1/heapRegionSet.cpp b/src/hotspot/share/gc/g1/heapRegionSet.cpp
+index 2d07764cf..eb8430ff6 100644
+--- a/src/hotspot/share/gc/g1/heapRegionSet.cpp
++++ b/src/hotspot/share/gc/g1/heapRegionSet.cpp
+@@ -24,6 +24,7 @@
+ 
+ #include "precompiled.hpp"
+ #include "gc/g1/g1CollectedHeap.inline.hpp"
++#include "gc/g1/g1NUMA.hpp"
+ #include "gc/g1/heapRegionRemSet.hpp"
+ #include "gc/g1/heapRegionSet.inline.hpp"
+ 
+@@ -33,8 +34,8 @@ uint FreeRegionList::_unrealistically_long_length = 0;
+ void HeapRegionSetBase::verify_region(HeapRegion* hr) {
+   assert(hr->containing_set() == this, "Inconsistent containing set for %u", hr->hrm_index());
+   assert(!hr->is_young(), "Adding young region %u", hr->hrm_index()); // currently we don't use these sets for young regions
+-  assert(hr->is_humongous() == regions_humongous(), "Wrong humongous state for region %u and set %s", hr->hrm_index(), name());
+-  assert(hr->is_free() == regions_free(), "Wrong free state for region %u and set %s", hr->hrm_index(), name());
++  assert(_checker == NULL || _checker->is_correct_type(hr), "Wrong type of region %u (%s) and set %s",
++         hr->hrm_index(), hr->get_type_str(), name());
+   assert(!hr->is_free() || hr->is_empty(), "Free region %u is not empty for set %s", hr->hrm_index(), name());
+   assert(!hr->is_empty() || hr->is_free() || hr->is_archive(),
+          "Empty region %u is not free or archive for set %s", hr->hrm_index(), name());
+@@ -75,18 +76,13 @@ void HeapRegionSetBase::verify_end() {
+ void HeapRegionSetBase::print_on(outputStream* out, bool print_contents) {
+   out->cr();
+   out->print_cr("Set: %s (" PTR_FORMAT ")", name(), p2i(this));
+-  out->print_cr("  Region Assumptions");
+-  out->print_cr("    humongous         : %s", BOOL_TO_STR(regions_humongous()));
+-  out->print_cr("    free              : %s", BOOL_TO_STR(regions_free()));
+-  out->print_cr("  Attributes");
+-  out->print_cr("    length            : %14u", length());
++  out->print_cr("  Length              : %14u", length());
+ }
+ 
+-HeapRegionSetBase::HeapRegionSetBase(const char* name, bool humongous, bool free, HRSMtSafeChecker* mt_safety_checker)
+-  : _name(name), _verify_in_progress(false),
+-    _is_humongous(humongous), _is_free(free), _mt_safety_checker(mt_safety_checker),
+-    _length(0)
+-{ }
++HeapRegionSetBase::HeapRegionSetBase(const char* name, HeapRegionSetChecker* checker)
++  : _checker(checker), _length(0), _name(name), _verify_in_progress(false)
++{
++}
+ 
+ void FreeRegionList::set_unrealistically_long_length(uint len) {
+   guarantee(_unrealistically_long_length == 0, "should only be set once");
+@@ -105,6 +101,9 @@ void FreeRegionList::remove_all() {
+     curr->set_next(NULL);
+     curr->set_prev(NULL);
+     curr->set_containing_set(NULL);
++
++    decrease_length(curr->node_index());
++
+     curr = next;
+   }
+   clear();
+@@ -123,6 +122,10 @@ void FreeRegionList::add_ordered(FreeRegionList* from_list) {
+     return;
+   }
+ 
++  if (_node_info != NULL && from_list->_node_info != NULL) {
++    _node_info->add(from_list->_node_info);
++  }
++
+   #ifdef ASSERT
+   FreeRegionListIterator iter(from_list);
+   while (iter.more_available()) {
+@@ -224,6 +227,9 @@ void FreeRegionList::remove_starting_at(HeapRegion* first, uint num_regions) {
+     remove(curr);
+ 
+     count++;
++
++    decrease_length(curr->node_index());
++
+     curr = next;
+   }
+ 
+@@ -238,6 +244,21 @@ void FreeRegionList::remove_starting_at(HeapRegion* first, uint num_regions) {
+   verify_optional();
+ }
+ 
++uint FreeRegionList::num_of_regions_in_range(uint start, uint end) const {
++  HeapRegion* cur = _head;
++  uint num = 0;
++  while (cur != NULL) {
++    uint index = cur->hrm_index();
++    if (index > end) {
++      break;
++    } else if (index >= start) {
++      num++;
++    }
++    cur = cur->next();
++  }
++  return num;
++}
++
+ void FreeRegionList::verify() {
+   // See comment in HeapRegionSetBase::verify() about MT safety and
+   // verification.
+@@ -256,6 +277,10 @@ void FreeRegionList::clear() {
+   _head = NULL;
+   _tail = NULL;
+   _last = NULL;
++
++  if (_node_info!= NULL) {
++    _node_info->clear();
++  }
+ }
+ 
+ void FreeRegionList::verify_list() {
+@@ -293,72 +318,40 @@ void FreeRegionList::verify_list() {
+   guarantee(length() == count, "%s count mismatch. Expected %u, actual %u.", name(), length(), count);
+ }
+ 
+-// Note on the check_mt_safety() methods below:
+-//
+-// Verification of the "master" heap region sets / lists that are
+-// maintained by G1CollectedHeap is always done during a STW pause and
+-// by the VM thread at the start / end of the pause. The standard
+-// verification methods all assert check_mt_safety(). This is
+-// important as it ensures that verification is done without
+-// concurrent updates taking place at the same time. It follows, that,
+-// for the "master" heap region sets / lists, the check_mt_safety()
+-// method should include the VM thread / STW case.
+-
+-void MasterFreeRegionListMtSafeChecker::check() {
+-  // Master Free List MT safety protocol:
+-  // (a) If we're at a safepoint, operations on the master free list
+-  // should be invoked by either the VM thread (which will serialize
+-  // them) or by the GC workers while holding the
+-  // FreeList_lock.
+-  // (b) If we're not at a safepoint, operations on the master free
+-  // list should be invoked while holding the Heap_lock.
+-
+-  if (SafepointSynchronize::is_at_safepoint()) {
+-    guarantee(Thread::current()->is_VM_thread() ||
+-              FreeList_lock->owned_by_self(), "master free list MT safety protocol at a safepoint");
+-  } else {
+-    guarantee(Heap_lock->owned_by_self(), "master free list MT safety protocol outside a safepoint");
++
++FreeRegionList::FreeRegionList(const char* name, HeapRegionSetChecker* checker):
++  HeapRegionSetBase(name, checker),
++  _node_info(G1NUMA::numa()->is_enabled() ? new NodeInfo() : NULL) {
++
++  clear();
++}
++
++FreeRegionList::~FreeRegionList() {
++  if (_node_info != NULL) {
++    delete _node_info;
+   }
+ }
+ 
+-void OldRegionSetMtSafeChecker::check() {
+-  // Master Old Set MT safety protocol:
+-  // (a) If we're at a safepoint, operations on the master old set
+-  // should be invoked:
+-  // - by the VM thread (which will serialize them), or
+-  // - by the GC workers while holding the FreeList_lock, if we're
+-  //   at a safepoint for an evacuation pause (this lock is taken
+-  //   anyway when an GC alloc region is retired so that a new one
+-  //   is allocated from the free list), or
+-  // - by the GC workers while holding the OldSets_lock, if we're at a
+-  //   safepoint for a cleanup pause.
+-  // (b) If we're not at a safepoint, operations on the master old set
+-  // should be invoked while holding the Heap_lock.
+-
+-  if (SafepointSynchronize::is_at_safepoint()) {
+-    guarantee(Thread::current()->is_VM_thread()
+-        || FreeList_lock->owned_by_self() || OldSets_lock->owned_by_self(),
+-        "master old set MT safety protocol at a safepoint");
+-  } else {
+-    guarantee(Heap_lock->owned_by_self(), "master old set MT safety protocol outside a safepoint");
++FreeRegionList::NodeInfo::NodeInfo() : _numa(G1NUMA::numa()), _length_of_node(NULL),
++                                       _num_nodes(_numa->num_active_nodes()) {
++  assert(UseNUMA, "Invariant");
++
++  _length_of_node = NEW_C_HEAP_ARRAY(uint, _num_nodes, mtGC);
++}
++
++FreeRegionList::NodeInfo::~NodeInfo() {
++  FREE_C_HEAP_ARRAY(uint, _length_of_node);
++}
++
++void FreeRegionList::NodeInfo::clear() {
++  for (uint i = 0; i < _num_nodes; ++i) {
++    _length_of_node[i] = 0;
+   }
+ }
+ 
+-void HumongousRegionSetMtSafeChecker::check() {
+-  // Humongous Set MT safety protocol:
+-  // (a) If we're at a safepoint, operations on the master humongous
+-  // set should be invoked by either the VM thread (which will
+-  // serialize them) or by the GC workers while holding the
+-  // OldSets_lock.
+-  // (b) If we're not at a safepoint, operations on the master
+-  // humongous set should be invoked while holding the Heap_lock.
+-
+-  if (SafepointSynchronize::is_at_safepoint()) {
+-    guarantee(Thread::current()->is_VM_thread() ||
+-              OldSets_lock->owned_by_self(),
+-              "master humongous set MT safety protocol at a safepoint");
+-  } else {
+-    guarantee(Heap_lock->owned_by_self(),
+-              "master humongous set MT safety protocol outside a safepoint");
++void FreeRegionList::NodeInfo::add(NodeInfo* info) {
++  for (uint i = 0; i < _num_nodes; ++i) {
++    _length_of_node[i] += info->_length_of_node[i];
+   }
+ }
++
+diff --git a/src/hotspot/share/gc/g1/heapRegionSet.hpp b/src/hotspot/share/gc/g1/heapRegionSet.hpp
+index bbc193a89..a495269da 100644
+--- a/src/hotspot/share/gc/g1/heapRegionSet.hpp
++++ b/src/hotspot/share/gc/g1/heapRegionSet.hpp
+@@ -47,15 +47,14 @@
+   } while (0)
+ 
+ 
+-class HRSMtSafeChecker : public CHeapObj<mtGC> {
++// Interface collecting various instance specific verification methods of
++// HeapRegionSets.
++class HeapRegionSetChecker : public CHeapObj<mtGC> {
+ public:
+-  virtual void check() = 0;
++  // Verify MT safety for this HeapRegionSet.
++  virtual void check_mt_safety() = 0;
+ };
+ 
+-class MasterFreeRegionListMtSafeChecker    : public HRSMtSafeChecker { public: void check(); };
+-class HumongousRegionSetMtSafeChecker      : public HRSMtSafeChecker { public: void check(); };
+-class OldRegionSetMtSafeChecker            : public HRSMtSafeChecker { public: void check(); };
+-
+ // Base class for all the classes that represent heap region sets. It
+ // contains the basic attributes that each set needs to maintain
+ // (e.g., length, region num, used bytes sum) plus any shared
+@@ -63,10 +62,8 @@ class OldRegionSetMtSafeChecker            : public HRSMtSafeChecker { public: v
+ 
+ class HeapRegionSetBase {
+   friend class VMStructs;
+-private:
+-  bool _is_humongous;
+-  bool _is_free;
+-  HRSMtSafeChecker* _mt_safety_checker;
++
++  HeapRegionSetChecker* _checker;
+ 
+ protected:
+   // The number of regions in to the set.
+@@ -80,21 +77,13 @@ protected:
+   // added to / removed from a set are consistent.
+   void verify_region(HeapRegion* hr) PRODUCT_RETURN;
+ 
+-  // Indicates whether all regions in the set should be humongous or
+-  // not. Only used during verification.
+-  bool regions_humongous() { return _is_humongous; }
+-
+-  // Indicates whether all regions in the set should be free or
+-  // not. Only used during verification.
+-  bool regions_free() { return _is_free; }
+-
+   void check_mt_safety() {
+-    if (_mt_safety_checker != NULL) {
+-      _mt_safety_checker->check();
++    if (_checker != NULL) {
++      _checker->check_mt_safety();
+     }
+   }
+ 
+-  HeapRegionSetBase(const char* name, bool humongous, bool free, HRSMtSafeChecker* mt_safety_checker);
++  HeapRegionSetBase(const char* name, HeapRegionSetChecker* verifier);
+ 
+ public:
+   const char* name() { return _name; }
+@@ -137,8 +126,9 @@ public:
+ 
+ class HeapRegionSet : public HeapRegionSetBase {
+ public:
+-  HeapRegionSet(const char* name, bool humongous, HRSMtSafeChecker* mt_safety_checker):
+-    HeapRegionSetBase(name, humongous, false /* free */, mt_safety_checker) { }
++  HeapRegionSet(const char* name, HeapRegionSetChecker* checker):
++    HeapRegionSetBase(name, checker) {
++  }
+ 
+   void bulk_remove(const uint removed) {
+     _length -= removed;
+@@ -151,11 +141,33 @@ public:
+ // add / remove one region at a time or concatenate two lists.
+ 
+ class FreeRegionListIterator;
++class G1NUMA;
+ 
+ class FreeRegionList : public HeapRegionSetBase {
+   friend class FreeRegionListIterator;
+ 
+ private:
++
++  // This class is only initialized if there are multiple active nodes.
++  class NodeInfo : public CHeapObj<mtGC> {
++    G1NUMA* _numa;
++    uint*   _length_of_node;
++    uint    _num_nodes;
++
++  public:
++    NodeInfo();
++    ~NodeInfo();
++
++    inline void increase_length(uint node_index);
++    inline void decrease_length(uint node_index);
++
++    inline uint length(uint index) const;
++
++    void clear();
++
++    void add(NodeInfo* info);
++  };
++
+   HeapRegion* _head;
+   HeapRegion* _tail;
+ 
+@@ -163,20 +175,24 @@ private:
+   // time. It helps to improve performance when adding several ordered items in a row.
+   HeapRegion* _last;
+ 
++  NodeInfo*   _node_info;
++
+   static uint _unrealistically_long_length;
+ 
+   inline HeapRegion* remove_from_head_impl();
+   inline HeapRegion* remove_from_tail_impl();
+ 
++  inline void increase_length(uint node_index);
++  inline void decrease_length(uint node_index);
++
++
+ protected:
+   // See the comment for HeapRegionSetBase::clear()
+   virtual void clear();
+ 
+ public:
+-  FreeRegionList(const char* name, HRSMtSafeChecker* mt_safety_checker = NULL):
+-    HeapRegionSetBase(name, false /* humongous */, true /* empty */, mt_safety_checker) {
+-    clear();
+-  }
++  FreeRegionList(const char* name, HeapRegionSetChecker* checker = NULL);
++  ~FreeRegionList();
+ 
+   void verify_list();
+ 
+@@ -196,6 +212,9 @@ public:
+   // Removes from head or tail based on the given argument.
+   HeapRegion* remove_region(bool from_head);
+ 
++  HeapRegion* remove_region_with_node_index(bool from_head,
++                                            uint requested_node_index);
++
+   // Merge two ordered lists. The result is also ordered. The order is
+   // determined by hrm_index.
+   void add_ordered(FreeRegionList* from_list);
+@@ -209,6 +228,11 @@ public:
+   void remove_starting_at(HeapRegion* first, uint num_regions);
+ 
+   virtual void verify();
++
++  uint num_of_regions_in_range(uint start, uint end) const;
++
++  using HeapRegionSetBase::length;
++  uint length(uint node_index) const;
+ };
+ 
+ // Iterator class that provides a convenient way to iterate over the
+@@ -237,8 +261,9 @@ public:
+     return hr;
+   }
+ 
+-  FreeRegionListIterator(FreeRegionList* list) : _curr(NULL), _list(list) {
+-    _curr = list->_head;
++  FreeRegionListIterator(FreeRegionList* list)
++  : _list(list),
++    _curr(list->_head) {
+   }
+ };
+ 
+diff --git a/src/hotspot/share/gc/g1/heapRegionSet.inline.hpp b/src/hotspot/share/gc/g1/heapRegionSet.inline.hpp
+index 06cdd7738..fc5c03f76 100644
+--- a/src/hotspot/share/gc/g1/heapRegionSet.inline.hpp
++++ b/src/hotspot/share/gc/g1/heapRegionSet.inline.hpp
+@@ -25,6 +25,7 @@
+ #ifndef SHARE_VM_GC_G1_HEAPREGIONSET_INLINE_HPP
+ #define SHARE_VM_GC_G1_HEAPREGIONSET_INLINE_HPP
+ 
++#include "gc/g1/g1NUMA.hpp"
+ #include "gc/g1/heapRegionSet.hpp"
+ 
+ inline void HeapRegionSetBase::add(HeapRegion* hr) {
+@@ -94,6 +95,8 @@ inline void FreeRegionList::add_ordered(HeapRegion* hr) {
+     _head = hr;
+   }
+   _last = hr;
++
++  increase_length(hr->node_index());
+ }
+ 
+ inline HeapRegion* FreeRegionList::remove_from_head_impl() {
+@@ -144,8 +147,107 @@ inline HeapRegion* FreeRegionList::remove_region(bool from_head) {
+ 
+   // remove() will verify the region and check mt safety.
+   remove(hr);
++
++  decrease_length(hr->node_index());
++
+   return hr;
+ }
+ 
+-#endif // SHARE_VM_GC_G1_HEAPREGIONSET_INLINE_HPP
++inline HeapRegion* FreeRegionList::remove_region_with_node_index(bool from_head,
++                                                                 uint requested_node_index) {
++  assert(UseNUMA, "Invariant");
++
++  const uint max_search_depth = G1NUMA::numa()->max_search_depth();
++  HeapRegion* cur;
++
++  // Find the region to use, searching from _head or _tail as requested.
++  size_t cur_depth = 0;
++  if (from_head) {
++    for (cur = _head;
++         cur != NULL && cur_depth < max_search_depth;
++         cur = cur->next(), ++cur_depth) {
++      if (requested_node_index == cur->node_index()) {
++        break;
++      }
++    }
++  } else {
++    for (cur = _tail;
++         cur != NULL && cur_depth < max_search_depth;
++         cur = cur->prev(), ++cur_depth) {
++      if (requested_node_index == cur->node_index()) {
++        break;
++      }
++    }
++  }
++
++  // Didn't find a region to use.
++  if (cur == NULL || cur_depth >= max_search_depth) {
++    return NULL;
++  }
++
++  // Splice the region out of the list.
++  HeapRegion* prev = cur->prev();
++  HeapRegion* next = cur->next();
++  if (prev == NULL) {
++    _head = next;
++  } else {
++    prev->set_next(next);
++  }
++  if (next == NULL) {
++    _tail = prev;
++  } else {
++    next->set_prev(prev);
++  }
++  cur->set_prev(NULL);
++  cur->set_next(NULL);
++
++  if (_last == cur) {
++    _last = NULL;
++  }
++
++  remove(cur);
++  decrease_length(cur->node_index());
++
++  return cur;
++}
++
++inline void FreeRegionList::NodeInfo::increase_length(uint node_index) {
++  if (node_index < _num_nodes) {
++    _length_of_node[node_index] += 1;
++  }
++}
++
++inline void FreeRegionList::NodeInfo::decrease_length(uint node_index) {
++  if (node_index < _num_nodes) {
++    assert(_length_of_node[node_index] > 0,
++           "Current length %u should be greater than zero for node %u",
++           _length_of_node[node_index], node_index);
++    _length_of_node[node_index] -= 1;
++  }
++}
++
++inline uint FreeRegionList::NodeInfo::length(uint node_index) const {
++  return _length_of_node[node_index];
++}
++
++inline void FreeRegionList::increase_length(uint node_index) {
++  if (_node_info != NULL) {
++    return _node_info->increase_length(node_index);
++  }
++}
++
++inline void FreeRegionList::decrease_length(uint node_index) {
++  if (_node_info != NULL) {
++    return _node_info->decrease_length(node_index);
++  }
++}
++
++inline uint FreeRegionList::length(uint node_index) const {
++  if (_node_info != NULL) {
++    return _node_info->length(node_index);
++  } else {
++    return 0;
++  }
++}
+ 
++#endif // SHARE_GC_G1_HEAPREGIONSET_INLINE_HPP
+diff --git a/src/hotspot/share/gc/g1/heapRegionType.cpp b/src/hotspot/share/gc/g1/heapRegionType.cpp
+index 755e94ba9..ba7313af1 100644
+--- a/src/hotspot/share/gc/g1/heapRegionType.cpp
++++ b/src/hotspot/share/gc/g1/heapRegionType.cpp
+@@ -26,6 +26,11 @@
+ #include "gc/g1/g1HeapRegionTraceType.hpp"
+ #include "gc/g1/heapRegionType.hpp"
+ 
++const HeapRegionType HeapRegionType::Eden      = HeapRegionType(EdenTag);
++const HeapRegionType HeapRegionType::Survivor  = HeapRegionType(SurvTag);
++const HeapRegionType HeapRegionType::Old       = HeapRegionType(OldTag);
++const HeapRegionType HeapRegionType::Humongous = HeapRegionType(StartsHumongousTag);
++
+ bool HeapRegionType::is_valid(Tag tag) {
+   switch (tag) {
+     case FreeTag:
+diff --git a/src/hotspot/share/gc/g1/heapRegionType.hpp b/src/hotspot/share/gc/g1/heapRegionType.hpp
+index 12259984b..c56a559ac 100644
+--- a/src/hotspot/share/gc/g1/heapRegionType.hpp
++++ b/src/hotspot/share/gc/g1/heapRegionType.hpp
+@@ -117,6 +117,9 @@ private:
+     _tag = tag;
+   }
+ 
++  // Private constructor used static constants
++  HeapRegionType(Tag t) : _tag(t) { hrt_assert_is_valid(_tag); }
++
+ public:
+   // Queries
+ 
+@@ -184,6 +187,11 @@ public:
+   G1HeapRegionTraceType::Type get_trace_type();
+ 
+   HeapRegionType() : _tag(FreeTag) { hrt_assert_is_valid(_tag); }
++
++  static const HeapRegionType Eden;
++  static const HeapRegionType Survivor;
++  static const HeapRegionType Old;
++  static const HeapRegionType Humongous;
+ };
+ 
+ #endif // SHARE_VM_GC_G1_HEAPREGIONTYPE_HPP
+diff --git a/src/hotspot/share/logging/logPrefix.hpp b/src/hotspot/share/logging/logPrefix.hpp
+index 548063eac..b070932e8 100644
+--- a/src/hotspot/share/logging/logPrefix.hpp
++++ b/src/hotspot/share/logging/logPrefix.hpp
+@@ -57,6 +57,7 @@ DEBUG_ONLY(size_t Test_log_prefix_prefixer(char* buf, size_t len);)
+   LOG_PREFIX(GCId::print_prefix, LOG_TAGS(gc, ergo, ihop)) \
+   LOG_PREFIX(GCId::print_prefix, LOG_TAGS(gc, ergo, refine)) \
+   LOG_PREFIX(GCId::print_prefix, LOG_TAGS(gc, heap)) \
++  LOG_PREFIX(GCId::print_prefix, LOG_TAGS(gc, heap, numa)) \
+   LOG_PREFIX(GCId::print_prefix, LOG_TAGS(gc, heap, region)) \
+   LOG_PREFIX(GCId::print_prefix, LOG_TAGS(gc, freelist)) \
+   LOG_PREFIX(GCId::print_prefix, LOG_TAGS(gc, humongous)) \
+diff --git a/src/hotspot/share/logging/logTag.hpp b/src/hotspot/share/logging/logTag.hpp
+index 61bd16907..0ec37b2f6 100644
+--- a/src/hotspot/share/logging/logTag.hpp
++++ b/src/hotspot/share/logging/logTag.hpp
+@@ -107,6 +107,7 @@
+   LOG_TAG(nestmates) \
+   LOG_TAG(nmethod) \
+   LOG_TAG(normalize) \
++  LOG_TAG(numa) \
+   LOG_TAG(objecttagging) \
+   LOG_TAG(obsolete) \
+   LOG_TAG(oldobject) \
+diff --git a/src/hotspot/share/prims/whitebox.cpp b/src/hotspot/share/prims/whitebox.cpp
+index b4eb9f3ed..4d3ab3d59 100644
+--- a/src/hotspot/share/prims/whitebox.cpp
++++ b/src/hotspot/share/prims/whitebox.cpp
+@@ -528,6 +528,29 @@ WB_ENTRY(jobject, WB_G1AuxiliaryMemoryUsage(JNIEnv* env))
+   THROW_MSG_0(vmSymbols::java_lang_UnsupportedOperationException(), "WB_G1AuxiliaryMemoryUsage: G1 GC is not enabled");
+ WB_END
+ 
++WB_ENTRY(jint, WB_G1ActiveMemoryNodeCount(JNIEnv* env, jobject o))
++  if (UseG1GC) {
++    G1NUMA* numa = G1NUMA::numa();
++    return (jint)numa->num_active_nodes();
++  }
++  THROW_MSG_0(vmSymbols::java_lang_UnsupportedOperationException(), "WB_G1ActiveMemoryNodeCount: G1 GC is not enabled");
++WB_END
++
++WB_ENTRY(jintArray, WB_G1MemoryNodeIds(JNIEnv* env, jobject o))
++  if (UseG1GC) {
++    G1NUMA* numa = G1NUMA::numa();
++    int num_node_ids = (int)numa->num_active_nodes();
++    const int* node_ids = numa->node_ids();
++
++    typeArrayOop result = oopFactory::new_intArray(num_node_ids, CHECK_NULL);
++    for (int i = 0; i < num_node_ids; i++) {
++      result->int_at_put(i, (jint)node_ids[i]);
++    }
++    return (jintArray) JNIHandles::make_local(env, result);
++  }
++  THROW_MSG_NULL(vmSymbols::java_lang_UnsupportedOperationException(), "WB_G1MemoryNodeIds: G1 GC is not enabled");
++WB_END
++
+ class OldRegionsLivenessClosure: public HeapRegionClosure {
+ 
+  private:
+@@ -2069,6 +2092,8 @@ static JNINativeMethod methods[] = {
+   {CC"g1StartConcMarkCycle",       CC"()Z",           (void*)&WB_G1StartMarkCycle  },
+   {CC"g1AuxiliaryMemoryUsage", CC"()Ljava/lang/management/MemoryUsage;",
+                                                       (void*)&WB_G1AuxiliaryMemoryUsage  },
++  {CC"g1ActiveMemoryNodeCount", CC"()I",              (void*)&WB_G1ActiveMemoryNodeCount },
++  {CC"g1MemoryNodeIds",    CC"()[I",                  (void*)&WB_G1MemoryNodeIds },
+   {CC"g1GetMixedGCInfo",   CC"(I)[J",                 (void*)&WB_G1GetMixedGCInfo },
+ #endif // INCLUDE_G1GC
+ #if INCLUDE_PARALLELGC
+diff --git a/src/hotspot/share/runtime/os.hpp b/src/hotspot/share/runtime/os.hpp
+index 15c43dae3..68d77566e 100644
+--- a/src/hotspot/share/runtime/os.hpp
++++ b/src/hotspot/share/runtime/os.hpp
+@@ -389,6 +389,7 @@ class os: AllStatic {
+   static size_t numa_get_leaf_groups(int *ids, size_t size);
+   static bool   numa_topology_changed();
+   static int    numa_get_group_id();
++  static int    numa_get_group_id_for_address(const void* address);
+ 
+   // Page manipulation
+   struct page_info {
+diff --git a/test/hotspot/jtreg/gc/g1/numa/TestG1NUMATouchRegions.java b/test/hotspot/jtreg/gc/g1/numa/TestG1NUMATouchRegions.java
+new file mode 100644
+index 000000000..c5322849e
+--- /dev/null
++++ b/test/hotspot/jtreg/gc/g1/numa/TestG1NUMATouchRegions.java
+@@ -0,0 +1,245 @@
++/*
++ * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++package gc.g1;
++
++/**
++ * @test TestG1NUMATouchRegions
++ * @summary Ensure the bottom of the given heap regions are properly touched with requested NUMA id.
++ * @key gc
++ * @requires vm.gc.G1
++ * @requires os.family == "linux"
++ * @library /test/lib
++ * @modules java.base/jdk.internal.misc
++ *          java.management
++ * @build sun.hotspot.WhiteBox
++ * @run driver ClassFileInstaller sun.hotspot.WhiteBox
++ * @run main/othervm -XX:+UseG1GC -Xbootclasspath/a:. -XX:+UseNUMA -XX:+UnlockDiagnosticVMOptions -XX:+WhiteBoxAPI gc.g1.TestG1NUMATouchRegions
++ */
++
++import java.util.LinkedList;
++import jdk.test.lib.process.OutputAnalyzer;
++import jdk.test.lib.process.ProcessTools;
++import sun.hotspot.WhiteBox;
++
++public class TestG1NUMATouchRegions {
++    enum NUMASupportStatus {
++        NOT_CHECKED,
++        SUPPORT,
++        NOT_SUPPORT
++    };
++
++    static int G1HeapRegionSize1MB = 1;
++    static int G1HeapRegionSize8MB = 8;
++
++    static NUMASupportStatus status = NUMASupportStatus.NOT_CHECKED;
++
++    public static void main(String[] args) throws Exception {
++        // 1. Page size < G1HeapRegionSize
++        //    Test default page with 1MB heap region size
++        testMemoryTouch("-XX:-UseLargePages", G1HeapRegionSize1MB);
++        // 2. Page size > G1HeapRegionSize
++        //    Test large page with 1MB heap region size.
++        testMemoryTouch("-XX:+UseLargePages", G1HeapRegionSize1MB);
++        // 3. Page size < G1HeapRegionSize
++        //    Test large page with 8MB heap region size.
++        testMemoryTouch("-XX:+UseLargePages", G1HeapRegionSize8MB);
++    }
++
++    // On Linux, always UseNUMA is enabled if there is multiple active numa nodes.
++    static NUMASupportStatus checkNUMAIsEnabled(OutputAnalyzer output) {
++        boolean supportNUMA = Boolean.parseBoolean(output.firstMatch("\\bUseNUMA\\b.*?=.*?([a-z]+)", 1));
++        System.out.println("supportNUMA=" + supportNUMA);
++        return supportNUMA ? NUMASupportStatus.SUPPORT : NUMASupportStatus.NOT_SUPPORT;
++    }
++
++    static long parseSizeString(String size) {
++        long multiplier = 1;
++
++        if (size.endsWith("B")) {
++            multiplier = 1;
++        } else if (size.endsWith("K")) {
++            multiplier = 1024;
++        } else if (size.endsWith("M")) {
++            multiplier = 1024 * 1024;
++        } else if (size.endsWith("G")) {
++            multiplier = 1024 * 1024 * 1024;
++        } else {
++            throw new IllegalArgumentException("Expected memory string '" + size + "'to end with either of: B, K, M, G");
++        }
++
++        long longSize = Long.parseUnsignedLong(size.substring(0, size.length() - 1));
++
++        return longSize * multiplier;
++    }
++
++    static long heapPageSize(OutputAnalyzer output) {
++        String HeapPageSizePattern = "Heap:  .*page_size=([^ ]+)";
++        String str = output.firstMatch(HeapPageSizePattern, 1);
++
++        if (str == null) {
++            output.reportDiagnosticSummary();
++            throw new RuntimeException("Match from '" + HeapPageSizePattern + "' got 'null'");
++        }
++
++        return parseSizeString(str);
++    }
++
++    // 1. -UseLargePages: default page, page size < G1HeapRegionSize
++    //    +UseLargePages: large page size <= G1HeapRegionSize
++    //
++    //    Each 'int' represents a numa id of single HeapRegion (bottom page).
++    //    e.g. 1MB heap region, 2MB page size and 2 NUMA nodes system
++    //         Check the first set(2 regions)
++    //         0| ...omitted..| 0
++    //         1| ...omitted..| 1
++    static void checkCase1Pattern(OutputAnalyzer output, int index, long g1HeapRegionSize, long actualPageSize, int[] memoryNodeIds) throws Exception {
++        StringBuilder sb = new StringBuilder();
++
++        // Append index which means heap region index.
++        sb.append(String.format("%6d", index));
++        sb.append("| .* | ");
++
++        // Append page node id.
++        sb.append(memoryNodeIds[index]);
++
++        output.shouldMatch(sb.toString());
++    }
++
++    // 3. +UseLargePages: large page size > G1HeapRegionSize
++    //
++    //    As a OS page is consist of multiple heap regions, log also should be
++    //    printed multiple times for same numa id.
++    //    e.g. 1MB heap region, 2MB page size and 2 NUMA nodes system
++    //         Check the first set(4 regions)
++    //         0| ...omitted..| 0
++    //         1| ...omitted..| 0
++    //         2| ...omitted..| 1
++    //         3| ...omitted..| 1
++    static void checkCase2Pattern(OutputAnalyzer output, int index, long g1HeapRegionSize, long actualPageSize, int[] memoryNodeIds) throws Exception {
++        StringBuilder sb = new StringBuilder();
++
++        // Append page range.
++        int lines_to_print = (int)(actualPageSize / g1HeapRegionSize);
++        for (int i = 0; i < lines_to_print; i++) {
++            // Append index which means heap region index.
++            sb.append(String.format("%6d", index * lines_to_print + i));
++            sb.append("| .* | ");
++
++            // Append page node id.
++            sb.append(memoryNodeIds[index]);
++
++            output.shouldMatch(sb.toString());
++            sb.setLength(0);
++        }
++    }
++
++    static void checkNUMALog(OutputAnalyzer output, int regionSizeInMB) throws Exception {
++        WhiteBox wb = WhiteBox.getWhiteBox();
++        long g1HeapRegionSize = regionSizeInMB * 1024 * 1024;
++        long actualPageSize = heapPageSize(output);
++        long defaultPageSize = (long)wb.getVMPageSize();
++        int memoryNodeCount = wb.g1ActiveMemoryNodeCount();
++        int[] memoryNodeIds = wb.g1MemoryNodeIds();
++
++        System.out.println("node count=" + memoryNodeCount + ", actualPageSize=" + actualPageSize);
++        // Check for the first set of active numa nodes.
++        for (int index = 0; index < memoryNodeCount; index++) {
++            if (actualPageSize <= defaultPageSize) {
++                checkCase1Pattern(output, index, g1HeapRegionSize, actualPageSize, memoryNodeIds);
++            } else {
++                checkCase2Pattern(output, index, g1HeapRegionSize, actualPageSize, memoryNodeIds);
++            }
++        }
++    }
++
++    static void testMemoryTouch(String largePagesSetting, int regionSizeInMB) throws Exception {
++        // Skip testing with message.
++        if (status == NUMASupportStatus.NOT_SUPPORT) {
++            System.out.println("NUMA is not supported");
++            return;
++        }
++
++        ProcessBuilder pb_enabled = ProcessTools.createJavaProcessBuilder(
++                                              "-Xbootclasspath/a:.",
++                                              "-Xlog:pagesize,gc+heap+region=trace",
++                                              "-XX:+UseG1GC",
++                                              "-Xmx128m",
++                                              "-Xms128m",
++                                              "-XX:+UnlockDiagnosticVMOptions",
++                                              "-XX:+WhiteBoxAPI",
++                                              "-XX:+PrintFlagsFinal",
++                                              "-XX:+UseNUMA",
++                                              "-XX:+AlwaysPreTouch",
++                                              largePagesSetting,
++                                              "-XX:G1HeapRegionSize=" + regionSizeInMB + "m",
++                                              GCTest.class.getName());
++        OutputAnalyzer output = new OutputAnalyzer(pb_enabled.start());
++
++        // Check NUMA availability.
++        if (status == NUMASupportStatus.NOT_CHECKED) {
++            status = checkNUMAIsEnabled(output);
++        }
++
++        if (status == NUMASupportStatus.SUPPORT) {
++            checkNUMALog(output, regionSizeInMB);
++        } else {
++            // Exit with message for the first test.
++            System.out.println("NUMA is not supported");
++        }
++    }
++
++  static class GCTest {
++    public static final int M = 1024*1024;
++    public static LinkedList<Object> garbageList = new LinkedList<Object>();
++    // A large object referenced by a static.
++    static int[] filler = new int[10 * M];
++
++    public static void genGarbage() {
++      for (int i = 0; i < 32*1024; i++) {
++        garbageList.add(new int[100]);
++      }
++      garbageList.clear();
++    }
++
++    public static void main(String[] args) {
++
++      int[] large = new int[M];
++      Object ref = large;
++
++      System.out.println("Creating garbage");
++      for (int i = 0; i < 100; i++) {
++        // A large object that will be reclaimed eagerly.
++        large = new int[6*M];
++        genGarbage();
++        // Make sure that the compiler cannot completely remove
++        // the allocation of the large object until here.
++        System.out.println(large);
++      }
++
++      // Keep the reference to the first object alive.
++      System.out.println(ref);
++      System.out.println("Done");
++    }
++  }
++}
+diff --git a/test/lib/sun/hotspot/WhiteBox.java b/test/lib/sun/hotspot/WhiteBox.java
+index 34770d0ba..54f9688f8 100644
+--- a/test/lib/sun/hotspot/WhiteBox.java
++++ b/test/lib/sun/hotspot/WhiteBox.java
+@@ -188,6 +188,9 @@ public class WhiteBox {
+     Objects.requireNonNull(args);
+     return parseCommandLine0(commandline, delim, args);
+   }
++ 
++  public native int g1ActiveMemoryNodeCount();
++  public native int[] g1MemoryNodeIds();
+ 
+   // Parallel GC
+   public native long psVirtualSpaceAlignment();
