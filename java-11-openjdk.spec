@@ -735,7 +735,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 3
+Release: 4
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -815,9 +815,14 @@ Patch26: ZGC-aarch64-fix-system-call-number-of-memfd_create.patch
 Patch27: ZGC-aarch64-fix-not-using-load-store-Pre-index.patch
 Patch28: address-s-offset-may-exceed-the-limit-of-ldrw-instru.patch
 Patch29: ZGC-reuse-entries-of-ResolvedMethodTable.patch
-Patch30: fast-serializer-jdk11.patch
-Patch31: fix-jck-failure-on-FastSerializer.patch
 Patch32: 8240360-NativeLibraryEvent-has-wrong-library-name-on-linux.patch
+
+# 11.0.8
+Patch33: 8210473-JEP-345-NUMA-Aware-Memory-Allocation-for-G1.patch
+Patch34: 8210461-AArch64-Math.cos-intrinsic-gives-incorrect-results.patch
+Patch35: NUMA-Aware-Implementation-humongous-region.patch
+Patch36: ZGC-in-c1-load-barrier-d0-and-d1-registers-miss-restoring.patch
+Patch37: fix-compile-error-without-disable-precompiled-headers.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1066,9 +1071,12 @@ pushd %{top_level_dir_name}
 %patch27 -p1
 %patch28 -p1
 %patch29 -p1
-%patch30 -p1
-%patch31 -p1
 %patch32 -p1
+%patch33 -p1
+%patch34 -p1
+%patch35 -p1
+%patch36 -p1
+%patch37 -p1
 popd # openjdk
 
 %patch1000
@@ -1571,6 +1579,15 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Tue Aug 31 2020 jdkboy <guoge1@huawei.com> - 1:11.0.8.10-4
+- Add 8210473-JEP-345-NUMA-Aware-Memory-Allocation-for-G1.patch
+- Add 8210461-AArch64-Math.cos-intrinsic-gives-incorrect-results.patch
+- Add NUMA-Aware-Implementation-humongous-region.patch
+- Add ZGC-in-c1-load-barrier-d0-and-d1-registers-miss-restoring.patch
+- Add fix-compile-error-without-disable-precompiled-headers.patch
+- Remove fast-serializer-jdk11.patch
+- Remove fix-jck-failure-on-FastSerializer.patch
+
 * Tue Aug 25 2020 noah <hedongbo@huawei.com> - 1:11.0.8.10-3
 - add fix-jck-failure-on-FastSerializer.patch
 - add 8240360-NativeLibraryEvent-has-wrong-library-name-on-linux.patch
