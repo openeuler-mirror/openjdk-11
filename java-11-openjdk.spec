@@ -735,7 +735,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 4
+Release: 5
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -1579,6 +1579,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Mon Sep 7 2020 noah <hedongbo@huawei.com> - 1:11.0.8.10-5
+- Delete some file header information
+
 * Tue Aug 31 2020 jdkboy <guoge1@huawei.com> - 1:11.0.8.10-4
 - Add 8210473-JEP-345-NUMA-Aware-Memory-Allocation-for-G1.patch
 - Add 8210461-AArch64-Math.cos-intrinsic-gives-incorrect-results.patch
