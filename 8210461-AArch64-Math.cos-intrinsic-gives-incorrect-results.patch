@@ -1,0 +1,112 @@
+From 723ae2c317eabdd65836df0bf6677cc2cf00e219 Mon Sep 17 00:00:00 2001
+Date: Fri, 7 Aug 2020 18:49:17 +0000
+Subject: [PATCH 16/20] 8210461: AArch64: Math.cos intrinsic gives incorrect
+ results
+
+Summary: hotspot: backport JDK-8210461 and enable sin/cos stub
+LLT: NA
+Bug url: https://bugs.openjdk.java.net/browse/JDK-8210461
+---
+ .../aarch64/macroAssembler_aarch64_trig.cpp   |  2 +-
+ .../cpu/aarch64/stubGenerator_aarch64.cpp     |  6 ++-
+ .../intrinsics/mathexact/Test8210461.java     | 54 +++++++++++++++++++
+ 3 files changed, 59 insertions(+), 3 deletions(-)
+ create mode 100644 test/hotspot/jtreg/compiler/intrinsics/mathexact/Test8210461.java
+
+diff --git a/src/hotspot/cpu/aarch64/macroAssembler_aarch64_trig.cpp b/src/hotspot/cpu/aarch64/macroAssembler_aarch64_trig.cpp
+index 694c3b5eb..7e1a16635 100644
+--- a/src/hotspot/cpu/aarch64/macroAssembler_aarch64_trig.cpp
++++ b/src/hotspot/cpu/aarch64/macroAssembler_aarch64_trig.cpp
+@@ -1004,7 +1004,7 @@ void MacroAssembler::generate__kernel_rem_pio2(address two_over_pi, address pio2
+           br(LT, Z_IS_LESS_THAN_TWO24B);
+           fmuld(v1, v18, v17);                               // twon24*z
+           frintzd(v1, v1);                                   // v1 = (double)(int)(v1)
+-          fmaddd(v2, v10, v1, v18);
++          fmsubd(v2, v10, v1, v18);
+           fcvtzdw(tmp3, v1);                                 // (int)fw
+           fcvtzdw(tmp2, v2);                                 // double to int
+           strw(tmp2, Address(iqBase, jz, Address::lsl(2)));
+diff --git a/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp b/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp
+index ac7eb8480..0310463ac 100644
+--- a/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp
++++ b/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp
+@@ -5694,12 +5694,14 @@ class StubGenerator: public StubCodeGenerator {
+ 
+     if (vmIntrinsics::is_intrinsic_available(vmIntrinsics::_dsin)) {
+       // disabled pending fix and retest of generated code via JDK-8210461
+-      // StubRoutines::_dsin = generate_dsin_dcos(/* isCos = */ false);
++      // fixed in JDK-8210461
++      StubRoutines::_dsin = generate_dsin_dcos(/* isCos = */ false);
+     }
+ 
+     if (vmIntrinsics::is_intrinsic_available(vmIntrinsics::_dcos)) {
+       // disabled pending fix and retest of generated code via JDK-8210461
+-      // StubRoutines::_dcos = generate_dsin_dcos(/* isCos = */ true);
++      // fixed in JDK-8210461
++      StubRoutines::_dcos = generate_dsin_dcos(/* isCos = */ true);
+     }
+   }
+ 
+diff --git a/test/hotspot/jtreg/compiler/intrinsics/mathexact/Test8210461.java b/test/hotspot/jtreg/compiler/intrinsics/mathexact/Test8210461.java
+new file mode 100644
+index 000000000..2fb4b59a0
+--- /dev/null
++++ b/test/hotspot/jtreg/compiler/intrinsics/mathexact/Test8210461.java
+@@ -0,0 +1,54 @@
++/*
++ * Copyright (c) 2018, Oracle and/or its affiliates. All rights reserved.
++ * Copyright (c) 2018, Cavium (by BELLSOFT). All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++/*
++ * @test
++ * @bug 8210461
++ * @summary Math cos instrinsic returns incorrect result for large value
++ *
++ * @run main/othervm compiler.intrinsics.math.Test8210461
++ */
++
++package compiler.intrinsics.math;
++
++import java.util.Arrays;
++
++public class Test8210461 {
++    private static final double[] testCases = new double[] {
++        1647100.0d,
++        16471000.0d,
++        164710000.0d
++    };
++
++    public static void main(String[] args) {
++        Arrays.stream(testCases).forEach(Test8210461::test);
++    }
++
++    private static void test(double arg) {
++        double strictResult = StrictMath.cos(arg);
++        double mathResult = Math.cos(arg);
++        if (Math.abs(strictResult - mathResult) > Math.ulp(strictResult))
++            throw new AssertionError(mathResult + " while expecting " + strictResult);
++    }
++}
+-- 
+2.19.0
+

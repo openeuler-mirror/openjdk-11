@@ -1,0 +1,956 @@
+diff --git a/src/hotspot/share/gc/g1/g1BlockOffsetTable.hpp b/src/hotspot/share/gc/g1/g1BlockOffsetTable.hpp
+index 0fcfe4e96..a0ecfd393 100644
+--- a/src/hotspot/share/gc/g1/g1BlockOffsetTable.hpp
++++ b/src/hotspot/share/gc/g1/g1BlockOffsetTable.hpp
+@@ -34,6 +34,7 @@
+ // Forward declarations
+ class G1BlockOffsetTable;
+ class G1ContiguousSpace;
++class G1RegionToSpaceMapper;
+ 
+ // This implementation of "G1BlockOffsetTable" divides the covered region
+ // into "N"-word subregions (where "N" = 2^"LogN".  An array with an entry
+diff --git a/src/hotspot/share/gc/g1/g1CollectedHeap.cpp b/src/hotspot/share/gc/g1/g1CollectedHeap.cpp
+index 3bb5b56e8..a987377ae 100644
+--- a/src/hotspot/share/gc/g1/g1CollectedHeap.cpp
++++ b/src/hotspot/share/gc/g1/g1CollectedHeap.cpp
+@@ -343,7 +343,8 @@ HeapWord* G1CollectedHeap::humongous_obj_allocate(size_t word_size) {
+   } else {
+     // Policy: Try only empty regions (i.e. already committed first). Maybe we
+     // are lucky enough to find some.
+-    first = _hrm.find_contiguous_only_empty(obj_regions);
++    uint node_index = _numa->is_humongous_region_enabled() ? _numa->index_of_current_thread() : G1NUMA::AnyNodeIndex;
++    first = _hrm.find_contiguous_only_empty(obj_regions, node_index);
+     if (first != G1_NO_HRM_INDEX) {
+       _hrm.allocate_free_regions_starting_at(first, obj_regions);
+     }
+@@ -353,14 +354,15 @@ HeapWord* G1CollectedHeap::humongous_obj_allocate(size_t word_size) {
+     // Policy: We could not find enough regions for the humongous object in the
+     // free list. Look through the heap to find a mix of free and uncommitted regions.
+     // If so, try expansion.
+-    first = _hrm.find_contiguous_empty_or_unavailable(obj_regions);
++    uint node_index = _numa->is_humongous_region_enabled() ? _numa->index_of_current_thread() : G1NUMA::AnyNodeIndex;
++    first = _hrm.find_contiguous_empty_or_unavailable(obj_regions, node_index);
+     if (first != G1_NO_HRM_INDEX) {
+       // We found something. Make sure these regions are committed, i.e. expand
+       // the heap. Alternatively we could do a defragmentation GC.
+       log_debug(gc, ergo, heap)("Attempt heap expansion (humongous allocation request failed). Allocation request: " SIZE_FORMAT "B",
+                                     word_size * HeapWordSize);
+ 
+-      _hrm.expand_at(first, obj_regions, workers());
++      _hrm.expand_at(first, obj_regions, workers(), node_index);
+       g1_policy()->record_new_heap_size(num_regions());
+ 
+ #ifdef ASSERT
+@@ -4823,7 +4825,7 @@ public:
+                            HeapRegionSet* old_set, HeapRegionManager* hrm) :
+     _free_list_only(free_list_only),
+     _old_set(old_set), _hrm(hrm), _total_used(0) {
+-    assert(_hrm.num_free_regions() == 0, "pre-condition");
++    assert(_hrm->num_free_regions() == 0, "pre-condition");
+     if (!free_list_only) {
+       assert(_old_set->is_empty(), "pre-condition");
+     }
+diff --git a/src/hotspot/share/gc/g1/g1HeapVerifier.cpp b/src/hotspot/share/gc/g1/g1HeapVerifier.cpp
+index 71342b4d2..22fd0bd95 100644
+--- a/src/hotspot/share/gc/g1/g1HeapVerifier.cpp
++++ b/src/hotspot/share/gc/g1/g1HeapVerifier.cpp
+@@ -777,7 +777,7 @@ class G1CheckCSetFastTableClosure : public HeapRegionClosure {
+ 
+ bool G1HeapVerifier::check_cset_fast_test() {
+   G1CheckCSetFastTableClosure cl;
+-  _g1h->_hrm->iterate(&cl);
++  _g1h->_hrm.iterate(&cl);
+   return !cl.failures();
+ }
+ #endif // PRODUCT
+diff --git a/src/hotspot/share/gc/g1/g1NUMA.cpp b/src/hotspot/share/gc/g1/g1NUMA.cpp
+index 95d9d8c15..fada40f13 100644
+--- a/src/hotspot/share/gc/g1/g1NUMA.cpp
++++ b/src/hotspot/share/gc/g1/g1NUMA.cpp
+@@ -42,6 +42,8 @@ size_t G1NUMA::page_size() const {
+ 
+ bool G1NUMA::is_enabled() const { return num_active_nodes() > 1; }
+ 
++bool G1NUMA::is_humongous_region_enabled() const { return UseNUMAHumongous && num_active_nodes() > 1; }
++
+ G1NUMA* G1NUMA::create() {
+   guarantee(_inst == NULL, "Should be called once.");
+   _inst = new G1NUMA();
+@@ -203,7 +205,7 @@ uint G1NUMA::index_for_region(HeapRegion* hr) const {
+ //      * Page #:       |-----0----||-----1----||-----2----||-----3----||-----4----||-----5----||-----6----||-----7----|
+ //      * HeapRegion #: |-#0-||-#1-||-#2-||-#3-||-#4-||-#5-||-#6-||-#7-||-#8-||-#9-||#10-||#11-||#12-||#13-||#14-||#15-|
+ //      * NUMA node #:  |----#0----||----#1----||----#2----||----#3----||----#0----||----#1----||----#2----||----#3----|
+-void G1NUMA::request_memory_on_node(void* aligned_address, size_t size_in_bytes, uint region_index) {
++void G1NUMA::request_memory_on_node(void* aligned_address, size_t size_in_bytes, uint region_index, uint node) {
+   if (!is_enabled()) {
+     return;
+   }
+@@ -212,7 +214,7 @@ void G1NUMA::request_memory_on_node(void* aligned_address, size_t size_in_bytes,
+     return;
+   }
+ 
+-  uint node_index = preferred_node_index_for_index(region_index);
++  uint node_index = node == G1NUMA::AnyNodeIndex ? preferred_node_index_for_index(region_index) : node;
+ 
+   assert(is_aligned(aligned_address, page_size()), "Given address (" PTR_FORMAT ") should be aligned.", p2i(aligned_address));
+   assert(is_aligned(size_in_bytes, page_size()), "Given size (" SIZE_FORMAT ") should be aligned.", size_in_bytes);
+diff --git a/src/hotspot/share/gc/g1/g1NUMA.hpp b/src/hotspot/share/gc/g1/g1NUMA.hpp
+index 2bfad205b..56889057f 100644
+--- a/src/hotspot/share/gc/g1/g1NUMA.hpp
++++ b/src/hotspot/share/gc/g1/g1NUMA.hpp
+@@ -89,6 +89,8 @@ public:
+ 
+   bool is_enabled() const;
+ 
++  bool is_humongous_region_enabled() const;
++
+   int numa_id(int index) const;
+ 
+   // Returns memory node ids
+@@ -113,7 +115,7 @@ public:
+   uint index_for_region(HeapRegion* hr) const;
+ 
+   // Requests the given memory area to be located at the given node index.
+-  void request_memory_on_node(void* aligned_address, size_t size_in_bytes, uint region_index);
++  void request_memory_on_node(void* aligned_address, size_t size_in_bytes, uint region_index, uint node = AnyNodeIndex);
+ 
+   // Returns maximum search depth which is used to limit heap region search iterations.
+   // The number of active nodes, page size and heap region size are considered.
+diff --git a/src/hotspot/share/gc/g1/g1RegionToSpaceMapper.cpp b/src/hotspot/share/gc/g1/g1RegionToSpaceMapper.cpp
+index dba2d1734..67595e05b 100644
+--- a/src/hotspot/share/gc/g1/g1RegionToSpaceMapper.cpp
++++ b/src/hotspot/share/gc/g1/g1RegionToSpaceMapper.cpp
+@@ -69,7 +69,7 @@ class G1RegionsLargerThanCommitSizeMapper : public G1RegionToSpaceMapper {
+     guarantee(alloc_granularity >= page_size, "allocation granularity smaller than commit granularity");
+   }
+ 
+-  virtual void commit_regions(uint start_idx, size_t num_regions, WorkGang* pretouch_gang) {
++  virtual void commit_regions(uint start_idx, size_t num_regions, WorkGang* pretouch_gang, uint node) {
+     const size_t start_page = (size_t)start_idx * _pages_per_region;
+     const size_t size_in_pages = num_regions * _pages_per_region;
+     bool zero_filled = _storage.commit(start_page, size_in_pages);
+@@ -77,7 +77,7 @@ class G1RegionsLargerThanCommitSizeMapper : public G1RegionToSpaceMapper {
+       for (uint region_index = start_idx; region_index < start_idx + num_regions; region_index++ ) {
+         void* address = _storage.page_start(region_index * _pages_per_region);
+         size_t size_in_bytes = _storage.page_size() * _pages_per_region;
+-        G1NUMA::numa()->request_memory_on_node(address, size_in_bytes, region_index);
++        G1NUMA::numa()->request_memory_on_node(address, size_in_bytes, region_index, node);
+       }
+     }
+     if (AlwaysPreTouch) {
+@@ -125,7 +125,7 @@ class G1RegionsSmallerThanCommitSizeMapper : public G1RegionToSpaceMapper {
+     _refcounts.initialize((HeapWord*)rs.base(), (HeapWord*)(rs.base() + align_up(rs.size(), page_size)), page_size);
+   }
+ 
+-  virtual void commit_regions(uint start_idx, size_t num_regions, WorkGang* pretouch_gang) {
++  virtual void commit_regions(uint start_idx, size_t num_regions, WorkGang* pretouch_gang, uint node) {
+     size_t const NoPage = ~(size_t)0;
+ 
+     size_t first_committed = NoPage;
+diff --git a/src/hotspot/share/gc/g1/g1RegionToSpaceMapper.hpp b/src/hotspot/share/gc/g1/g1RegionToSpaceMapper.hpp
+index 30f7bf54c..6b396c8e3 100644
+--- a/src/hotspot/share/gc/g1/g1RegionToSpaceMapper.hpp
++++ b/src/hotspot/share/gc/g1/g1RegionToSpaceMapper.hpp
+@@ -25,6 +25,7 @@
+ #ifndef SHARE_VM_GC_G1_G1REGIONTOSPACEMAPPER_HPP
+ #define SHARE_VM_GC_G1_G1REGIONTOSPACEMAPPER_HPP
+ 
++#include "gc/g1/g1NUMA.hpp"
+ #include "gc/g1/g1PageBasedVirtualSpace.hpp"
+ #include "memory/allocation.hpp"
+ #include "utilities/debug.hpp"
+@@ -72,7 +73,7 @@ class G1RegionToSpaceMapper : public CHeapObj<mtGC> {
+     return _commit_map.at(idx);
+   }
+ 
+-  virtual void commit_regions(uint start_idx, size_t num_regions = 1, WorkGang* pretouch_workers = NULL) = 0;
++  virtual void commit_regions(uint start_idx, size_t num_regions = 1, WorkGang* pretouch_workers = NULL, uint node = G1NUMA::AnyNodeIndex) = 0;
+   virtual void uncommit_regions(uint start_idx, size_t num_regions = 1) = 0;
+ 
+   // Creates an appropriate G1RegionToSpaceMapper for the given parameters.
+diff --git a/src/hotspot/share/gc/g1/heapRegionManager.cpp b/src/hotspot/share/gc/g1/heapRegionManager.cpp
+index 10a0d58a5..9dc86eb21 100644
+--- a/src/hotspot/share/gc/g1/heapRegionManager.cpp
++++ b/src/hotspot/share/gc/g1/heapRegionManager.cpp
+@@ -37,6 +37,11 @@
+ #include "runtime/orderAccess.hpp"
+ #include "utilities/bitMap.inline.hpp"
+ 
++// Avoid allocating too many humongous regions in the same node
++// at most (humongous regions already allocated)/ BALANCE_FACTOR_FOR_HUMONGOUS
++// if this threshold is exceeded, fallback to the original scheme
++const int BALANCE_FACTOR_FOR_HUMONGOUS = 2;
++
+ class MasterFreeRegionListChecker : public HeapRegionSetChecker {
+ public:
+   void check_mt_safety() {
+@@ -134,23 +139,23 @@ HeapRegion* HeapRegionManager::new_heap_region(uint hrm_index) {
+   assert(reserved().contains(mr), "invariant");
+   return g1h->new_heap_region(hrm_index, mr);
+ }
+- 
+-void HeapRegionManager::commit_regions(uint index, size_t num_regions, WorkGang* pretouch_gang) {
++
++void HeapRegionManager::commit_regions(uint index, size_t num_regions, WorkGang* pretouch_gang, uint node) {
+   guarantee(num_regions > 0, "Must commit more than zero regions");
+   guarantee(_num_committed + num_regions <= max_length(), "Cannot commit more than the maximum amount of regions");
+ 
+   _num_committed += (uint)num_regions;
+ 
+-  _heap_mapper->commit_regions(index, num_regions, pretouch_gang);
++  _heap_mapper->commit_regions(index, num_regions, pretouch_gang, node);
+ 
+   // Also commit auxiliary data
+-  _prev_bitmap_mapper->commit_regions(index, num_regions, pretouch_gang);
+-  _next_bitmap_mapper->commit_regions(index, num_regions, pretouch_gang);
++  _prev_bitmap_mapper->commit_regions(index, num_regions, pretouch_gang, node);
++  _next_bitmap_mapper->commit_regions(index, num_regions, pretouch_gang, node);
+ 
+-  _bot_mapper->commit_regions(index, num_regions, pretouch_gang);
+-  _cardtable_mapper->commit_regions(index, num_regions, pretouch_gang);
++  _bot_mapper->commit_regions(index, num_regions, pretouch_gang, node);
++  _cardtable_mapper->commit_regions(index, num_regions, pretouch_gang, node);
+ 
+-  _card_counts_mapper->commit_regions(index, num_regions, pretouch_gang);
++  _card_counts_mapper->commit_regions(index, num_regions, pretouch_gang, node);
+ }
+ 
+ void HeapRegionManager::uncommit_regions(uint start, size_t num_regions) {
+@@ -185,9 +190,22 @@ void HeapRegionManager::uncommit_regions(uint start, size_t num_regions) {
+   _card_counts_mapper->uncommit_regions(start, num_regions);
+ }
+ 
+-void HeapRegionManager::make_regions_available(uint start, uint num_regions, WorkGang* pretouch_gang) {
++void HeapRegionManager::make_regions_available(uint start, uint num_regions, WorkGang* pretouch_gang, uint node) {
+   guarantee(num_regions > 0, "No point in calling this for zero regions");
+-  commit_regions(start, num_regions, pretouch_gang);
++  if (node != G1NUMA::AnyNodeIndex) {
++    G1NUMA* numa = G1NUMA::numa();
++    guarantee(numa->is_humongous_region_enabled(), "NUMA Humongous should be enabled in calling this");
++    guarantee(node < numa->num_active_nodes(), "node should be less than active nodes");
++    uint sum = 0;
++    for (uint i = 0; i < numa->num_active_nodes(); i++) {
++      sum += _humongous.count(i);
++    }
++    uint regionsOnThisNode = _humongous.count(node);
++    if (BALANCE_FACTOR_FOR_HUMONGOUS * regionsOnThisNode > sum + num_regions) {
++      node = G1NUMA::AnyNodeIndex;
++    }
++  }
++  commit_regions(start, num_regions, pretouch_gang, node);
+   for (uint i = start; i < start + num_regions; i++) {
+     if (_regions.get_by_index(i) == NULL) {
+       HeapRegion* new_hr = new_heap_region(i);
+@@ -209,7 +227,10 @@ void HeapRegionManager::make_regions_available(uint start, uint num_regions, Wor
+     MemRegion mr(bottom, bottom + HeapRegion::GrainWords);
+ 
+     hr->initialize(mr);
+-    hr->set_node_index(G1NUMA::numa()->index_for_region(hr));
++    hr->set_node_index(node == G1NUMA::AnyNodeIndex ? G1NUMA::numa()->index_for_region(hr) : node);
++    if (node != G1NUMA::AnyNodeIndex) {
++      _humongous.add(hr);
++    }
+     insert_into_free_list(at(i));
+   }
+ }
+@@ -236,7 +257,7 @@ uint HeapRegionManager::expand_by(uint num_regions, WorkGang* pretouch_workers)
+   return expand_at(0, num_regions, pretouch_workers);
+ }
+ 
+-uint HeapRegionManager::expand_at(uint start, uint num_regions, WorkGang* pretouch_workers) {
++uint HeapRegionManager::expand_at(uint start, uint num_regions, WorkGang* pretouch_workers, uint node) {
+   if (num_regions == 0) {
+     return 0;
+   }
+@@ -250,7 +271,7 @@ uint HeapRegionManager::expand_at(uint start, uint num_regions, WorkGang* pretou
+   while (expanded < num_regions &&
+          (num_last_found = find_unavailable_from_idx(cur, &idx_last_found)) > 0) {
+     uint to_expand = MIN2(num_regions - expanded, num_last_found);
+-    make_regions_available(idx_last_found, to_expand, pretouch_workers);
++    make_regions_available(idx_last_found, to_expand, pretouch_workers, node);
+     expanded += to_expand;
+     cur = idx_last_found + num_last_found + 1;
+   }
+@@ -288,7 +309,7 @@ bool HeapRegionManager::is_on_preferred_index(uint region_index, uint preferred_
+   return region_node_index == preferred_node_index;
+ }
+ 
+-uint HeapRegionManager::find_contiguous(size_t num, bool empty_only) {
++uint HeapRegionManager::find_contiguous(size_t num, bool empty_only, uint node) {
+   uint found = 0;
+   size_t length_found = 0;
+   uint cur = 0;
+@@ -297,7 +318,12 @@ uint HeapRegionManager::find_contiguous(size_t num, bool empty_only) {
+     HeapRegion* hr = _regions.get_by_index(cur);
+     if ((!empty_only && !is_available(cur)) || (is_available(cur) && hr != NULL && hr->is_empty())) {
+       // This region is a potential candidate for allocation into.
+-      length_found++;
++      if (node != G1NUMA::AnyNodeIndex && hr != NULL && hr->node_index() != node) {
++        length_found = 0;
++        found = cur + 1;
++      } else {
++        length_found++;
++      }
+     } else {
+       // This region is not a candidate. The next region is the next possible one.
+       found = cur + 1;
+@@ -306,13 +332,35 @@ uint HeapRegionManager::find_contiguous(size_t num, bool empty_only) {
+     cur++;
+   }
+ 
++  if (node != G1NUMA::AnyNodeIndex && length_found != num) {
++    found = 0;
++    length_found = 0;
++    cur = 0;
++    while (length_found < num && cur < max_length()) {
++      HeapRegion* hr = _regions.get_by_index(cur);
++      if ((!empty_only && !is_available(cur)) || (is_available(cur) && hr != NULL && hr->is_empty())) {
++        // This region is a potential candidate for allocation into.
++        length_found++;
++      } else {
++        // This region is not a candidate. The next region is the next possible one.
++        found = cur + 1;
++        length_found = 0;
++      }
++      cur++;
++    }
++  }
++
+   if (length_found == num) {
++    G1NUMA* numa = G1NUMA::numa();
+     for (uint i = found; i < (found + num); i++) {
+       HeapRegion* hr = _regions.get_by_index(i);
+       // sanity check
+       guarantee((!empty_only && !is_available(i)) || (is_available(i) && hr != NULL && hr->is_empty()),
+                 "Found region sequence starting at " UINT32_FORMAT ", length " SIZE_FORMAT
+                 " that is not empty at " UINT32_FORMAT ". Hr is " PTR_FORMAT, found, num, i, p2i(hr));
++      if (numa->is_humongous_region_enabled() && hr != NULL && hr->node_index() < numa->num_active_nodes()) {
++        numa->update_statistics(G1NUMAStats::NewRegionAlloc, node, hr->node_index());
++      }
+     }
+     return found;
+   } else {
+diff --git a/src/hotspot/share/gc/g1/heapRegionManager.hpp b/src/hotspot/share/gc/g1/heapRegionManager.hpp
+index 216fcbc92..3edc1a9fb 100644
+--- a/src/hotspot/share/gc/g1/heapRegionManager.hpp
++++ b/src/hotspot/share/gc/g1/heapRegionManager.hpp
+@@ -26,6 +26,7 @@
+ #define SHARE_VM_GC_G1_HEAPREGIONMANAGER_HPP
+ 
+ #include "gc/g1/g1BiasedArray.hpp"
++#include "gc/g1/g1NUMA.hpp"
+ #include "gc/g1/g1RegionToSpaceMapper.hpp"
+ #include "gc/g1/heapRegionSet.hpp"
+ #include "services/memoryUsage.hpp"
+@@ -81,7 +82,7 @@ class HeapRegionManager: public CHeapObj<mtGC> {
+   G1RegionToSpaceMapper* _card_counts_mapper;
+ 
+   FreeRegionList _free_list;
+-
++  G1RegionsOnNodes _humongous;
+   // Each bit in this bitmap indicates that the corresponding region is available
+   // for allocation.
+   CHeapBitMap _available_map;
+@@ -95,10 +96,10 @@ class HeapRegionManager: public CHeapObj<mtGC> {
+   HeapWord* heap_bottom() const { return _regions.bottom_address_mapped(); }
+   HeapWord* heap_end() const {return _regions.end_address_mapped(); }
+ 
+-  void make_regions_available(uint index, uint num_regions = 1, WorkGang* pretouch_gang = NULL);
++  void make_regions_available(uint index, uint num_regions = 1, WorkGang* pretouch_gang = NULL, uint node = G1NUMA::AnyNodeIndex);
+ 
+   // Pass down commit calls to the VirtualSpace.
+-  void commit_regions(uint index, size_t num_regions = 1, WorkGang* pretouch_gang = NULL);
++  void commit_regions(uint index, size_t num_regions = 1, WorkGang* pretouch_gang = NULL, uint node = G1NUMA::AnyNodeIndex);
+   void uncommit_regions(uint index, size_t num_regions = 1);
+ 
+   // Notify other data structures about change in the heap layout.
+@@ -108,7 +109,7 @@ class HeapRegionManager: public CHeapObj<mtGC> {
+   // the index of the first region or G1_NO_HRM_INDEX if the search was unsuccessful.
+   // If only_empty is true, only empty regions are considered.
+   // Searches from bottom to top of the heap, doing a first-fit.
+-  uint find_contiguous(size_t num, bool only_empty);
++  uint find_contiguous(size_t num, bool only_empty, uint node = G1NUMA::AnyNodeIndex);
+   // Finds the next sequence of unavailable regions starting from start_idx. Returns the
+   // length of the sequence found. If this result is zero, no such sequence could be found,
+   // otherwise res_idx indicates the start index of these regions.
+@@ -212,17 +213,17 @@ public:
+   // Makes sure that the regions from start to start+num_regions-1 are available
+   // for allocation. Returns the number of regions that were committed to achieve
+   // this.
+-  uint expand_at(uint start, uint num_regions, WorkGang* pretouch_workers);
++  uint expand_at(uint start, uint num_regions, WorkGang* pretouch_workers, uint node = G1NUMA::AnyNodeIndex);
+ 
+   // Try to expand on the given node index.
+   virtual uint expand_on_preferred_node(uint node_index);
+ 
+   // Find a contiguous set of empty regions of length num. Returns the start index of
+   // that set, or G1_NO_HRM_INDEX.
+-  uint find_contiguous_only_empty(size_t num) { return find_contiguous(num, true); }
++  uint find_contiguous_only_empty(size_t num, uint node = G1NUMA::AnyNodeIndex) { return find_contiguous(num, true, node); }
+   // Find a contiguous set of empty or unavailable regions of length num. Returns the
+   // start index of that set, or G1_NO_HRM_INDEX.
+-  uint find_contiguous_empty_or_unavailable(size_t num) { return find_contiguous(num, false); }
++  uint find_contiguous_empty_or_unavailable(size_t num, uint node = G1NUMA::AnyNodeIndex) { return find_contiguous(num, false, node); }
+ 
+   HeapRegion* next_region_in_heap(const HeapRegion* r) const;
+ 
+diff --git a/src/hotspot/share/gc/g1/heapRegionSet.hpp b/src/hotspot/share/gc/g1/heapRegionSet.hpp
+index a495269da..71b89668a 100644
+--- a/src/hotspot/share/gc/g1/heapRegionSet.hpp
++++ b/src/hotspot/share/gc/g1/heapRegionSet.hpp
+@@ -53,6 +53,7 @@ class HeapRegionSetChecker : public CHeapObj<mtGC> {
+ public:
+   // Verify MT safety for this HeapRegionSet.
+   virtual void check_mt_safety() = 0;
++  virtual bool is_correct_type(HeapRegion *hr) = 0;
+ };
+ 
+ // Base class for all the classes that represent heap region sets. It
+diff --git a/src/hotspot/share/runtime/globals.hpp b/src/hotspot/share/runtime/globals.hpp
+index fe7a5eff3..ce62c7ac7 100644
+--- a/src/hotspot/share/runtime/globals.hpp
++++ b/src/hotspot/share/runtime/globals.hpp
+@@ -299,6 +299,10 @@ define_pd_global(uint64_t,MaxRAM,                    1ULL*G);
+   product(bool, UseNUMAInterleaving, false,                                 \
+           "Interleave memory across NUMA nodes if available")               \
+                                                                             \
++  experimental(bool, UseNUMAHumongous, false,                               \
++          "Allocate Humongous Regions in the same node if available"        \
++          "Only used if UseNUMA is enabled.")                               \
++                                                                            \
+   product(size_t, NUMAInterleaveGranularity, 2*M,                           \
+           "Granularity to use for NUMA interleaving on Windows OS")         \
+           range(os::vm_allocation_granularity(), NOT_LP64(2*G) LP64_ONLY(8192*G)) \
+diff --git a/test/jtreg-ext/com/huawei/openjdk/numa/TestNUMAARMIO.java b/test/jtreg-ext/com/huawei/openjdk/numa/TestNUMAARMIO.java
+new file mode 100644
+index 000000000..4394b5bbb
+--- /dev/null
++++ b/test/jtreg-ext/com/huawei/openjdk/numa/TestNUMAARMIO.java
+@@ -0,0 +1,127 @@
++/*
++*Copyright (c) Huawei Technologies Co., Ltd. 2012-2019. All rights reserved.
++*/
++package com.huawei.openjdk.numa;
++/**
++ * @test TestNUMAARMIO
++ * @key gc
++ * @modules java.base/jdk.internal.misc
++ * @library /test/lib
++ * @build sun.hotspot.WhiteBox
++ * @build com.huawei.openjdk.numa.TestNUMAAbstract
++ * @run driver ClassFileInstaller sun.hotspot.WhiteBox
++ * @run main/othervm -Xlog:gc*=info -Xms8G -Xmx8G -XX:+UseNUMA com.huawei.openjdk.numa.TestNUMAARMIO 100 80000 80000 0 7 10000 10000 +UseNUMA -Xms16G -Xmx16G 70
++ * @summary open NUMA-Aware，test mermoy allocate and copy
++ * @author wangruishun
++ */
++
++/**
++ * @test TestNUMAARMIO
++ * @key gc
++ * @modules java.base/jdk.internal.misc
++ * @library /test/lib
++ * @build sun.hotspot.WhiteBox
++ * @build com.huawei.openjdk.numa.TestNUMAAbstract
++ * @run driver ClassFileInstaller sun.hotspot.WhiteBox
++ * @run main/othervm -Xlog:gc*=info -Xms8G -Xmx8G -XX:-UseNUMA com.huawei.openjdk.numa.TestNUMAARMIO 100 80000 80000 0 7 10000 10000 -UseNUMA -Xms16G -Xmx16G 70
++ * @summary close NUMA-Aware，test mermoy allocate and copy
++ * @author wangruishun
++ */
++import jdk.test.lib.Asserts.*;
++import jdk.test.lib.process.OutputAnalyzer;
++import jdk.test.lib.process.ProcessTools;
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Random;
++import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.TimeUnit;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++
++
++public class TestNUMAARMIO {
++
++
++    public static void main(String[] args) throws Exception {
++        if (!TestNUMAAbstract.checkArgs(args)) {
++            System.err.println("[param error] please check your param");
++            throw new RuntimeException("args error!");
++        }
++        String flagStr = args[10];
++        float flag = Float.parseFloat(flagStr);
++        OutputAnalyzer output = TestNUMAAbstract.executeClass(args,ExeTest.class);
++        System.out.println(output.getStdout());
++    }
++
++
++
++    private static class ExeTest {
++
++        public static void main(String[] args) throws Exception {
++            int threadNum = Integer.valueOf(args[0]).intValue();
++            int minStore = Integer.valueOf(args[1]).intValue();
++            int maxStore = Integer.valueOf(args[2]).intValue();
++            int minThreadSleep = Integer.valueOf(args[3]).intValue();
++            int maxThreadSleep = Integer.valueOf(args[4]).intValue();
++            int minObjCount = Integer.valueOf(args[5]).intValue();
++            int maxObjCount = Integer.valueOf(args[6]).intValue();
++            long starTime = System.currentTimeMillis();
++            System.out.println("***********star time*************:" + starTime);
++            final CountDownLatch mDoneSignal = new CountDownLatch(threadNum);
++            //create thread
++            List<Thread> threadList = TestNUMAAbstract.createNUMABindThread(threadNum, minStore, maxStore, minThreadSleep, maxThreadSleep, minObjCount, maxObjCount,mDoneSignal,new TestNUMAAbstract(){
++                @Override
++                void threadRun(int minObjCount, int maxObjCount, int minStore, int maxStore, CountDownLatch mDoneSignal, int minThreadSleep, int maxThreadSleep) {
++                    int randomObjNum = TestNUMAAbstract.randomNum(minObjCount, maxObjCount);
++                    int count = 0;
++                    while (count < randomObjNum) {
++                        int randomStore = TestNUMAAbstract.randomNum(minStore, maxStore);
++                        int[] arr = new int[randomStore];
++                        //allocate mermory
++                        for (int i = 0; i < arr.length; i++) {
++                            arr[i] = i;
++                        }
++                        //copy mermory
++                        int[] tem = new int[randomStore];
++                        for (int i = 0; i < arr.length; i++) {
++                            tem[i] = arr[i];
++                        }
++                        count++;
++                    }
++                    mDoneSignal.countDown();
++                }
++            });
++
++            TestNUMAAbstract.runNUMABindThread(threadList);
++            mDoneSignal.await();
++            long endTime = System.currentTimeMillis();
++            System.out.println("***********end time*************" + endTime);
++            System.out.println(String.format("Total thread count:%s", threadNum));
++            System.out.println(String.format("Min thread sleep:%s(um)", minThreadSleep));
++            System.out.println(String.format("Max thread sleep:%s(um)", maxThreadSleep));
++            System.out.println(String.format("Min RAM,int array length:%s", minStore));
++            System.out.println(String.format("Max RAM,int array length:%s", maxStore));
++            System.out.println(String.format("Min count of Obj:%s", minObjCount));
++            System.out.println(String.format("Max count of Obj:%s", maxObjCount));
++
++
++            double objTotalCount = threadNum*minObjCount;
++            double totalArm = objTotalCount*minStore*4;
++            //byte to KB
++            totalArm = totalArm/1024;
++            //KB to MB
++            totalArm = totalArm/1024;
++            System.out.println(String.format("allocate total ARM:%sMB", totalArm));
++            System.out.println(String.format("copy total ARM:%sMB", totalArm));
++            System.out.println("exe time:" + (endTime - starTime));
++        }
++
++
++
++
++
++    }
++}
++
+diff --git a/test/jtreg-ext/com/huawei/openjdk/numa/TestNUMAAbstract.java b/test/jtreg-ext/com/huawei/openjdk/numa/TestNUMAAbstract.java
+new file mode 100644
+index 000000000..31eb393f6
+--- /dev/null
++++ b/test/jtreg-ext/com/huawei/openjdk/numa/TestNUMAAbstract.java
+@@ -0,0 +1,178 @@
++/*
++* Copyright (c) Huawei Technologies Co., Ltd. 2012-2019. All rights
++reserved.
++*/
++package com.huawei.openjdk.numa;
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Random;
++import java.util.concurrent.CountDownLatch;
++
++import jdk.test.lib.Asserts.*;
++
++import jdk.test.lib.Platform;
++import jdk.test.lib.process.OutputAnalyzer;
++import jdk.test.lib.process.ProcessTools;
++import sun.hotspot.WhiteBox;
++/**
++ * @summary Utility class.
++ * @author wangruishun
++ */
++public  class TestNUMAAbstract {
++
++
++    private static final int ARGS_LEN_LIMIT = 11;
++
++    void threadRun(int minObjCount,int maxObjCount,int minStore,int maxStore,CountDownLatch mDoneSignal,int minThreadSleep, int maxThreadSleep){
++
++    }
++    /**
++     * get random from closed interval
++     *
++     * @param minNum min
++     * @param maxNum max
++     * @return random
++     */
++    public static int randomNum(int minNum, int maxNum) {
++        if (minNum == maxNum) {
++            return minNum;
++        }
++        Random random = new Random();
++        int randomNum = random.nextInt((maxNum - minNum) + 1) + minNum;
++        return randomNum;
++    }
++
++    /**
++     * start all thread
++     * @param createNUMABindThread thread list
++     */
++    public static void runNUMABindThread(List<Thread> createNUMABindThread) {
++        for (Thread thread : createNUMABindThread) {
++            try {
++                thread.start();
++            } catch (Exception e) {
++                e.printStackTrace();
++            }
++        }
++    }
++
++    /**
++     * create thread and The execution content is provided by the caller
++     *
++     * @param maxThreadNum maxThreadNum
++     * @param minStore minStore
++     * @param maxStore maxStore
++     * @param minThreadSleep minThreadSleep
++     * @param maxThreadSleep maxThreadSleep
++     * @param minObjCount minObjCount
++     * @param maxObjCount maxObjCount
++     * @return list
++     */
++    public static List<Thread> createNUMABindThread(int maxThreadNum, int minStore, int maxStore, int minThreadSleep, int maxThreadSleep, int minObjCount, int maxObjCount, CountDownLatch mDoneSignal,TestNUMAAbstract testNUMAAbstract) {
++        System.gc();
++        System.out.println("-------init gc over ------------");
++        System.out.println(String.format("args[0]:Total thread count:%s", maxThreadNum));
++        System.out.println(String.format("args[1]:Min thread sleep:%s(um)", minThreadSleep));
++        System.out.println(String.format("args[2]:Max thread sleep:%s(um)", maxThreadSleep));
++        System.out.println(String.format("args[3]:Min RAM,int array length:%s", minStore));
++        System.out.println(String.format("args[4]:Max RAM,int array length:%s", maxStore));
++        System.out.println(String.format("args[5]:Min count of Obj:%s", minObjCount));
++        System.out.println(String.format("args[6]:Max count of Obj:%s", maxObjCount));
++        List<Thread> list = new ArrayList<>();
++        int i = 0;
++        while (i < maxThreadNum) {
++            Thread createObj = new TestNUMABindThread(minStore, maxStore, minThreadSleep, maxThreadSleep, minObjCount, maxObjCount, mDoneSignal,testNUMAAbstract);
++            list.add(createObj);
++            i++;
++        }
++        return list;
++    }
++
++
++    /**
++     * execute class
++     *
++     * @param args the param of main
++     * @param exeClass calss name
++     * @throws Exception
++     */
++    public static OutputAnalyzer executeClass(String[] args,Class exeClass) throws Exception {
++        final String[] arguments = {
++                "-Xbootclasspath/a:.",
++                "-XX:" + args[7],
++                args[8],
++                args[9],
++                "-Xlog:gc*=info",
++                exeClass.getName(),
++                args[0],
++                args[1],
++                args[2],
++                args[3],
++                args[4],
++                args[5],
++                args[6]
++        };
++        ProcessBuilder pb = ProcessTools.createJavaProcessBuilder(arguments);
++        OutputAnalyzer output = new OutputAnalyzer(pb.start());
++        output.shouldHaveExitValue(0);
++        return output;
++    }
++
++    /**
++     * param check
++     * @param args
++     * @return
++     */
++    public static boolean checkArgs(String[] args) {
++        if (args == null || args.length != ARGS_LEN_LIMIT) {
++            System.out.println("args[0]:Total thread count");
++            System.out.println("args[1]:Min thread sleep（um）");
++            System.out.println("args[2]:Max thread sleep（um）");
++            System.out.println("args[3]:Min RAM,int array length");
++            System.out.println("args[4]:Max RAM,int array length");
++            System.out.println("args[5]:Min count of Obj");
++            System.out.println("args[6]:Max count of Obj");
++            System.out.println("args[7]:NUMA is open,+UseNUMA/-UseNUMA");
++            return false;
++        }
++        return true;
++    }
++}
++
++
++class TestNUMABindThread extends Thread {
++    private int minStore;
++    private int maxStore;
++    private int minThreadSleep;
++    private int maxThreadSleep;
++    private int minObjCount;
++    private int maxObjCount;
++    private CountDownLatch mDoneSignal;
++    private TestNUMAAbstract testNUMAAbstract;
++
++    /**
++     * @param minStore       min store
++     * @param maxStore       max store
++     * @param minThreadSleep sleep time(um)
++     * @param maxThreadSleep sleep time(um)
++     * @param minObjCount    the count of obj in one thread
++     * @param maxObjCount    the count of obj in one thread
++     */
++    public TestNUMABindThread(int minStore, int maxStore, int minThreadSleep, int maxThreadSleep, int minObjCount, int maxObjCount, CountDownLatch mDoneSignal, TestNUMAAbstract testNUMAAbstract) {
++        this.minStore = minStore;
++        this.maxStore = maxStore;
++        this.minThreadSleep = minThreadSleep;
++        this.maxThreadSleep = maxThreadSleep;
++        this.minObjCount = minObjCount;
++        this.maxObjCount = maxObjCount;
++        this.mDoneSignal = mDoneSignal;
++        this.testNUMAAbstract = testNUMAAbstract;
++    }
++
++    @Override
++    public void run() {
++        testNUMAAbstract.threadRun(minObjCount, maxObjCount, minStore, maxStore, mDoneSignal,minThreadSleep,maxThreadSleep);
++        mDoneSignal.countDown();
++    }
++}
+\ No newline at end of file
+diff --git a/test/jtreg-ext/com/huawei/openjdk/numa/TestNUMAAllocate.java b/test/jtreg-ext/com/huawei/openjdk/numa/TestNUMAAllocate.java
+new file mode 100644
+index 000000000..a00e6dad4
+--- /dev/null
++++ b/test/jtreg-ext/com/huawei/openjdk/numa/TestNUMAAllocate.java
+@@ -0,0 +1,208 @@
++/*
++* Copyright (c) Huawei Technologies Co., Ltd. 2012-2019. All rights
++reserved.
++*/
++package com.huawei.openjdk.numa;
++/**
++ * @test TestNUMAAllocate
++ * @key gc
++ * @modules java.base/jdk.internal.misc
++ * @library /test/lib
++ * @build sun.hotspot.WhiteBox
++ * @build com.huawei.openjdk.numa.TestNUMAAbstract
++ * @run driver ClassFileInstaller sun.hotspot.WhiteBox
++ * @run main/othervm -Xlog:gc*=info -Xms8G -Xmx8G -XX:+UseNUMA com.huawei.openjdk.numa.TestNUMAAllocate 1500 77000 80000 0 7 10000 10000 +UseNUMA -Xms8G -Xmx8G 70
++ * @summary opem NUMA-Aware,Memory allocate distribution ratio exceeds 70%
++ * @author wangruishun
++ */
++/**
++ * @test TestNUMAAllocate
++ * @key gc
++ * @modules java.base/jdk.internal.misc
++ * @library /test/lib
++ * @build sun.hotspot.WhiteBox
++ * @build com.huawei.openjdk.numa.TestNUMAAbstract
++ * @run driver ClassFileInstaller sun.hotspot.WhiteBox
++ * @run main/othervm -Xlog:gc*=info -Xms16G -Xmx16G -XX:+UseNUMA com.huawei.openjdk.numa.TestNUMAAllocate 1 6000000 9000000 0 0 100 100 +UseNUMA -Xms8G -Xmx16G 20
++ * @summary opem NUMA-Aware,Memory allocate distribution ratio exceeds 20%,one thread Humongous.
++ * @author wangruishun
++ */
++/**
++ * @test TestNUMAAllocate
++ * @key gc
++ * @modules java.base/jdk.internal.misc
++ * @library /test/lib
++ * @build sun.hotspot.WhiteBox
++ * @build com.huawei.openjdk.numa.TestNUMAAbstract
++ * @run driver ClassFileInstaller sun.hotspot.WhiteBox
++ * @run main/othervm -Xlog:gc*=info -Xms16G -Xmx16G -XX:+UseNUMA com.huawei.openjdk.numa.TestNUMAAllocate 5 800000 1000000 0 7 100 100 +UseNUMA -Xms256M -Xmx16G 45
++ * @summary opem NUMA-Aware,Memory allocate distribution ratio exceeds 45%,5 thread，Humongous
++ * @author wangruishun
++ */
++
++/**
++ * @test TestNUMAAllocate
++ * @key gc
++ * @modules java.base/jdk.internal.misc
++ * @library /test/lib
++ * @build sun.hotspot.WhiteBox
++ * @build com.huawei.openjdk.numa.TestNUMAAbstract
++ * @run driver ClassFileInstaller sun.hotspot.WhiteBox
++ * @run main/othervm -Xlog:gc*=info -Xms16G -Xmx16G -XX:+UseNUMA com.huawei.openjdk.numa.TestNUMAAllocate 5 800000 1000000 0 7 100 100 +UseNUMA -Xms256M -Xmx16G 45
++ * @summary opem NUMA-Aware,Memory allocate distribution ratio exceeds 45%,5 thread，Humongous
++ * @author wangruishun
++ */
++
++
++/**
++ * @test TestNUMAAllocate
++ * @key gc
++ * @modules java.base/jdk.internal.misc
++ * @library /test/lib
++ * @build sun.hotspot.WhiteBox
++ * @build com.huawei.openjdk.numa.TestNUMAAbstract
++ * @run driver ClassFileInstaller sun.hotspot.WhiteBox
++ * @run main/othervm -Xlog:gc*=info -Xms8G -Xmx8G -XX:+UseNUMA com.huawei.openjdk.numa.TestNUMAAllocate 120 77000 80000 0 7 150 150 +UseNUMA -Xms8G -Xmx8G 70
++ * @summary opem NUMA-Aware,Memory allocate distribution ratio exceeds 70%
++ * @author wangruishun
++ */
++
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Random;
++import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.TimeUnit;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++import jdk.test.lib.Asserts.*;
++
++import jdk.test.lib.Platform;
++import jdk.test.lib.process.OutputAnalyzer;
++import jdk.test.lib.process.ProcessTools;
++import sun.hotspot.WhiteBox;
++
++
++public class TestNUMAAllocate{
++
++    private static final int ARGS_LEN_LIMIT = 11;
++
++    public static void main(String[] args) throws Exception {
++        if (!TestNUMAAbstract.checkArgs(args)) {
++            System.err.println("[param error] please check your param");
++            throw new RuntimeException("args error!");
++        }
++        //ratio
++        String flagStr = args[10];
++        float flag = Float.parseFloat(flagStr);
++        //execute program and get stdout
++        OutputAnalyzer output = TestNUMAAbstract.executeClass(args,GClogTest.class);
++        //check print
++        checkPattern(".*Placement match ratio:*", output.getStdout(),flag);
++    }
++
++
++
++    /**
++     * Check if the string matches
++     *
++     * @param pattern string
++     * @param what string
++     * @param flag ratio
++     * @throws Exception
++     */
++    private static void checkPattern(String pattern, String what, float flag) throws Exception {
++        String[] arr = what.split(System.lineSeparator());
++        boolean isMatch = false;
++        float maxPercent = 0f;
++        for (String line : arr) {
++            Pattern r = Pattern.compile(pattern);
++            Matcher m = r.matcher(line);
++            if (m.find()) {
++                isMatch = true;
++                Float percentLine = getPercentByLog(line);
++                if (percentLine > maxPercent) {
++                    maxPercent = percentLine;
++                }
++            }
++        }
++        System.out.println(String.format("NUMA percent:%s", maxPercent));
++        if (!isMatch) {
++            throw new RuntimeException("Could not find pattern " + pattern + " in output");
++        }
++        if (maxPercent < flag) {
++            throw new RuntimeException("MUMA Seems to fail to start ");
++        }
++    }
++
++    /**
++     * get ration by gclog
++     *
++     * @param line
++     * @return
++     */
++    private static Float getPercentByLog(String line) {
++        if (null == line || "".equals(line)) {
++            return 0f;
++        }
++        //[1.631s][info][gc,heap,numa   ] GC(23) Placement match ratio: 5% 555/10618 (0: 62% 243/392, 1: 53% 265/498, 2: 100% 11/11, 3: 100% 36/36)
++        Pattern pattern = Pattern.compile(".\\d%|[1-9]*%|100%");
++        Matcher matcher = pattern.matcher(line);
++        Float percent = 0f;
++        if(matcher.find()){
++            String percentStr = matcher.group(0);
++            percentStr = percentStr.substring(0,percentStr.length()-1);
++            percent = Float.parseFloat(percentStr);
++        }
++        return percent;
++    }
++
++
++    private static class GClogTest {
++        public static void main(String[] args) throws Exception {
++            int threadNum = Integer.valueOf(args[0]).intValue();
++            int minStore = Integer.valueOf(args[1]).intValue();
++            int maxStore = Integer.valueOf(args[2]).intValue();
++            int minThreadSleep = Integer.valueOf(args[3]).intValue();
++            int maxThreadSleep = Integer.valueOf(args[4]).intValue();
++            int minObjCount = Integer.valueOf(args[5]).intValue();
++            int maxObjCount = Integer.valueOf(args[6]).intValue();
++            long starTime = System.currentTimeMillis();
++            System.out.println("***********star time*************:" + starTime);
++            final CountDownLatch mDoneSignal = new CountDownLatch(threadNum);
++            List<Thread> threadList = TestNUMAAbstract.createNUMABindThread(threadNum, minStore, maxStore, minThreadSleep, maxThreadSleep, minObjCount, maxObjCount,mDoneSignal,new TestNUMAAbstract(){
++                @Override
++                void threadRun(int minObjCount, int maxObjCount, int minStore, int maxStore, CountDownLatch mDoneSignal, int minThreadSleep, int maxThreadSleep) {
++                    int randomObjNum = TestNUMAAbstract.randomNum(minObjCount, maxObjCount);
++                    int count = 0;
++                    while (count < randomObjNum) {
++                        int randomStore = TestNUMAAbstract.randomNum(minStore, maxStore);
++                        int[] arr = new int[randomStore];
++                        int[] tem = new int[1];
++                        for (int i = 0; i < arr.length; i++) {
++                            tem[0] = arr[i];
++                        }
++
++                        count++;
++                        try {
++                            int threadSleep = TestNUMAAbstract.randomNum(minThreadSleep, maxThreadSleep);
++                            TimeUnit.MICROSECONDS.sleep(threadSleep);
++                        } catch (InterruptedException e) {
++                            e.printStackTrace();
++                        }
++                    }
++                    mDoneSignal.countDown();
++                }
++            });
++            TestNUMAAbstract.runNUMABindThread(threadList);
++            mDoneSignal.await();
++            long endTime = System.currentTimeMillis();
++            System.out.println("***********end time*************" + endTime);
++            System.out.println("***********result time*************" + (starTime - endTime));
++        }
++
++    }
++}
++
++

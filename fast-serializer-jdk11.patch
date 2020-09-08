@@ -1,13 +1,10 @@
 commit cbbef85e20818d23651e553ad9915ec8225a3456
-Author: hexuejin <hexuejin2@huawei.com>
 Date:   Thu May 28 11:04:16 2020 +0800
 
     Add FastSerializer
     
-    DTS/AR: AR.SR.IREQ02369011.001.001
     Summary:<core-libs>:  Add FastSerializer
     LLT: jtreg
-    Patch Type: huawei
     Bug url: NA
 
 diff --git a/src/hotspot/share/prims/unsafe.cpp b/src/hotspot/share/prims/unsafe.cpp
