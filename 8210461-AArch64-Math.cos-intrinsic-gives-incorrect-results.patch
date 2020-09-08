@@ -1,13 +1,10 @@
 From 723ae2c317eabdd65836df0bf6677cc2cf00e219 Mon Sep 17 00:00:00 2001
-From: zhanggaofeng <zhanggaofeng9@huawei.com>
 Date: Fri, 7 Aug 2020 18:49:17 +0000
 Subject: [PATCH 16/20] 8210461: AArch64: Math.cos intrinsic gives incorrect
  results
 
-DTS/AR: DTS2020080710179
 Summary: hotspot: backport JDK-8210461 and enable sin/cos stub
 LLT: NA
-Patch Type: backport
 Bug url: https://bugs.openjdk.java.net/browse/JDK-8210461
 ---
  .../aarch64/macroAssembler_aarch64_trig.cpp   |  2 +-
