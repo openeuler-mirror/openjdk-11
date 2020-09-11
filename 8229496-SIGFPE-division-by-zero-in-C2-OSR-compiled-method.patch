@@ -1,0 +1,377 @@
+diff --git a/src/hotspot/cpu/aarch64/aarch64.ad b/src/hotspot/cpu/aarch64/aarch64.ad
+index d6de489..65606e3 100644
+--- a/src/hotspot/cpu/aarch64/aarch64.ad
++++ b/src/hotspot/cpu/aarch64/aarch64.ad
+@@ -8315,6 +8315,17 @@ instruct castII(iRegI dst)
+   ins_pipe(pipe_class_empty);
+ %}
+ 
++instruct castLL(iRegL dst)
++%{
++  match(Set dst (CastLL dst));
++
++  size(0);
++  format %{ "# castLL of $dst" %}
++  ins_encode(/* empty encoding */);
++  ins_cost(0);
++  ins_pipe(pipe_class_empty);
++%}
++
+ // ============================================================================
+ // Atomic operation instructions
+ //
+diff --git a/src/hotspot/cpu/arm/arm.ad b/src/hotspot/cpu/arm/arm.ad
+index f338006..18e81bd 100644
+--- a/src/hotspot/cpu/arm/arm.ad
++++ b/src/hotspot/cpu/arm/arm.ad
+@@ -6901,6 +6901,14 @@ instruct castII( iRegI dst ) %{
+   ins_pipe(empty);
+ %}
+ 
++instruct castLL( iRegL dst ) %{
++  match(Set dst (CastLL dst));
++  format %{ "! castLL of $dst" %}
++  ins_encode( /*empty encoding*/ );
++  ins_cost(0);
++  ins_pipe(empty);
++%}
++
+ //----------Arithmetic Instructions--------------------------------------------
+ // Addition Instructions
+ // Register Addition
+diff --git a/src/hotspot/cpu/ppc/ppc.ad b/src/hotspot/cpu/ppc/ppc.ad
+index 64b2d6b..07bda6d 100644
+--- a/src/hotspot/cpu/ppc/ppc.ad
++++ b/src/hotspot/cpu/ppc/ppc.ad
+@@ -10821,6 +10821,14 @@ instruct castII(iRegIdst dst) %{
+   ins_pipe(pipe_class_default);
+ %}
+ 
++instruct castLL(iRegLdst dst) %{
++  match(Set dst (CastLL dst));
++  format %{ " -- \t// castLL of $dst" %}
++  size(0);
++  ins_encode( /*empty*/ );
++  ins_pipe(pipe_class_default);
++%}
++
+ instruct checkCastPP(iRegPdst dst) %{
+   match(Set dst (CheckCastPP dst));
+   format %{ " -- \t// checkcastPP of $dst" %}
+diff --git a/src/hotspot/cpu/s390/s390.ad b/src/hotspot/cpu/s390/s390.ad
+index e335f47..96c231b 100644
+--- a/src/hotspot/cpu/s390/s390.ad
++++ b/src/hotspot/cpu/s390/s390.ad
+@@ -5371,6 +5371,14 @@ instruct castII(iRegI dst) %{
+   ins_pipe(pipe_class_dummy);
+ %}
+ 
++instruct castLL(iRegL dst) %{
++  match(Set dst (CastLL dst));
++  size(0);
++  format %{ "# castLL of $dst" %}
++  ins_encode(/*empty*/);
++  ins_pipe(pipe_class_dummy);
++%}
++
+ 
+ //----------Conditional_store--------------------------------------------------
+ // Conditional-store of the updated heap-top.
+diff --git a/src/hotspot/cpu/sparc/sparc.ad b/src/hotspot/cpu/sparc/sparc.ad
+index 7a2798a..a09c795 100644
+--- a/src/hotspot/cpu/sparc/sparc.ad
++++ b/src/hotspot/cpu/sparc/sparc.ad
+@@ -6812,6 +6812,14 @@ instruct castII( iRegI dst ) %{
+   ins_pipe(empty);
+ %}
+ 
++instruct castLL( iRegL dst ) %{
++  match(Set dst (CastLL dst));
++  format %{ "# castLL of $dst" %}
++  ins_encode( /*empty encoding*/ );
++  ins_cost(0);
++  ins_pipe(empty);
++%}
++
+ //----------Arithmetic Instructions--------------------------------------------
+ // Addition Instructions
+ // Register Addition
+diff --git a/src/hotspot/cpu/x86/x86_32.ad b/src/hotspot/cpu/x86/x86_32.ad
+index 93551b8..de256fe 100644
+--- a/src/hotspot/cpu/x86/x86_32.ad
++++ b/src/hotspot/cpu/x86/x86_32.ad
+@@ -7324,6 +7324,14 @@ instruct castII( rRegI dst ) %{
+   ins_pipe( empty );
+ %}
+ 
++instruct castLL( rRegL dst ) %{
++  match(Set dst (CastLL dst));
++  format %{ "#castLL of $dst" %}
++  ins_encode( /*empty encoding*/ );
++  ins_cost(0);
++  ins_pipe( empty );
++%}
++
+ // Load-locked - same as a regular pointer load when used with compare-swap
+ instruct loadPLocked(eRegP dst, memory mem) %{
+   match(Set dst (LoadPLocked mem));
+diff --git a/src/hotspot/cpu/x86/x86_64.ad b/src/hotspot/cpu/x86/x86_64.ad
+index 7c5feb4..7879547 100644
+--- a/src/hotspot/cpu/x86/x86_64.ad
++++ b/src/hotspot/cpu/x86/x86_64.ad
+@@ -7354,6 +7354,17 @@ instruct castII(rRegI dst)
+   ins_pipe(empty);
+ %}
+ 
++instruct castLL(rRegL dst)
++%{
++  match(Set dst (CastLL dst));
++
++  size(0);
++  format %{ "# castLL of $dst" %}
++  ins_encode(/* empty encoding */);
++  ins_cost(0);
++  ins_pipe(empty);
++%}
++
+ // LoadP-locked same as a regular LoadP when used with compare-swap
+ instruct loadPLocked(rRegP dst, memory mem)
+ %{
+diff --git a/src/hotspot/share/opto/castnode.cpp b/src/hotspot/share/opto/castnode.cpp
+index ebd7d33..320d25f 100644
+--- a/src/hotspot/share/opto/castnode.cpp
++++ b/src/hotspot/share/opto/castnode.cpp
+@@ -63,6 +63,14 @@ const Type* ConstraintCastNode::Value(PhaseGVN* phase) const {
+       if (rt->empty())       assert(ft == Type::TOP, "special case #2");
+       break;
+     }
++    case Op_CastLL:
++    {
++      const Type* t1 = phase->type(in(1));
++      if (t1 == Type::TOP)   assert(ft == Type::TOP, "special case #1");
++      const Type* rt = t1->join_speculative(_type);
++      if (rt->empty())       assert(ft == Type::TOP, "special case #2");
++      break;
++    }
+     case Op_CastPP:
+     if (phase->type(in(1)) == TypePtr::NULL_PTR &&
+         _type->isa_ptr() && _type->is_ptr()->_ptr == TypePtr::NotNull)
+@@ -96,6 +104,11 @@ Node* ConstraintCastNode::make_cast(int opcode, Node* c, Node *n, const Type *t,
+     cast->set_req(0, c);
+     return cast;
+   }
++  case Op_CastLL: {
++    Node* cast = new CastLLNode(n, t, carry_dependency);
++    cast->set_req(0, c);
++    return cast;
++  }
+   case Op_CastPP: {
+     Node* cast = new CastPPNode(n, t, carry_dependency);
+     cast->set_req(0, c);
+@@ -279,6 +292,45 @@ void CastIINode::dump_spec(outputStream* st) const {
+ }
+ #endif
+ 
++Node* CastLLNode::Ideal(PhaseGVN* phase, bool can_reshape) {
++  Node* progress = ConstraintCastNode::Ideal(phase, can_reshape);
++  if (progress != NULL) {
++    return progress;
++  }
++
++  // Same as in CastIINode::Ideal but for TypeLong instead of TypeInt
++  if (can_reshape && !phase->C->major_progress()) {
++    const TypeLong* this_type = this->type()->is_long();
++    const TypeLong* in_type = phase->type(in(1))->isa_long();
++    if (in_type != NULL && this_type != NULL &&
++        (in_type->_lo != this_type->_lo ||
++         in_type->_hi != this_type->_hi)) {
++      jlong lo1 = this_type->_lo;
++      jlong hi1 = this_type->_hi;
++      int w1  = this_type->_widen;
++
++      if (lo1 >= 0) {
++        // Keep a range assertion of >=0.
++        lo1 = 0;         hi1 = max_jlong;
++      } else if (hi1 < 0) {
++        // Keep a range assertion of <0.
++        lo1 = min_jlong; hi1 = -1;
++      } else {
++        lo1 = min_jlong; hi1 = max_jlong;
++      }
++      const TypeLong* wtype = TypeLong::make(MAX2(in_type->_lo, lo1),
++                                             MIN2(in_type->_hi, hi1),
++                                             MAX2((int)in_type->_widen, w1));
++      if (wtype != type()) {
++        set_type(wtype);
++        return this;
++      }
++    }
++  }
++  return NULL;
++}
++
++
+ //=============================================================================
+ //------------------------------Identity---------------------------------------
+ // If input is already higher or equal to cast type, then this is an identity.
+diff --git a/src/hotspot/share/opto/castnode.hpp b/src/hotspot/share/opto/castnode.hpp
+index eaf3e32..6e48a07 100644
+--- a/src/hotspot/share/opto/castnode.hpp
++++ b/src/hotspot/share/opto/castnode.hpp
+@@ -91,6 +91,19 @@ class CastIINode: public ConstraintCastNode {
+ #endif
+ };
+ 
++//------------------------------CastLLNode-------------------------------------
++// cast long to long (different range)
++class CastLLNode: public ConstraintCastNode {
++  public:
++  CastLLNode(Node* n, const Type* t, bool carry_dependency = false)
++    : ConstraintCastNode(n, t, carry_dependency) {
++    init_class_id(Class_CastLL);
++  }
++  virtual int Opcode() const;
++  virtual uint ideal_reg() const { return Op_RegL; }
++  virtual Node* Ideal(PhaseGVN* phase, bool can_reshape);
++};
++
+ //------------------------------CastPPNode-------------------------------------
+ // cast pointer to pointer (different type)
+ class CastPPNode: public ConstraintCastNode {
+diff --git a/src/hotspot/share/opto/cfgnode.cpp b/src/hotspot/share/opto/cfgnode.cpp
+index eec3193..8c59efb 100644
+--- a/src/hotspot/share/opto/cfgnode.cpp
++++ b/src/hotspot/share/opto/cfgnode.cpp
+@@ -1727,12 +1727,13 @@ Node *PhiNode::Ideal(PhaseGVN *phase, bool can_reshape) {
+       // Wait until after parsing for the type information to propagate from the casts.
+       assert(can_reshape, "Invalid during parsing");
+       const Type* phi_type = bottom_type();
+-      assert(phi_type->isa_int() || phi_type->isa_ptr(), "bad phi type");
+-      // Add casts to carry the control dependency of the Phi that is
+-      // going away
++      assert(phi_type->isa_int() || phi_type->isa_long() || phi_type->isa_ptr(), "bad phi type");
++      // Add casts to carry the control dependency of the Phi that is going away
+       Node* cast = NULL;
+       if (phi_type->isa_int()) {
+         cast = ConstraintCastNode::make_cast(Op_CastII, r, uin, phi_type, true);
++      } else if (phi_type->isa_long()) {
++        cast = ConstraintCastNode::make_cast(Op_CastLL, r, uin, phi_type, true);
+       } else {
+         const Type* uin_type = phase->type(uin);
+         if (!phi_type->isa_oopptr() && !uin_type->isa_oopptr()) {
+diff --git a/src/hotspot/share/opto/classes.hpp b/src/hotspot/share/opto/classes.hpp
+index 6938ed2..2f435d1 100644
+--- a/src/hotspot/share/opto/classes.hpp
++++ b/src/hotspot/share/opto/classes.hpp
+@@ -57,6 +57,7 @@ macro(CallLeafNoFP)
+ macro(CallRuntime)
+ macro(CallStaticJava)
+ macro(CastII)
++macro(CastLL)
+ macro(CastX2P)
+ macro(CastP2X)
+ macro(CastPP)
+diff --git a/src/hotspot/share/opto/graphKit.cpp b/src/hotspot/share/opto/graphKit.cpp
+index 7a18207..25f5fa6 100644
+--- a/src/hotspot/share/opto/graphKit.cpp
++++ b/src/hotspot/share/opto/graphKit.cpp
+@@ -1363,35 +1363,37 @@ Node* GraphKit::null_check_common(Node* value, BasicType type,
+ 
+   // Cast obj to not-null on this path, if there is no null_control.
+   // (If there is a null_control, a non-null value may come back to haunt us.)
+-  if (type == T_OBJECT) {
+-    Node* cast = cast_not_null(value, false);
+-    if (null_control == NULL || (*null_control) == top())
+-      replace_in_map(value, cast);
+-    value = cast;
+-  }
+-
+-  return value;
++  return cast_not_null(value, (null_control == NULL || (*null_control) == top()));
+ }
+ 
+ 
+ //------------------------------cast_not_null----------------------------------
+ // Cast obj to not-null on this path
+ Node* GraphKit::cast_not_null(Node* obj, bool do_replace_in_map) {
+-  const Type *t = _gvn.type(obj);
+-  const Type *t_not_null = t->join_speculative(TypePtr::NOTNULL);
+-  // Object is already not-null?
+-  if( t == t_not_null ) return obj;
+-
+-  Node *cast = new CastPPNode(obj,t_not_null);
+-  cast->init_req(0, control());
+-  cast = _gvn.transform( cast );
++  Node* cast = NULL;
++  const Type* t = _gvn.type(obj);
++  if (t->make_ptr() != NULL) {
++    const Type* t_not_null = t->join_speculative(TypePtr::NOTNULL);
++    // Object is already not-null?
++    if (t == t_not_null) {
++      return obj;
++    }
++    cast = ConstraintCastNode::make_cast(Op_CastPP, control(), obj, t_not_null, false);
++  } else if (t->isa_int() != NULL) {
++    cast = ConstraintCastNode::make_cast(Op_CastII, control(), obj, TypeInt::INT, true);
++  } else if (t->isa_long() != NULL) {
++    cast = ConstraintCastNode::make_cast(Op_CastLL, control(), obj, TypeLong::LONG, true);
++  } else {
++    fatal("unexpected type: %s", type2name(t->basic_type()));
++  }
++  cast = _gvn.transform(cast);
+ 
+   // Scan for instances of 'obj' in the current JVM mapping.
+   // These instances are known to be not-null after the test.
+-  if (do_replace_in_map)
++  if (do_replace_in_map) {
+     replace_in_map(obj, cast);
+-
+-  return cast;                  // Return casted value
++  }
++  return cast;
+ }
+ 
+ // Sometimes in intrinsics, we implicitly know an object is not null
+diff --git a/src/hotspot/share/opto/node.hpp b/src/hotspot/share/opto/node.hpp
+index a36f3bb..1a8eeea 100644
+--- a/src/hotspot/share/opto/node.hpp
++++ b/src/hotspot/share/opto/node.hpp
+@@ -52,6 +52,7 @@ class CallNode;
+ class CallRuntimeNode;
+ class CallStaticJavaNode;
+ class CastIINode;
++class CastLLNode;
+ class CatchNode;
+ class CatchProjNode;
+ class CheckCastPPNode;
+@@ -666,7 +667,8 @@ public:
+       DEFINE_CLASS_ID(Phi,   Type, 0)
+       DEFINE_CLASS_ID(ConstraintCast, Type, 1)
+         DEFINE_CLASS_ID(CastII, ConstraintCast, 0)
+-        DEFINE_CLASS_ID(CheckCastPP, ConstraintCast, 1)
++        DEFINE_CLASS_ID(CastLL, ConstraintCast, 1)
++        DEFINE_CLASS_ID(CheckCastPP, ConstraintCast, 2)
+       DEFINE_CLASS_ID(CMove, Type, 3)
+       DEFINE_CLASS_ID(SafePointScalarObject, Type, 4)
+       DEFINE_CLASS_ID(DecodeNarrowPtr, Type, 5)
+@@ -805,6 +807,7 @@ public:
+   DEFINE_CLASS_QUERY(CatchProj)
+   DEFINE_CLASS_QUERY(CheckCastPP)
+   DEFINE_CLASS_QUERY(CastII)
++  DEFINE_CLASS_QUERY(CastLL)
+   DEFINE_CLASS_QUERY(ConstraintCast)
+   DEFINE_CLASS_QUERY(ClearArray)
+   DEFINE_CLASS_QUERY(CMove)
+diff --git a/src/hotspot/share/runtime/vmStructs.cpp b/src/hotspot/share/runtime/vmStructs.cpp
+index 98b8ade..d2e1927 100644
+--- a/src/hotspot/share/runtime/vmStructs.cpp
++++ b/src/hotspot/share/runtime/vmStructs.cpp
+@@ -1608,6 +1608,7 @@ typedef PaddedEnd<ObjectMonitor>              PaddedObjectMonitor;
+   declare_c2_type(DecodeNKlassNode, TypeNode)                             \
+   declare_c2_type(ConstraintCastNode, TypeNode)                           \
+   declare_c2_type(CastIINode, ConstraintCastNode)                         \
++  declare_c2_type(CastLLNode, ConstraintCastNode)                         \
+   declare_c2_type(CastPPNode, ConstraintCastNode)                         \
+   declare_c2_type(CheckCastPPNode, TypeNode)                              \
+   declare_c2_type(Conv2BNode, Node)                                       \
+

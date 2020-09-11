@@ -735,7 +735,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 6
+Release: 7
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -825,6 +825,14 @@ Patch36: ZGC-in-c1-load-barrier-d0-and-d1-registers-miss-restoring.patch
 Patch37: fix-compile-error-without-disable-precompiled-headers.patch
 Patch38: fast-serializer-jdk11.patch
 Patch39: fix-jck-failure-on-FastSerializer.patch
+Patch40: 8223667-ASAN-build-broken.patch
+Patch41: 8229495-SIGILL-in-C2-generated-OSR-compilation.patch
+Patch42: 8229496-SIGFPE-division-by-zero-in-C2-OSR-compiled-method.patch
+Patch43: 8243670-Unexpected-test-result-caused-by-C2-MergeMem.patch
+Patch44: fix-IfNode-s-bugs.patch
+Patch45: leaf-optimize-in-ParallelScanvageGC.patch
+Patch46: ZGC-correct-free-heap-size-excluding-waste-in-rule_allocation_rate.patch
+
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1081,6 +1089,13 @@ pushd %{top_level_dir_name}
 %patch37 -p1
 %patch38 -p1
 %patch39 -p1
+%patch40 -p1
+%patch41 -p1
+%patch42 -p1
+%patch43 -p1
+%patch44 -p1
+%patch45 -p1
+%patch46 -p1
 popd # openjdk
 
 %patch1000
@@ -1583,6 +1598,15 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* add Fri Sep 11 2020 noah <hedongbo@huawei.com> - 1:11.0.8.10-7
+- add 8223667-ASAN-build-broken.patch
+- add 8229495-SIGILL-in-C2-generated-OSR-compilation.patch
+- add 8229496-SIGFPE-division-by-zero-in-C2-OSR-compiled-method.patch
+- add 8243670-Unexpected-test-result-caused-by-C2-MergeMem.patch
+- add fix-IfNode-s-bugs.patch
+- add leaf-optimize-in-ParallelScanvageGC.patch
+- add ZGC-correct-free-heap-size-excluding-waste-in-rule_allocation_rate.patch
+
 * Tue Sep 8 2020 noah <hedongbo@huawei.com> - 1:11.0.8.10-6
 - add fast-serializer-jdk11.patch
 - add fix-jck-failure-on-FastSerializer.patch
