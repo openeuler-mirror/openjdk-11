@@ -1,0 +1,909 @@
+commit 21a400b0cecd92cbaf446ac3581df4ff17b1fde1
+Date:   Tue Sep 15 19:52:43 2020 +0800
+
+    8204947: Port ShenandoahTaskTerminator to mainline and make it default
+    
+    Summary: <gc>: Improve gc performance, port ShenandoahTaskTerminator to mainline and make it default
+    LLT: jtreg
+    Bug url: https://bugs.openjdk.java.net/browse/JDK-8204947
+
+diff --git a/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.cpp b/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.cpp
+index c98691ea7..5fc5ee83e 100644
+--- a/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.cpp
++++ b/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.cpp
+@@ -55,6 +55,7 @@
+ #include "gc/shared/genOopClosures.inline.hpp"
+ #include "gc/shared/isGCActiveMark.hpp"
+ #include "gc/shared/oopStorageParState.hpp"
++#include "gc/shared/owstTaskTerminator.hpp"
+ #include "gc/shared/referencePolicy.hpp"
+ #include "gc/shared/referenceProcessorPhaseTimes.hpp"
+ #include "gc/shared/space.inline.hpp"
+@@ -2993,7 +2994,7 @@ bool CMSCollector::markFromRootsWork() {
+ // Forward decl
+ class CMSConcMarkingTask;
+ 
+-class CMSConcMarkingTerminator: public ParallelTaskTerminator {
++class CMSConcMarkingParallelTerminator: public ParallelTaskTerminator {
+   CMSCollector*       _collector;
+   CMSConcMarkingTask* _task;
+  public:
+@@ -3003,7 +3004,7 @@ class CMSConcMarkingTerminator: public ParallelTaskTerminator {
+   // "queue_set" is a set of work queues of other threads.
+   // "collector" is the CMS collector associated with this task terminator.
+   // "yield" indicates whether we need the gang as a whole to yield.
+-  CMSConcMarkingTerminator(int n_threads, TaskQueueSetSuper* queue_set, CMSCollector* collector) :
++  CMSConcMarkingParallelTerminator(int n_threads, TaskQueueSetSuper* queue_set, CMSCollector* collector) :
+     ParallelTaskTerminator(n_threads, queue_set),
+     _collector(collector) { }
+ 
+@@ -3012,6 +3013,45 @@ class CMSConcMarkingTerminator: public ParallelTaskTerminator {
+   }
+ };
+ 
++class CMSConcMarkingOWSTTerminator: public OWSTTaskTerminator {
++  CMSCollector*       _collector;
++  CMSConcMarkingTask* _task;
++ public:
++  virtual void yield();
++
++  // "n_threads" is the number of threads to be terminated.
++  // "queue_set" is a set of work queues of other threads.
++  // "collector" is the CMS collector associated with this task terminator.
++  // "yield" indicates whether we need the gang as a whole to yield.
++  CMSConcMarkingOWSTTerminator(int n_threads, TaskQueueSetSuper* queue_set, CMSCollector* collector) :
++    OWSTTaskTerminator(n_threads, queue_set),
++    _collector(collector) { }
++
++  void set_task(CMSConcMarkingTask* task) {
++    _task = task;
++  }
++};
++
++class CMSConcMarkingTaskTerminator {
++ private:
++  ParallelTaskTerminator* _term;
++ public:
++  CMSConcMarkingTaskTerminator(int n_threads, TaskQueueSetSuper* queue_set, CMSCollector* collector) {
++    if (UseOWSTTaskTerminator) {
++      _term = new CMSConcMarkingOWSTTerminator(n_threads, queue_set, collector);
++    } else {
++      _term = new CMSConcMarkingParallelTerminator(n_threads, queue_set, collector);
++    }
++  }
++  ~CMSConcMarkingTaskTerminator() {
++    assert(_term != NULL, "Must not be NULL");
++    delete _term;
++  }
++
++  void set_task(CMSConcMarkingTask* task);
++  ParallelTaskTerminator* terminator() const { return _term; }
++};
++
+ class CMSConcMarkingTerminatorTerminator: public TerminatorTerminator {
+   CMSConcMarkingTask* _task;
+  public:
+@@ -3039,7 +3079,7 @@ class CMSConcMarkingTask: public YieldingFlexibleGangTask {
+   OopTaskQueueSet*  _task_queues;
+ 
+   // Termination (and yielding) support
+-  CMSConcMarkingTerminator _term;
++  CMSConcMarkingTaskTerminator       _term;
+   CMSConcMarkingTerminatorTerminator _term_term;
+ 
+  public:
+@@ -3068,7 +3108,7 @@ class CMSConcMarkingTask: public YieldingFlexibleGangTask {
+ 
+   HeapWord* volatile* global_finger_addr() { return &_global_finger; }
+ 
+-  CMSConcMarkingTerminator* terminator() { return &_term; }
++  ParallelTaskTerminator* terminator() { return _term.terminator(); }
+ 
+   virtual void set_for_termination(uint active_workers) {
+     terminator()->reset_for_reuse(active_workers);
+@@ -3086,7 +3126,7 @@ class CMSConcMarkingTask: public YieldingFlexibleGangTask {
+   void reset(HeapWord* ra) {
+     assert(_global_finger >= _cms_space->end(),  "Postcondition of ::work(i)");
+     _restart_addr = _global_finger = ra;
+-    _term.reset_for_reuse();
++    _term.terminator()->reset_for_reuse();
+   }
+ 
+   static bool get_work_from_overflow_stack(CMSMarkStack* ovflw_stk,
+@@ -3107,7 +3147,7 @@ bool CMSConcMarkingTerminatorTerminator::should_exit_termination() {
+   // thread has yielded.
+ }
+ 
+-void CMSConcMarkingTerminator::yield() {
++void CMSConcMarkingParallelTerminator::yield() {
+   if (_task->should_yield()) {
+     _task->yield();
+   } else {
+@@ -3115,6 +3155,22 @@ void CMSConcMarkingTerminator::yield() {
+   }
+ }
+ 
++void CMSConcMarkingOWSTTerminator::yield() {
++  if (_task->should_yield()) {
++    _task->yield();
++  } else {
++    OWSTTaskTerminator::yield();
++  }
++}
++
++void CMSConcMarkingTaskTerminator::set_task(CMSConcMarkingTask* task) {
++  if (UseOWSTTaskTerminator) {
++    ((CMSConcMarkingOWSTTerminator*)_term)->set_task(task);
++  } else {
++    ((CMSConcMarkingParallelTerminator*)_term)->set_task(task);
++  }
++}
++
+ ////////////////////////////////////////////////////////////////
+ // Concurrent Marking Algorithm Sketch
+ ////////////////////////////////////////////////////////////////
+@@ -4303,7 +4359,7 @@ class CMSParRemarkTask: public CMSParMarkTask {
+ 
+   // The per-thread work queues, available here for stealing.
+   OopTaskQueueSet*       _task_queues;
+-  ParallelTaskTerminator _term;
++  TaskTerminator         _term;
+   StrongRootsScope*      _strong_roots_scope;
+ 
+  public:
+@@ -4325,7 +4381,7 @@ class CMSParRemarkTask: public CMSParMarkTask {
+ 
+   OopTaskQueue* work_queue(int i) { return task_queues()->queue(i); }
+ 
+-  ParallelTaskTerminator* terminator() { return &_term; }
++  ParallelTaskTerminator* terminator() { return _term.terminator(); }
+   uint n_workers() { return _n_workers; }
+ 
+   void work(uint worker_id);
+@@ -5014,11 +5070,11 @@ void CMSCollector::do_remark_non_parallel() {
+ ////////////////////////////////////////////////////////
+ class AbstractGangTaskWOopQueues : public AbstractGangTask {
+   OopTaskQueueSet*       _queues;
+-  ParallelTaskTerminator _terminator;
++  TaskTerminator         _terminator;
+  public:
+   AbstractGangTaskWOopQueues(const char* name, OopTaskQueueSet* queues, uint n_threads) :
+     AbstractGangTask(name), _queues(queues), _terminator(n_threads, _queues) {}
+-  ParallelTaskTerminator* terminator() { return &_terminator; }
++  ParallelTaskTerminator* terminator() { return _terminator.terminator(); }
+   OopTaskQueueSet* queues() { return _queues; }
+ };
+ 
+diff --git a/src/hotspot/share/gc/cms/parNewGeneration.cpp b/src/hotspot/share/gc/cms/parNewGeneration.cpp
+index f6c55900f..0febc5292 100644
+--- a/src/hotspot/share/gc/cms/parNewGeneration.cpp
++++ b/src/hotspot/share/gc/cms/parNewGeneration.cpp
+@@ -74,7 +74,7 @@ ParScanThreadState::ParScanThreadState(Space* to_space_,
+                                        Stack<oop, mtGC>* overflow_stacks_,
+                                        PreservedMarks* preserved_marks_,
+                                        size_t desired_plab_sz_,
+-                                       ParallelTaskTerminator& term_) :
++                                       TaskTerminator& term_) :
+   _to_space(to_space_),
+   _old_gen(old_gen_),
+   _young_gen(young_gen_),
+@@ -92,7 +92,7 @@ ParScanThreadState::ParScanThreadState(Space* to_space_,
+   _older_gen_closure(young_gen_, this),
+   _evacuate_followers(this, &_to_space_closure, &_old_gen_closure,
+                       &_to_space_root_closure, young_gen_, &_old_gen_root_closure,
+-                      work_queue_set_, &term_),
++                      work_queue_set_, term_.terminator()),
+   _is_alive_closure(young_gen_),
+   _scan_weak_ref_closure(young_gen_, this),
+   _keep_alive_closure(&_scan_weak_ref_closure),
+@@ -305,7 +305,7 @@ public:
+                         Stack<oop, mtGC>*       overflow_stacks_,
+                         PreservedMarksSet&      preserved_marks_set,
+                         size_t                  desired_plab_sz,
+-                        ParallelTaskTerminator& term);
++                        TaskTerminator& term);
+ 
+   ~ParScanThreadStateSet() { TASKQUEUE_STATS_ONLY(reset_stats()); }
+ 
+@@ -326,14 +326,14 @@ public:
+   #endif // TASKQUEUE_STATS
+ 
+ private:
+-  ParallelTaskTerminator& _term;
++  TaskTerminator&         _term;
+   ParNewGeneration&       _young_gen;
+   Generation&             _old_gen;
+   ParScanThreadState*     _per_thread_states;
+   const int               _num_threads;
+  public:
+   bool is_valid(int id) const { return id < _num_threads; }
+-  ParallelTaskTerminator* terminator() { return &_term; }
++  ParallelTaskTerminator* terminator() { return _term.terminator(); }
+ };
+ 
+ ParScanThreadStateSet::ParScanThreadStateSet(int num_threads,
+@@ -344,7 +344,7 @@ ParScanThreadStateSet::ParScanThreadStateSet(int num_threads,
+                                              Stack<oop, mtGC>* overflow_stacks,
+                                              PreservedMarksSet& preserved_marks_set,
+                                              size_t desired_plab_sz,
+-                                             ParallelTaskTerminator& term)
++                                             TaskTerminator& term)
+   : _young_gen(young_gen),
+     _old_gen(old_gen),
+     _term(term),
+@@ -378,7 +378,7 @@ void ParScanThreadStateSet::trace_promotion_failed(const YoungGCTracer* gc_trace
+ }
+ 
+ void ParScanThreadStateSet::reset(uint active_threads, bool promotion_failed) {
+-  _term.reset_for_reuse(active_threads);
++  _term.terminator()->reset_for_reuse(active_threads);
+   if (promotion_failed) {
+     for (int i = 0; i < _num_threads; ++i) {
+       thread_state(i).print_promotion_failure_size();
+@@ -909,7 +909,7 @@ void ParNewGeneration::collect(bool   full,
+ 
+   // Always set the terminator for the active number of workers
+   // because only those workers go through the termination protocol.
+-  ParallelTaskTerminator _term(active_workers, task_queues());
++  TaskTerminator _term(active_workers, task_queues());
+   ParScanThreadStateSet thread_state_set(active_workers,
+                                          *to(), *this, *_old_gen, *task_queues(),
+                                          _overflow_stacks, _preserved_marks_set,
+diff --git a/src/hotspot/share/gc/cms/parNewGeneration.hpp b/src/hotspot/share/gc/cms/parNewGeneration.hpp
+index b3e7c5a7d..7bf37e535 100644
+--- a/src/hotspot/share/gc/cms/parNewGeneration.hpp
++++ b/src/hotspot/share/gc/cms/parNewGeneration.hpp
+@@ -134,7 +134,7 @@ class ParScanThreadState {
+                      Stack<oop, mtGC>* overflow_stacks_,
+                      PreservedMarks* preserved_marks_,
+                      size_t desired_plab_sz_,
+-                     ParallelTaskTerminator& term_);
++                     TaskTerminator& term_);
+ 
+  public:
+   AgeTable* age_table() {return &_ageTable;}
+diff --git a/src/hotspot/share/gc/g1/g1CollectedHeap.cpp b/src/hotspot/share/gc/g1/g1CollectedHeap.cpp
+index a987377ae..130f8ec0a 100644
+--- a/src/hotspot/share/gc/g1/g1CollectedHeap.cpp
++++ b/src/hotspot/share/gc/g1/g1CollectedHeap.cpp
+@@ -3241,7 +3241,7 @@ protected:
+   G1ParScanThreadStateSet* _pss;
+   RefToScanQueueSet*       _queues;
+   G1RootProcessor*         _root_processor;
+-  ParallelTaskTerminator   _terminator;
++  TaskTerminator           _terminator;
+   uint                     _n_workers;
+ 
+ public:
+@@ -3286,7 +3286,7 @@ public:
+       size_t evac_term_attempts = 0;
+       {
+         double start = os::elapsedTime();
+-        G1ParEvacuateFollowersClosure evac(_g1h, pss, _queues, &_terminator);
++        G1ParEvacuateFollowersClosure evac(_g1h, pss, _queues, _terminator.terminator());
+         evac.do_void();
+ 
+         evac_term_attempts = evac.term_attempts();
+@@ -3988,8 +3988,8 @@ void G1STWRefProcTaskExecutor::execute(ProcessTask& proc_task, uint ergo_workers
+   assert(_workers->active_workers() >= ergo_workers,
+          "Ergonomically chosen workers (%u) should be less than or equal to active workers (%u)",
+          ergo_workers, _workers->active_workers());
+-  ParallelTaskTerminator terminator(ergo_workers, _queues);
+-  G1STWRefProcTaskProxy proc_task_proxy(proc_task, _g1h, _pss, _queues, &terminator);
++  TaskTerminator terminator(ergo_workers, _queues);
++  G1STWRefProcTaskProxy proc_task_proxy(proc_task, _g1h, _pss, _queues, terminator.terminator());
+ 
+   _workers->run_task(&proc_task_proxy, ergo_workers);
+ }
+diff --git a/src/hotspot/share/gc/g1/g1ConcurrentMark.cpp b/src/hotspot/share/gc/g1/g1ConcurrentMark.cpp
+index eff6b7b02..920f796b5 100644
+--- a/src/hotspot/share/gc/g1/g1ConcurrentMark.cpp
++++ b/src/hotspot/share/gc/g1/g1ConcurrentMark.cpp
+@@ -366,7 +366,7 @@ G1ConcurrentMark::G1ConcurrentMark(G1CollectedHeap* g1h,
+   // _tasks set inside the constructor
+ 
+   _task_queues(new G1CMTaskQueueSet((int) _max_num_tasks)),
+-  _terminator(ParallelTaskTerminator((int) _max_num_tasks, _task_queues)),
++  _terminator((int) _max_num_tasks, _task_queues),
+ 
+   _first_overflow_barrier_sync(),
+   _second_overflow_barrier_sync(),
+@@ -581,7 +581,7 @@ void G1ConcurrentMark::set_concurrency(uint active_tasks) {
+   _num_active_tasks = active_tasks;
+   // Need to update the three data structures below according to the
+   // number of active threads for this phase.
+-  _terminator = ParallelTaskTerminator((int) active_tasks, _task_queues);
++  _terminator = TaskTerminator((int) active_tasks, _task_queues);
+   _first_overflow_barrier_sync.set_n_workers((int) active_tasks);
+   _second_overflow_barrier_sync.set_n_workers((int) active_tasks);
+ }
+diff --git a/src/hotspot/share/gc/g1/g1ConcurrentMark.hpp b/src/hotspot/share/gc/g1/g1ConcurrentMark.hpp
+index 6707537fd..dd253bbdf 100644
+--- a/src/hotspot/share/gc/g1/g1ConcurrentMark.hpp
++++ b/src/hotspot/share/gc/g1/g1ConcurrentMark.hpp
+@@ -322,8 +322,8 @@ class G1ConcurrentMark : public CHeapObj<mtGC> {
+   uint                    _num_active_tasks; // Number of tasks currently active
+   G1CMTask**              _tasks;            // Task queue array (max_worker_id length)
+ 
+-  G1CMTaskQueueSet*       _task_queues;      // Task queue set
+-  ParallelTaskTerminator  _terminator;       // For termination
++  G1CMTaskQueueSet*       _task_queues; // Task queue set
++  TaskTerminator          _terminator;  // For termination
+ 
+   // Two sync barriers that are used to synchronize tasks when an
+   // overflow occurs. The algorithm is the following. All tasks enter
+@@ -409,10 +409,10 @@ class G1ConcurrentMark : public CHeapObj<mtGC> {
+   // Prints all gathered CM-related statistics
+   void print_stats();
+ 
+-  HeapWord*               finger()          { return _finger;   }
+-  bool                    concurrent()      { return _concurrent; }
+-  uint                    active_tasks()    { return _num_active_tasks; }
+-  ParallelTaskTerminator* terminator()      { return &_terminator; }
++  HeapWord*               finger()           { return _finger;   }
++  bool                    concurrent()       { return _concurrent; }
++  uint                    active_tasks()     { return _num_active_tasks; }
++  ParallelTaskTerminator* terminator() const { return _terminator.terminator(); }
+ 
+   // Claims the next available region to be scanned by a marking
+   // task/thread. It might return NULL if the next region is empty or
+diff --git a/src/hotspot/share/gc/g1/g1FullGCMarkTask.cpp b/src/hotspot/share/gc/g1/g1FullGCMarkTask.cpp
+index 34025dce0..d2c4b8d60 100644
+--- a/src/hotspot/share/gc/g1/g1FullGCMarkTask.cpp
++++ b/src/hotspot/share/gc/g1/g1FullGCMarkTask.cpp
+@@ -60,7 +60,7 @@ void G1FullGCMarkTask::work(uint worker_id) {
+   }
+ 
+   // Mark stack is populated, now process and drain it.
+-  marker->complete_marking(collector()->oop_queue_set(), collector()->array_queue_set(), &_terminator);
++  marker->complete_marking(collector()->oop_queue_set(), collector()->array_queue_set(), _terminator.terminator());
+ 
+   // This is the point where the entire marking should have completed.
+   assert(marker->oop_stack()->is_empty(), "Marking should have completed");
+diff --git a/src/hotspot/share/gc/g1/g1FullGCMarkTask.hpp b/src/hotspot/share/gc/g1/g1FullGCMarkTask.hpp
+index 8dfff0555..7223cee50 100644
+--- a/src/hotspot/share/gc/g1/g1FullGCMarkTask.hpp
++++ b/src/hotspot/share/gc/g1/g1FullGCMarkTask.hpp
+@@ -36,7 +36,7 @@
+ 
+ class G1FullGCMarkTask : public G1FullGCTask {
+   G1RootProcessor          _root_processor;
+-  ParallelTaskTerminator   _terminator;
++  TaskTerminator           _terminator;
+ 
+ public:
+   G1FullGCMarkTask(G1FullCollector* collector);
+diff --git a/src/hotspot/share/gc/g1/g1FullGCReferenceProcessorExecutor.hpp b/src/hotspot/share/gc/g1/g1FullGCReferenceProcessorExecutor.hpp
+index 492c783b6..d4f06f56e 100644
+--- a/src/hotspot/share/gc/g1/g1FullGCReferenceProcessorExecutor.hpp
++++ b/src/hotspot/share/gc/g1/g1FullGCReferenceProcessorExecutor.hpp
+@@ -32,6 +32,7 @@
+ #include "gc/g1/g1StringDedup.hpp"
+ #include "gc/g1/heapRegionManager.hpp"
+ #include "gc/shared/referenceProcessor.hpp"
++#include "gc/shared/taskqueue.hpp"
+ #include "utilities/ticks.hpp"
+ 
+ class G1FullGCTracer;
+@@ -58,9 +59,9 @@ private:
+ 
+   class G1RefProcTaskProxy : public AbstractGangTask {
+     typedef AbstractRefProcTaskExecutor::ProcessTask ProcessTask;
+-    ProcessTask&             _proc_task;
+-    G1FullCollector*         _collector;
+-    ParallelTaskTerminator   _terminator;
++    ProcessTask&                  _proc_task;
++    G1FullCollector*              _collector;
++    TaskTerminator                _terminator;
+ 
+   public:
+     G1RefProcTaskProxy(ProcessTask& proc_task,
+diff --git a/src/hotspot/share/gc/parallel/pcTasks.cpp b/src/hotspot/share/gc/parallel/pcTasks.cpp
+index 57ff23550..30a0f26bc 100644
+--- a/src/hotspot/share/gc/parallel/pcTasks.cpp
++++ b/src/hotspot/share/gc/parallel/pcTasks.cpp
+@@ -154,14 +154,15 @@ void RefProcTaskExecutor::execute(ProcessTask& task, uint ergo_workers)
+          "Ergonomically chosen workers (%u) must be equal to active workers (%u)",
+          ergo_workers, active_gc_threads);
+   OopTaskQueueSet* qset = ParCompactionManager::stack_array();
+-  ParallelTaskTerminator terminator(active_gc_threads, qset);
++  TaskTerminator terminator(active_gc_threads, qset);
++
+   GCTaskQueue* q = GCTaskQueue::create();
+   for(uint i=0; i<active_gc_threads; i++) {
+     q->enqueue(new RefProcTaskProxy(task, i));
+   }
+   if (task.marks_oops_alive() && (active_gc_threads>1)) {
+     for (uint j=0; j<active_gc_threads; j++) {
+-      q->enqueue(new StealMarkingTask(&terminator));
++      q->enqueue(new StealMarkingTask(terminator.terminator()));
+     }
+   }
+   PSParallelCompact::gc_task_manager()->execute_and_wait(q);
+diff --git a/src/hotspot/share/gc/parallel/psParallelCompact.cpp b/src/hotspot/share/gc/parallel/psParallelCompact.cpp
+index f4cbb9f3a..f6ba28260 100644
+--- a/src/hotspot/share/gc/parallel/psParallelCompact.cpp
++++ b/src/hotspot/share/gc/parallel/psParallelCompact.cpp
+@@ -2075,7 +2075,7 @@ void PSParallelCompact::marking_phase(ParCompactionManager* cm,
+   uint parallel_gc_threads = heap->gc_task_manager()->workers();
+   uint active_gc_threads = heap->gc_task_manager()->active_workers();
+   TaskQueueSetSuper* qset = ParCompactionManager::stack_array();
+-  ParallelTaskTerminator terminator(active_gc_threads, qset);
++  TaskTerminator terminator(active_gc_threads, qset);
+ 
+   ParCompactionManager::MarkAndPushClosure mark_and_push_closure(cm);
+   ParCompactionManager::FollowStackClosure follow_stack_closure(cm);
+@@ -2104,7 +2104,7 @@ void PSParallelCompact::marking_phase(ParCompactionManager* cm,
+ 
+     if (active_gc_threads > 1) {
+       for (uint j = 0; j < active_gc_threads; j++) {
+-        q->enqueue(new StealMarkingTask(&terminator));
++        q->enqueue(new StealMarkingTask(terminator.terminator()));
+       }
+     }
+ 
+@@ -2433,12 +2433,12 @@ void PSParallelCompact::compact() {
+   uint parallel_gc_threads = heap->gc_task_manager()->workers();
+   uint active_gc_threads = heap->gc_task_manager()->active_workers();
+   TaskQueueSetSuper* qset = ParCompactionManager::region_array();
+-  ParallelTaskTerminator terminator(active_gc_threads, qset);
++  TaskTerminator terminator(active_gc_threads, qset);
+ 
+   GCTaskQueue* q = GCTaskQueue::create();
+   prepare_region_draining_tasks(q, active_gc_threads);
+   enqueue_dense_prefix_tasks(q, active_gc_threads);
+-  enqueue_region_stealing_tasks(q, &terminator, active_gc_threads);
++  enqueue_region_stealing_tasks(q, terminator.terminator(), active_gc_threads);
+ 
+   {
+     GCTraceTime(Trace, gc, phases) tm("Par Compact", &_gc_timer);
+diff --git a/src/hotspot/share/gc/parallel/psScavenge.cpp b/src/hotspot/share/gc/parallel/psScavenge.cpp
+index 87b2b4cac..9022654da 100644
+--- a/src/hotspot/share/gc/parallel/psScavenge.cpp
++++ b/src/hotspot/share/gc/parallel/psScavenge.cpp
+@@ -166,11 +166,11 @@ void PSRefProcTaskExecutor::execute(ProcessTask& task, uint ergo_workers)
+   for(uint i=0; i < active_workers; i++) {
+     q->enqueue(new PSRefProcTaskProxy(task, i));
+   }
+-  ParallelTaskTerminator terminator(active_workers,
+-                                    (TaskQueueSetSuper*) PSPromotionManager::stack_array_depth());
++  TaskTerminator terminator(active_workers,
++                            (TaskQueueSetSuper*) PSPromotionManager::stack_array_depth());
+   if (task.marks_oops_alive() && active_workers > 1) {
+     for (uint j = 0; j < active_workers; j++) {
+-      q->enqueue(new StealTask(&terminator));
++      q->enqueue(new StealTask(terminator.terminator()));
+     }
+   }
+   manager->execute_and_wait(q);
+@@ -379,16 +379,15 @@ bool PSScavenge::invoke_no_policy() {
+       q->enqueue(new ScavengeRootsTask(ScavengeRootsTask::jvmti));
+       q->enqueue(new ScavengeRootsTask(ScavengeRootsTask::code_cache));
+ 
+-      ParallelTaskTerminator terminator(
+-        active_workers,
+-                  (TaskQueueSetSuper*) promotion_manager->stack_array_depth());
++      TaskTerminator terminator(active_workers,
++                                (TaskQueueSetSuper*) promotion_manager->stack_array_depth());
+         // If active_workers can exceed 1, add a StrealTask.
+         // PSPromotionManager::drain_stacks_depth() does not fully drain its
+         // stacks and expects a StealTask to complete the draining if
+         // ParallelGCThreads is > 1.
+         if (gc_task_manager()->workers() > 1) {
+           for (uint j = 0; j < active_workers; j++) {
+-            q->enqueue(new StealTask(&terminator));
++            q->enqueue(new StealTask(terminator.terminator()));
+           }
+         }
+ 
+diff --git a/src/hotspot/share/gc/shared/gc_globals.hpp b/src/hotspot/share/gc/shared/gc_globals.hpp
+index 33ce1dadd..5f39a2671 100644
+--- a/src/hotspot/share/gc/shared/gc_globals.hpp
++++ b/src/hotspot/share/gc/shared/gc_globals.hpp
+@@ -348,6 +348,10 @@
+   develop(uintx, PromotionFailureALotInterval, 5,                           \
+           "Total collections between promotion failures a lot")             \
+                                                                             \
++  diagnostic(bool, UseOWSTTaskTerminator, true,                             \
++          "Use Optimized Work Stealing Threads task termination "           \
++          "protocol")                                                       \
++                                                                            \
+   experimental(uintx, WorkStealingSleepMillis, 1,                           \
+           "Sleep time when sleep is used for yields")                       \
+                                                                             \
+diff --git a/src/hotspot/share/gc/shared/owstTaskTerminator.cpp b/src/hotspot/share/gc/shared/owstTaskTerminator.cpp
+new file mode 100644
+index 000000000..3c32ab627
+--- /dev/null
++++ b/src/hotspot/share/gc/shared/owstTaskTerminator.cpp
+@@ -0,0 +1,171 @@
++/*
++ * Copyright (c) 2018, Red Hat, Inc. All rights reserved.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ *
++ */
++
++#include "precompiled.hpp"
++
++#include "gc/shared/owstTaskTerminator.hpp"
++#include "logging/log.hpp"
++
++bool OWSTTaskTerminator::exit_termination(size_t tasks, TerminatorTerminator* terminator) {
++  return tasks > 0 || (terminator != NULL && terminator->should_exit_termination());
++}
++
++bool OWSTTaskTerminator::offer_termination(TerminatorTerminator* terminator) {
++  assert(_n_threads > 0, "Initialization is incorrect");
++  assert(_offered_termination < _n_threads, "Invariant");
++  assert(_blocker != NULL, "Invariant");
++
++  // Single worker, done
++  if (_n_threads == 1) {
++    _offered_termination = 1;
++    return true;
++  }
++
++  _blocker->lock_without_safepoint_check();
++  // All arrived, done
++  _offered_termination++;
++  if (_offered_termination == _n_threads) {
++    _blocker->notify_all();
++    _blocker->unlock();
++    return true;
++  }
++
++  Thread* the_thread = Thread::current();
++  while (true) {
++    if (_spin_master == NULL) {
++      _spin_master = the_thread;
++
++      _blocker->unlock();
++
++      if (do_spin_master_work(terminator)) {
++        assert(_offered_termination == _n_threads, "termination condition");
++        return true;
++      } else {
++        _blocker->lock_without_safepoint_check();
++      }
++    } else {
++      _blocker->wait(true, WorkStealingSleepMillis);
++
++      if (_offered_termination == _n_threads) {
++        _blocker->unlock();
++        return true;
++      }
++    }
++
++    size_t tasks = tasks_in_queue_set();
++    if (exit_termination(tasks, terminator)) {
++      _offered_termination--;
++      _blocker->unlock();
++      return false;
++    }
++  }
++}
++
++bool OWSTTaskTerminator::do_spin_master_work(TerminatorTerminator* terminator) {
++  uint yield_count = 0;
++  // Number of hard spin loops done since last yield
++  uint hard_spin_count = 0;
++  // Number of iterations in the hard spin loop.
++  uint hard_spin_limit = WorkStealingHardSpins;
++
++  // If WorkStealingSpinToYieldRatio is 0, no hard spinning is done.
++  // If it is greater than 0, then start with a small number
++  // of spins and increase number with each turn at spinning until
++  // the count of hard spins exceeds WorkStealingSpinToYieldRatio.
++  // Then do a yield() call and start spinning afresh.
++  if (WorkStealingSpinToYieldRatio > 0) {
++    hard_spin_limit = WorkStealingHardSpins >> WorkStealingSpinToYieldRatio;
++    hard_spin_limit = MAX2(hard_spin_limit, 1U);
++  }
++  // Remember the initial spin limit.
++  uint hard_spin_start = hard_spin_limit;
++
++  // Loop waiting for all threads to offer termination or
++  // more work.
++  while (true) {
++    // Look for more work.
++    // Periodically sleep() instead of yield() to give threads
++    // waiting on the cores the chance to grab this code
++    if (yield_count <= WorkStealingYieldsBeforeSleep) {
++      // Do a yield or hardspin.  For purposes of deciding whether
++      // to sleep, count this as a yield.
++      yield_count++;
++
++      // Periodically call yield() instead spinning
++      // After WorkStealingSpinToYieldRatio spins, do a yield() call
++      // and reset the counts and starting limit.
++      if (hard_spin_count > WorkStealingSpinToYieldRatio) {
++        yield();
++        hard_spin_count = 0;
++        hard_spin_limit = hard_spin_start;
++#ifdef TRACESPINNING
++        _total_yields++;
++#endif
++      } else {
++        // Hard spin this time
++        // Increase the hard spinning period but only up to a limit.
++        hard_spin_limit = MIN2(2*hard_spin_limit,
++                               (uint) WorkStealingHardSpins);
++        for (uint j = 0; j < hard_spin_limit; j++) {
++          SpinPause();
++        }
++        hard_spin_count++;
++#ifdef TRACESPINNING
++        _total_spins++;
++#endif
++      }
++    } else {
++      log_develop_trace(gc, task)("OWSTTaskTerminator::do_spin_master_work() thread " PTR_FORMAT " sleeps after %u yields",
++                                  p2i(Thread::current()), yield_count);
++      yield_count = 0;
++
++      MonitorLockerEx locker(_blocker, Mutex::_no_safepoint_check_flag);
++      _spin_master = NULL;
++      locker.wait(Mutex::_no_safepoint_check_flag, WorkStealingSleepMillis);
++      if (_spin_master == NULL) {
++        _spin_master = Thread::current();
++      } else {
++        return false;
++      }
++    }
++
++#ifdef TRACESPINNING
++      _total_peeks++;
++#endif
++    size_t tasks = tasks_in_queue_set();
++    if (exit_termination(tasks, terminator)) {
++      MonitorLockerEx locker(_blocker, Mutex::_no_safepoint_check_flag);
++      if (tasks >= _offered_termination - 1) {
++        locker.notify_all();
++      } else {
++        for (; tasks > 1; tasks--) {
++          locker.notify();
++        }
++      }
++      _spin_master = NULL;
++      return false;
++    } else if (_offered_termination == _n_threads) {
++      return true;
++    }
++  }
++}
+diff --git a/src/hotspot/share/gc/shared/owstTaskTerminator.hpp b/src/hotspot/share/gc/shared/owstTaskTerminator.hpp
+new file mode 100644
+index 000000000..9e6fe135a
+--- /dev/null
++++ b/src/hotspot/share/gc/shared/owstTaskTerminator.hpp
+@@ -0,0 +1,79 @@
++/*
++ * Copyright (c) 2018, Red Hat, Inc. All rights reserved.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ *
++ */
++#ifndef SHARE_VM_GC_SHARED_OWSTTASKTERMINATOR_HPP
++#define SHARE_VM_GC_SHARED_OWSTTASKTERMINATOR_HPP
++
++#include "gc/shared/taskqueue.hpp"
++#include "runtime/mutex.hpp"
++#include "runtime/thread.hpp"
++
++/*
++ * OWST stands for Optimized Work Stealing Threads
++ *
++ * This is an enhanced implementation of Google's work stealing
++ * protocol, which is described in the paper:
++ * "Wessam Hassanein. 2016. Understanding and improving JVM GC work
++ * stealing at the data center scale. In Proceedings of the 2016 ACM
++ * SIGPLAN International Symposium on Memory Management (ISMM 2016). ACM,
++ * New York, NY, USA, 46-54. DOI: https://doi.org/10.1145/2926697.2926706"
++ *
++ * Instead of a dedicated spin-master, our implementation will let spin-master relinquish
++ * the role before it goes to sleep/wait, allowing newly arrived threads to compete for the role.
++ * The intention of above enhancement is to reduce spin-master's latency on detecting new tasks
++ * for stealing and termination condition.
++ */
++
++class OWSTTaskTerminator: public ParallelTaskTerminator {
++private:
++  Monitor*    _blocker;
++  Thread*     _spin_master;
++
++public:
++  OWSTTaskTerminator(uint n_threads, TaskQueueSetSuper* queue_set) :
++    ParallelTaskTerminator(n_threads, queue_set), _spin_master(NULL) {
++    _blocker = new Monitor(Mutex::leaf, "OWSTTaskTerminator", false, Monitor::_safepoint_check_never);
++  }
++
++  virtual ~OWSTTaskTerminator() {
++    assert(_blocker != NULL, "Can not be NULL");
++    delete _blocker;
++  }
++
++  bool offer_termination(TerminatorTerminator* terminator);
++
++protected:
++  // If should exit current termination protocol
++  virtual bool exit_termination(size_t tasks, TerminatorTerminator* terminator);
++
++private:
++  size_t tasks_in_queue_set() { return _queue_set->tasks(); }
++
++  /*
++   * Perform spin-master task.
++   * Return true if termination condition is detected, otherwise return false
++   */
++  bool do_spin_master_work(TerminatorTerminator* terminator);
++};
++
++
++#endif // SHARE_VM_GC_SHARED_OWSTTASKTERMINATOR_HPP
+diff --git a/src/hotspot/share/gc/shared/taskqueue.cpp b/src/hotspot/share/gc/shared/taskqueue.cpp
+index 024fbbc9b..2738d6823 100644
+--- a/src/hotspot/share/gc/shared/taskqueue.cpp
++++ b/src/hotspot/share/gc/shared/taskqueue.cpp
+@@ -24,6 +24,7 @@
+ 
+ #include "precompiled.hpp"
+ #include "gc/shared/taskqueue.hpp"
++#include "gc/shared/owstTaskTerminator.hpp"
+ #include "oops/oop.inline.hpp"
+ #include "logging/log.hpp"
+ #include "runtime/atomic.hpp"
+@@ -265,3 +266,25 @@ void ParallelTaskTerminator::reset_for_reuse(uint n_threads) {
+   reset_for_reuse();
+   _n_threads = n_threads;
+ }
++
++TaskTerminator::TaskTerminator(uint n_threads, TaskQueueSetSuper* queue_set) :
++  _terminator(UseOWSTTaskTerminator ? new OWSTTaskTerminator(n_threads, queue_set)
++                                    : new ParallelTaskTerminator(n_threads, queue_set)) {
++}
++
++TaskTerminator::~TaskTerminator() {
++  if (_terminator != NULL) {
++    delete _terminator;
++  }
++}
++
++// Move assignment
++TaskTerminator& TaskTerminator::operator=(const TaskTerminator& o) {
++  if (_terminator != NULL) {
++    delete _terminator;
++  }
++  _terminator = o.terminator();
++  const_cast<TaskTerminator&>(o)._terminator = NULL;
++  return *this;
++}
++
+diff --git a/src/hotspot/share/gc/shared/taskqueue.hpp b/src/hotspot/share/gc/shared/taskqueue.hpp
+index 877b843ab..1cafcdeb2 100644
+--- a/src/hotspot/share/gc/shared/taskqueue.hpp
++++ b/src/hotspot/share/gc/shared/taskqueue.hpp
+@@ -358,6 +358,8 @@ protected:
+ public:
+   // Returns "true" if some TaskQueue in the set contains a task.
+   virtual bool peek() = 0;
++  // Tasks in queue
++  virtual uint tasks() const = 0;
+ };
+ 
+ template <MEMFLAGS F> class TaskQueueSetSuperImpl: public CHeapObj<F>, public TaskQueueSetSuper {
+@@ -389,6 +391,7 @@ public:
+   bool steal(uint queue_num, int* seed, E& t);
+ 
+   bool peek();
++  uint tasks() const;
+ 
+   uint size() const { return _n; }
+ };
+@@ -414,6 +417,15 @@ bool GenericTaskQueueSet<T, F>::peek() {
+   return false;
+ }
+ 
++template<class T, MEMFLAGS F>
++uint GenericTaskQueueSet<T, F>::tasks() const {
++  uint n = 0;
++  for (uint j = 0; j < _n; j++) {
++    n += _queues[j]->size();
++  }
++  return n;
++}
++
+ // When to terminate from the termination protocol.
+ class TerminatorTerminator: public CHeapObj<mtInternal> {
+ public:
+@@ -425,8 +437,8 @@ public:
+ 
+ #undef TRACESPINNING
+ 
+-class ParallelTaskTerminator: public StackObj {
+-private:
++class ParallelTaskTerminator: public CHeapObj<mtGC> {
++protected:
+   uint _n_threads;
+   TaskQueueSetSuper* _queue_set;
+ 
+@@ -462,7 +474,7 @@ public:
+   // As above, but it also terminates if the should_exit_termination()
+   // method of the terminator parameter returns true. If terminator is
+   // NULL, then it is ignored.
+-  bool offer_termination(TerminatorTerminator* terminator);
++  virtual bool offer_termination(TerminatorTerminator* terminator);
+ 
+   // Reset the terminator, so that it may be reused again.
+   // The caller is responsible for ensuring that this is done
+@@ -481,6 +493,38 @@ public:
+ #endif
+ };
+ 
++#ifdef _MSC_VER
++#pragma warning(push)
++// warning C4521: multiple copy constructors specified
++#pragma warning(disable:4521)
++// warning C4522: multiple assignment operators specified
++#pragma warning(disable:4522)
++#endif
++
++class TaskTerminator : public StackObj {
++private:
++  ParallelTaskTerminator*  _terminator;
++
++  // Disable following copy constructors and assignment operator
++  TaskTerminator(TaskTerminator& o) { }
++  TaskTerminator(const TaskTerminator& o) { }
++  TaskTerminator& operator=(TaskTerminator& o) { return *this; }
++public:
++  TaskTerminator(uint n_threads, TaskQueueSetSuper* queue_set);
++  ~TaskTerminator();
++
++  // Move assignment
++  TaskTerminator& operator=(const TaskTerminator& o);
++
++  ParallelTaskTerminator* terminator() const {
++    return _terminator;
++  }
++};
++#ifdef _MSC_VER
++#pragma warning(pop)
++#endif
++
++
+ typedef GenericTaskQueue<oop, mtGC>             OopTaskQueue;
+ typedef GenericTaskQueueSet<OopTaskQueue, mtGC> OopTaskQueueSet;
+ 
