@@ -735,7 +735,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 7
+Release: 8
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -832,6 +832,9 @@ Patch43: 8243670-Unexpected-test-result-caused-by-C2-MergeMem.patch
 Patch44: fix-IfNode-s-bugs.patch
 Patch45: leaf-optimize-in-ParallelScanvageGC.patch
 Patch46: ZGC-correct-free-heap-size-excluding-waste-in-rule_allocation_rate.patch
+Patch47: 8204947-Port-ShenandoahTaskTerminator-to-mainline-and-make-it-default.patch
+Patch48: 8205921-Optimizing-best_of_2-work-stealing-queue-selection.patch
+Patch49: 8237483-AArch64-C1-OopMap-inserted-twice-fatal-error.patch
 
 
 BuildRequires: autoconf
@@ -1096,6 +1099,9 @@ pushd %{top_level_dir_name}
 %patch44 -p1
 %patch45 -p1
 %patch46 -p1
+%patch47 -p1
+%patch48 -p1
+%patch49 -p1
 popd # openjdk
 
 %patch1000
@@ -1598,7 +1604,12 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
-* add Fri Sep 11 2020 noah <hedongbo@huawei.com> - 1:11.0.8.10-7
+* Mon Sep 21 2020 noah <hedongbo@huawei.com> - 1:11.0.8.10-8
+- add 8204947-Port-ShenandoahTaskTerminator-to-mainline-and-make-it-default.patch
+- add 8205921-Optimizing-best_of_2-work-stealing-queue-selection.patch
+- add 8237483-AArch64-C1-OopMap-inserted-twice-fatal-error.patch
+
+* Fri Sep 11 2020 noah <hedongbo@huawei.com> - 1:11.0.8.10-7
 - add 8223667-ASAN-build-broken.patch
 - add 8229495-SIGILL-in-C2-generated-OSR-compilation.patch
 - add 8229496-SIGFPE-division-by-zero-in-C2-OSR-compiled-method.patch
