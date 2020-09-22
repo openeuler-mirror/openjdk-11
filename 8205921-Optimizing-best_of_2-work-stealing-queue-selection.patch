@@ -1,0 +1,614 @@
+diff --git a/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.cpp b/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.cpp
+index 5fc5ee8..708e92c 100644
+--- a/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.cpp
++++ b/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.cpp
+@@ -574,7 +574,6 @@ CMSCollector::CMSCollector(ConcurrentMarkSweepGeneration* cmsGen,
+         log_warning(gc)("task_queues allocation failure.");
+         return;
+       }
+-      _hash_seed = NEW_C_HEAP_ARRAY(int, num_queues, mtGC);
+       typedef Padded<OopTaskQueue> PaddedOopTaskQueue;
+       for (i = 0; i < num_queues; i++) {
+         PaddedOopTaskQueue *q = new PaddedOopTaskQueue();
+@@ -586,7 +585,6 @@ CMSCollector::CMSCollector(ConcurrentMarkSweepGeneration* cmsGen,
+       }
+       for (i = 0; i < num_queues; i++) {
+         _task_queues->queue(i)->initialize();
+-        _hash_seed[i] = 17;  // copied from ParNew
+       }
+     }
+   }
+@@ -3482,7 +3480,6 @@ void CMSConcMarkingTask::do_work_steal(int i) {
+   oop obj_to_scan;
+   CMSBitMap* bm = &(_collector->_markBitMap);
+   CMSMarkStack* ovflw = &(_collector->_markStack);
+-  int* seed = _collector->hash_seed(i);
+   ParConcMarkingClosure cl(_collector, this, work_q, bm, ovflw);
+   while (true) {
+     cl.trim_queue(0);
+@@ -3492,7 +3489,7 @@ void CMSConcMarkingTask::do_work_steal(int i) {
+       // overflow stack may already have been stolen from us.
+       // assert(work_q->size() > 0, "Work from overflow stack");
+       continue;
+-    } else if (task_queues()->steal(i, seed, /* reference */ obj_to_scan)) {
++    } else if (task_queues()->steal(i, /* reference */ obj_to_scan)) {
+       assert(oopDesc::is_oop(obj_to_scan), "Should be an oop");
+       assert(bm->isMarked((HeapWord*)obj_to_scan), "Grey object");
+       obj_to_scan->oop_iterate(&cl);
+@@ -4392,7 +4389,7 @@ class CMSParRemarkTask: public CMSParMarkTask {
+                                   ParMarkRefsIntoAndScanClosure* cl);
+ 
+   // ... work stealing for the above
+-  void do_work_steal(int i, ParMarkRefsIntoAndScanClosure* cl, int* seed);
++  void do_work_steal(int i, ParMarkRefsIntoAndScanClosure* cl);
+ };
+ 
+ class RemarkCLDClosure : public CLDClosure {
+@@ -4537,7 +4534,7 @@ void CMSParRemarkTask::work(uint worker_id) {
+   // ---------- ... and drain overflow list.
+   _timer.reset();
+   _timer.start();
+-  do_work_steal(worker_id, &par_mrias_cl, _collector->hash_seed(worker_id));
++  do_work_steal(worker_id, &par_mrias_cl);
+   _timer.stop();
+   log_trace(gc, task)("Finished work stealing in %dth thread: %3.3f sec", worker_id, _timer.seconds());
+ }
+@@ -4686,8 +4683,7 @@ CMSParRemarkTask::do_dirty_card_rescan_tasks(
+ 
+ // . see if we can share work_queues with ParNew? XXX
+ void
+-CMSParRemarkTask::do_work_steal(int i, ParMarkRefsIntoAndScanClosure* cl,
+-                                int* seed) {
++CMSParRemarkTask::do_work_steal(int i, ParMarkRefsIntoAndScanClosure* cl) {
+   OopTaskQueue* work_q = work_queue(i);
+   NOT_PRODUCT(int num_steals = 0;)
+   oop obj_to_scan;
+@@ -4718,7 +4714,7 @@ CMSParRemarkTask::do_work_steal(int i, ParMarkRefsIntoAndScanClosure* cl,
+     // Verify that we have no work before we resort to stealing
+     assert(work_q->size() == 0, "Have work, shouldn't steal");
+     // Try to steal from other queues that have work
+-    if (task_queues()->steal(i, seed, /* reference */ obj_to_scan)) {
++    if (task_queues()->steal(i, /* reference */ obj_to_scan)) {
+       NOT_PRODUCT(num_steals++;)
+       assert(oopDesc::is_oop(obj_to_scan), "Oops, not an oop!");
+       assert(bm->isMarked((HeapWord*)obj_to_scan), "Stole an unmarked oop?");
+@@ -5108,8 +5104,7 @@ public:
+ 
+   void do_work_steal(int i,
+                      CMSParDrainMarkingStackClosure* drain,
+-                     CMSParKeepAliveClosure* keep_alive,
+-                     int* seed);
++                     CMSParKeepAliveClosure* keep_alive);
+ 
+   virtual void work(uint worker_id);
+ };
+@@ -5127,8 +5122,7 @@ void CMSRefProcTaskProxy::work(uint worker_id) {
+   CMSIsAliveClosure is_alive_closure(_span, _mark_bit_map);
+   _task.work(worker_id, is_alive_closure, par_keep_alive, par_drain_stack);
+   if (_task.marks_oops_alive()) {
+-    do_work_steal(worker_id, &par_drain_stack, &par_keep_alive,
+-                  _collector->hash_seed(worker_id));
++    do_work_steal(worker_id, &par_drain_stack, &par_keep_alive);
+   }
+   assert(work_queue(worker_id)->size() == 0, "work_queue should be empty");
+   assert(_collector->_overflow_list == NULL, "non-empty _overflow_list");
+@@ -5147,8 +5141,7 @@ CMSParKeepAliveClosure::CMSParKeepAliveClosure(CMSCollector* collector,
+ // . see if we can share work_queues with ParNew? XXX
+ void CMSRefProcTaskProxy::do_work_steal(int i,
+   CMSParDrainMarkingStackClosure* drain,
+-  CMSParKeepAliveClosure* keep_alive,
+-  int* seed) {
++  CMSParKeepAliveClosure* keep_alive) {
+   OopTaskQueue* work_q = work_queue(i);
+   NOT_PRODUCT(int num_steals = 0;)
+   oop obj_to_scan;
+@@ -5177,7 +5170,7 @@ void CMSRefProcTaskProxy::do_work_steal(int i,
+     // Verify that we have no work before we resort to stealing
+     assert(work_q->size() == 0, "Have work, shouldn't steal");
+     // Try to steal from other queues that have work
+-    if (task_queues()->steal(i, seed, /* reference */ obj_to_scan)) {
++    if (task_queues()->steal(i, /* reference */ obj_to_scan)) {
+       NOT_PRODUCT(num_steals++;)
+       assert(oopDesc::is_oop(obj_to_scan), "Oops, not an oop!");
+       assert(_mark_bit_map->isMarked((HeapWord*)obj_to_scan), "Stole an unmarked oop?");
+diff --git a/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.hpp b/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.hpp
+index 62f0d60..4f27239 100644
+--- a/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.hpp
++++ b/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.hpp
+@@ -544,8 +544,6 @@ class CMSCollector: public CHeapObj<mtGC> {
+   Stack<oop, mtGC>     _preserved_oop_stack;
+   Stack<markOop, mtGC> _preserved_mark_stack;
+ 
+-  int*             _hash_seed;
+-
+   // In support of multi-threaded concurrent phases
+   YieldingFlexibleWorkGang* _conc_workers;
+ 
+@@ -713,7 +711,6 @@ class CMSCollector: public CHeapObj<mtGC> {
+   bool stop_world_and_do(CMS_op_type op);
+ 
+   OopTaskQueueSet* task_queues() { return _task_queues; }
+-  int*             hash_seed(int i) { return &_hash_seed[i]; }
+   YieldingFlexibleWorkGang* conc_workers() { return _conc_workers; }
+ 
+   // Support for parallelizing Eden rescan in CMS remark phase
+diff --git a/src/hotspot/share/gc/cms/parNewGeneration.cpp b/src/hotspot/share/gc/cms/parNewGeneration.cpp
+index 0febc52..1b95cf5 100644
+--- a/src/hotspot/share/gc/cms/parNewGeneration.cpp
++++ b/src/hotspot/share/gc/cms/parNewGeneration.cpp
+@@ -106,7 +106,6 @@ ParScanThreadState::ParScanThreadState(Space* to_space_,
+   #endif // TASKQUEUE_STATS
+ 
+   _survivor_chunk_array = (ChunkArray*) old_gen()->get_data_recorder(thread_num());
+-  _hash_seed = 17;  // Might want to take time-based random value.
+   _start = os::elapsedTime();
+   _old_gen_closure.set_generation(old_gen_);
+   _old_gen_root_closure.set_generation(old_gen_);
+@@ -550,7 +549,6 @@ void ParEvacuateFollowersClosure::do_void() {
+ 
+     // Attempt to steal work from promoted.
+     if (task_queues()->steal(par_scan_state()->thread_num(),
+-                             par_scan_state()->hash_seed(),
+                              obj_to_scan)) {
+       bool res = work_q->push(obj_to_scan);
+       assert(res, "Empty queue should have room for a push.");
+diff --git a/src/hotspot/share/gc/cms/parNewGeneration.hpp b/src/hotspot/share/gc/cms/parNewGeneration.hpp
+index 7bf37e5..0f3502b 100644
+--- a/src/hotspot/share/gc/cms/parNewGeneration.hpp
++++ b/src/hotspot/share/gc/cms/parNewGeneration.hpp
+@@ -96,7 +96,6 @@ class ParScanThreadState {
+ 
+   HeapWord *_young_old_boundary;
+ 
+-  int _hash_seed;
+   int _thread_num;
+   AgeTable _ageTable;
+ 
+@@ -165,7 +164,6 @@ class ParScanThreadState {
+   // Is new_obj a candidate for scan_partial_array_and_push_remainder method.
+   inline bool should_be_partially_scanned(oop new_obj, oop old_obj) const;
+ 
+-  int* hash_seed()  { return &_hash_seed; }
+   int  thread_num() { return _thread_num; }
+ 
+   // Allocate a to-space block of size "sz", or else return NULL.
+diff --git a/src/hotspot/share/gc/g1/g1ConcurrentMark.cpp b/src/hotspot/share/gc/g1/g1ConcurrentMark.cpp
+index 920f796..3749a99 100644
+--- a/src/hotspot/share/gc/g1/g1ConcurrentMark.cpp
++++ b/src/hotspot/share/gc/g1/g1ConcurrentMark.cpp
+@@ -2466,8 +2466,8 @@ void G1CMTask::print_stats() {
+                        hits, misses, percent_of(hits, hits + misses));
+ }
+ 
+-bool G1ConcurrentMark::try_stealing(uint worker_id, int* hash_seed, G1TaskQueueEntry& task_entry) {
+-  return _task_queues->steal(worker_id, hash_seed, task_entry);
++bool G1ConcurrentMark::try_stealing(uint worker_id, G1TaskQueueEntry& task_entry) {
++  return _task_queues->steal(worker_id, task_entry);
+ }
+ 
+ /*****************************************************************************
+@@ -2773,7 +2773,7 @@ void G1CMTask::do_marking_step(double time_target_ms,
+            "only way to reach here");
+     while (!has_aborted()) {
+       G1TaskQueueEntry entry;
+-      if (_cm->try_stealing(_worker_id, &_hash_seed, entry)) {
++      if (_cm->try_stealing(_worker_id, entry)) {
+         scan_task_entry(entry);
+ 
+         // And since we're towards the end, let's totally drain the
+@@ -2915,7 +2915,6 @@ G1CMTask::G1CMTask(uint worker_id,
+   _refs_reached(0),
+   _refs_reached_limit(0),
+   _real_refs_reached_limit(0),
+-  _hash_seed(17),
+   _has_aborted(false),
+   _has_timed_out(false),
+   _draining_satb_buffers(false),
+diff --git a/src/hotspot/share/gc/g1/g1ConcurrentMark.hpp b/src/hotspot/share/gc/g1/g1ConcurrentMark.hpp
+index dd253bb..b5eb261 100644
+--- a/src/hotspot/share/gc/g1/g1ConcurrentMark.hpp
++++ b/src/hotspot/share/gc/g1/g1ConcurrentMark.hpp
+@@ -519,7 +519,7 @@ public:
+   }
+ 
+   // Attempts to steal an object from the task queues of other tasks
+-  bool try_stealing(uint worker_id, int* hash_seed, G1TaskQueueEntry& task_entry);
++  bool try_stealing(uint worker_id, G1TaskQueueEntry& task_entry);
+ 
+   G1ConcurrentMark(G1CollectedHeap* g1h,
+                    G1RegionToSpaceMapper* prev_bitmap_storage,
+@@ -685,8 +685,6 @@ private:
+   // it was decreased).
+   size_t                      _real_refs_reached_limit;
+ 
+-  // Used by the work stealing
+-  int                         _hash_seed;
+   // If true, then the task has aborted for some reason
+   bool                        _has_aborted;
+   // Set when the task aborts because it has met its time quota
+diff --git a/src/hotspot/share/gc/g1/g1FullGCMarker.cpp b/src/hotspot/share/gc/g1/g1FullGCMarker.cpp
+index 7738f5c..7041d38 100644
+--- a/src/hotspot/share/gc/g1/g1FullGCMarker.cpp
++++ b/src/hotspot/share/gc/g1/g1FullGCMarker.cpp
+@@ -46,15 +46,14 @@ G1FullGCMarker::~G1FullGCMarker() {
+ void G1FullGCMarker::complete_marking(OopQueueSet* oop_stacks,
+                                       ObjArrayTaskQueueSet* array_stacks,
+                                       ParallelTaskTerminator* terminator) {
+-  int hash_seed = 17;
+   do {
+     drain_stack();
+     ObjArrayTask steal_array;
+-    if (array_stacks->steal(_worker_id, &hash_seed, steal_array)) {
++    if (array_stacks->steal(_worker_id, steal_array)) {
+       follow_array_chunk(objArrayOop(steal_array.obj()), steal_array.index());
+     } else {
+       oop steal_oop;
+-      if (oop_stacks->steal(_worker_id, &hash_seed, steal_oop)) {
++      if (oop_stacks->steal(_worker_id, steal_oop)) {
+         follow_object(steal_oop);
+       }
+     }
+diff --git a/src/hotspot/share/gc/g1/g1ParScanThreadState.cpp b/src/hotspot/share/gc/g1/g1ParScanThreadState.cpp
+index 1551c70..9da132d 100644
+--- a/src/hotspot/share/gc/g1/g1ParScanThreadState.cpp
++++ b/src/hotspot/share/gc/g1/g1ParScanThreadState.cpp
+@@ -47,7 +47,6 @@ G1ParScanThreadState::G1ParScanThreadState(G1CollectedHeap* g1h, uint worker_id,
+     _age_table(false),
+     _tenuring_threshold(g1h->g1_policy()->tenuring_threshold()),
+     _scanner(g1h, this),
+-    _hash_seed(17),
+     _worker_id(worker_id),
+     _stack_trim_upper_threshold(GCDrainStackTargetSize * 2 + 1),
+     _stack_trim_lower_threshold(GCDrainStackTargetSize),
+diff --git a/src/hotspot/share/gc/g1/g1ParScanThreadState.hpp b/src/hotspot/share/gc/g1/g1ParScanThreadState.hpp
+index ed80fb0..706f985 100644
+--- a/src/hotspot/share/gc/g1/g1ParScanThreadState.hpp
++++ b/src/hotspot/share/gc/g1/g1ParScanThreadState.hpp
+@@ -57,7 +57,6 @@ class G1ParScanThreadState : public CHeapObj<mtGC> {
+   uint              _tenuring_threshold;
+   G1ScanEvacuatedObjClosure  _scanner;
+ 
+-  int  _hash_seed;
+   uint _worker_id;
+ 
+   // Upper and lower threshold to start and end work queue draining.
+diff --git a/src/hotspot/share/gc/g1/g1ParScanThreadState.inline.hpp b/src/hotspot/share/gc/g1/g1ParScanThreadState.inline.hpp
+index 0942675..554bb3f 100644
+--- a/src/hotspot/share/gc/g1/g1ParScanThreadState.inline.hpp
++++ b/src/hotspot/share/gc/g1/g1ParScanThreadState.inline.hpp
+@@ -140,7 +140,7 @@ inline void G1ParScanThreadState::dispatch_reference(StarTask ref) {
+ 
+ void G1ParScanThreadState::steal_and_trim_queue(RefToScanQueueSet *task_queues) {
+   StarTask stolen_task;
+-  while (task_queues->steal(_worker_id, &_hash_seed, stolen_task)) {
++  while (task_queues->steal(_worker_id, stolen_task)) {
+     assert(verify_task(stolen_task), "sanity");
+     dispatch_reference(stolen_task);
+ 
+diff --git a/src/hotspot/share/gc/parallel/pcTasks.cpp b/src/hotspot/share/gc/parallel/pcTasks.cpp
+index 30a0f26..b2464c8 100644
+--- a/src/hotspot/share/gc/parallel/pcTasks.cpp
++++ b/src/hotspot/share/gc/parallel/pcTasks.cpp
+@@ -184,13 +184,12 @@ void StealMarkingTask::do_it(GCTaskManager* manager, uint which) {
+ 
+   oop obj = NULL;
+   ObjArrayTask task;
+-  int random_seed = 17;
+   do {
+-    while (ParCompactionManager::steal_objarray(which, &random_seed, task)) {
++    while (ParCompactionManager::steal_objarray(which,  task)) {
+       cm->follow_contents((objArrayOop)task.obj(), task.index());
+       cm->follow_marking_stacks();
+     }
+-    while (ParCompactionManager::steal(which, &random_seed, obj)) {
++    while (ParCompactionManager::steal(which, obj)) {
+       cm->follow_contents(obj);
+       cm->follow_marking_stacks();
+     }
+@@ -218,10 +217,9 @@ void CompactionWithStealingTask::do_it(GCTaskManager* manager, uint which) {
+   guarantee(cm->region_stack()->is_empty(), "Not empty");
+ 
+   size_t region_index = 0;
+-  int random_seed = 17;
+ 
+   while(true) {
+-    if (ParCompactionManager::steal(which, &random_seed, region_index)) {
++    if (ParCompactionManager::steal(which, region_index)) {
+       PSParallelCompact::fill_and_update_region(cm, region_index);
+       cm->drain_region_stacks();
+     } else {
+diff --git a/src/hotspot/share/gc/parallel/psCompactionManager.hpp b/src/hotspot/share/gc/parallel/psCompactionManager.hpp
+index 69d0b5c..a79c360 100644
+--- a/src/hotspot/share/gc/parallel/psCompactionManager.hpp
++++ b/src/hotspot/share/gc/parallel/psCompactionManager.hpp
+@@ -159,9 +159,9 @@ private:
+   // Access function for compaction managers
+   static ParCompactionManager* gc_thread_compaction_manager(uint index);
+ 
+-  static bool steal(int queue_num, int* seed, oop& t);
+-  static bool steal_objarray(int queue_num, int* seed, ObjArrayTask& t);
+-  static bool steal(int queue_num, int* seed, size_t& region);
++  static bool steal(int queue_num, oop& t);
++  static bool steal_objarray(int queue_num, ObjArrayTask& t);
++  static bool steal(int queue_num, size_t& region);
+ 
+   // Process tasks remaining on any marking stack
+   void follow_marking_stacks();
+diff --git a/src/hotspot/share/gc/parallel/psCompactionManager.inline.hpp b/src/hotspot/share/gc/parallel/psCompactionManager.inline.hpp
+index f5f7201..dbac5a0 100644
+--- a/src/hotspot/share/gc/parallel/psCompactionManager.inline.hpp
++++ b/src/hotspot/share/gc/parallel/psCompactionManager.inline.hpp
+@@ -37,16 +37,16 @@
+ #include "utilities/debug.hpp"
+ #include "utilities/globalDefinitions.hpp"
+ 
+-inline bool ParCompactionManager::steal(int queue_num, int* seed, oop& t) {
+-  return stack_array()->steal(queue_num, seed, t);
++inline bool ParCompactionManager::steal(int queue_num, oop& t) {
++  return stack_array()->steal(queue_num, t);
+ }
+ 
+-inline bool ParCompactionManager::steal_objarray(int queue_num, int* seed, ObjArrayTask& t) {
+-  return _objarray_queues->steal(queue_num, seed, t);
++inline bool ParCompactionManager::steal_objarray(int queue_num, ObjArrayTask& t) {
++  return _objarray_queues->steal(queue_num, t);
+ }
+ 
+-inline bool ParCompactionManager::steal(int queue_num, int* seed, size_t& region) {
+-  return region_array()->steal(queue_num, seed, region);
++inline bool ParCompactionManager::steal(int queue_num, size_t& region) {
++  return region_array()->steal(queue_num, region);
+ }
+ 
+ inline void ParCompactionManager::push(oop obj) {
+diff --git a/src/hotspot/share/gc/parallel/psPromotionManager.hpp b/src/hotspot/share/gc/parallel/psPromotionManager.hpp
+index 58b1756..bff20ac 100644
+--- a/src/hotspot/share/gc/parallel/psPromotionManager.hpp
++++ b/src/hotspot/share/gc/parallel/psPromotionManager.hpp
+@@ -159,7 +159,7 @@ class PSPromotionManager {
+   static PSPromotionManager* gc_thread_promotion_manager(uint index);
+   static PSPromotionManager* vm_thread_promotion_manager();
+ 
+-  static bool steal_depth(int queue_num, int* seed, StarTask& t);
++  static bool steal_depth(int queue_num, StarTask& t);
+ 
+   PSPromotionManager();
+ 
+diff --git a/src/hotspot/share/gc/parallel/psPromotionManager.inline.hpp b/src/hotspot/share/gc/parallel/psPromotionManager.inline.hpp
+index 1ef9007..8c590e0 100644
+--- a/src/hotspot/share/gc/parallel/psPromotionManager.inline.hpp
++++ b/src/hotspot/share/gc/parallel/psPromotionManager.inline.hpp
+@@ -322,8 +322,8 @@ inline void PSPromotionManager::process_popped_location_depth(StarTask p) {
+   }
+ }
+ 
+-inline bool PSPromotionManager::steal_depth(int queue_num, int* seed, StarTask& t) {
+-  return stack_array_depth()->steal(queue_num, seed, t);
++inline bool PSPromotionManager::steal_depth(int queue_num, StarTask& t) {
++  return stack_array_depth()->steal(queue_num, t);
+ }
+ 
+ #if TASKQUEUE_STATS
+diff --git a/src/hotspot/share/gc/parallel/psTasks.cpp b/src/hotspot/share/gc/parallel/psTasks.cpp
+index 25ed498..aa2c6b7 100644
+--- a/src/hotspot/share/gc/parallel/psTasks.cpp
++++ b/src/hotspot/share/gc/parallel/psTasks.cpp
+@@ -141,10 +141,9 @@ void StealTask::do_it(GCTaskManager* manager, uint which) {
+   guarantee(pm->stacks_empty(),
+             "stacks should be empty at this point");
+ 
+-  int random_seed = 17;
+   while(true) {
+     StarTask p;
+-    if (PSPromotionManager::steal_depth(which, &random_seed, p)) {
++    if (PSPromotionManager::steal_depth(which, p)) {
+       TASKQUEUE_STATS_ONLY(pm->record_steal(p));
+       pm->process_popped_location_depth(p);
+       pm->drain_stacks_depth(true);
+diff --git a/src/hotspot/share/gc/shared/taskqueue.cpp b/src/hotspot/share/gc/shared/taskqueue.cpp
+index 2738d68..47639bd 100644
+--- a/src/hotspot/share/gc/shared/taskqueue.cpp
++++ b/src/hotspot/share/gc/shared/taskqueue.cpp
+@@ -112,24 +112,6 @@ void TaskQueueStats::verify() const
+ #endif // ASSERT
+ #endif // TASKQUEUE_STATS
+ 
+-int TaskQueueSetSuper::randomParkAndMiller(int *seed0) {
+-  const int a =      16807;
+-  const int m = 2147483647;
+-  const int q =     127773;  /* m div a */
+-  const int r =       2836;  /* m mod a */
+-  assert(sizeof(int) == 4, "I think this relies on that");
+-  int seed = *seed0;
+-  int hi   = seed / q;
+-  int lo   = seed % q;
+-  int test = a * lo - r * hi;
+-  if (test > 0)
+-    seed = test;
+-  else
+-    seed = test + m;
+-  *seed0 = seed;
+-  return seed;
+-}
+-
+ ParallelTaskTerminator::
+ ParallelTaskTerminator(uint n_threads, TaskQueueSetSuper* queue_set) :
+   _n_threads(n_threads),
+diff --git a/src/hotspot/share/gc/shared/taskqueue.hpp b/src/hotspot/share/gc/shared/taskqueue.hpp
+index 1cafcde..f162ffb 100644
+--- a/src/hotspot/share/gc/shared/taskqueue.hpp
++++ b/src/hotspot/share/gc/shared/taskqueue.hpp
+@@ -303,12 +303,30 @@ public:
+   template<typename Fn> void iterate(Fn fn);
+ 
+ private:
++  DEFINE_PAD_MINUS_SIZE(0, DEFAULT_CACHE_LINE_SIZE, 0);
+   // Element array.
+   volatile E* _elems;
++
++  DEFINE_PAD_MINUS_SIZE(1, DEFAULT_CACHE_LINE_SIZE, sizeof(E*));
++  // Queue owner local variables. Not to be accessed by other threads.
++
++  static const uint InvalidQueueId = uint(-1);
++  uint _last_stolen_queue_id; // The id of the queue we last stole from
++
++  int _seed; // Current random seed used for selecting a random queue during stealing.
++
++  DEFINE_PAD_MINUS_SIZE(2, DEFAULT_CACHE_LINE_SIZE, sizeof(uint) + sizeof(int));
++public:
++  int next_random_queue_id();
++
++  void set_last_stolen_queue_id(uint id)     { _last_stolen_queue_id = id; }
++  uint last_stolen_queue_id() const          { return _last_stolen_queue_id; }
++  bool is_last_stolen_queue_id_valid() const { return _last_stolen_queue_id != InvalidQueueId; }
++  void invalidate_last_stolen_queue_id()     { _last_stolen_queue_id = InvalidQueueId; }
+ };
+ 
+ template<class E, MEMFLAGS F, unsigned int N>
+-GenericTaskQueue<E, F, N>::GenericTaskQueue() {
++GenericTaskQueue<E, F, N>::GenericTaskQueue() : _last_stolen_queue_id(InvalidQueueId), _seed(17 /* random number */) {
+   assert(sizeof(Age) == sizeof(size_t), "Depends on this.");
+ }
+ 
+@@ -353,8 +371,6 @@ private:
+ };
+ 
+ class TaskQueueSetSuper {
+-protected:
+-  static int randomParkAndMiller(int* seed0);
+ public:
+   // Returns "true" if some TaskQueue in the set contains a task.
+   virtual bool peek() = 0;
+@@ -374,21 +390,18 @@ private:
+ public:
+   typedef typename T::element_type E;
+ 
+-  GenericTaskQueueSet(int n);
++  GenericTaskQueueSet(uint n);
+   ~GenericTaskQueueSet();
+ 
+-  bool steal_best_of_2(uint queue_num, int* seed, E& t);
++  bool steal_best_of_2(uint queue_num, E& t);
+ 
+   void register_queue(uint i, T* q);
+ 
+   T* queue(uint n);
+ 
+-  // The thread with queue number "queue_num" (and whose random number seed is
+-  // at "seed") is trying to steal a task from some other queue.  (It may try
+-  // several queues, according to some configuration parameter.)  If some steal
+-  // succeeds, returns "true" and sets "t" to the stolen task, otherwise returns
+-  // false.
+-  bool steal(uint queue_num, int* seed, E& t);
++  // Try to steal a task from some other queue than queue_num. It may perform several attempts at doing so.
++  // Returns if stealing succeeds, and sets "t" to the stolen task.
++  bool steal(uint queue_num, E& t);
+ 
+   bool peek();
+   uint tasks() const;
+diff --git a/src/hotspot/share/gc/shared/taskqueue.inline.hpp b/src/hotspot/share/gc/shared/taskqueue.inline.hpp
+index 289dcdc..ac532e9 100644
+--- a/src/hotspot/share/gc/shared/taskqueue.inline.hpp
++++ b/src/hotspot/share/gc/shared/taskqueue.inline.hpp
+@@ -34,10 +34,10 @@
+ #include "utilities/stack.inline.hpp"
+ 
+ template <class T, MEMFLAGS F>
+-inline GenericTaskQueueSet<T, F>::GenericTaskQueueSet(int n) : _n(n) {
++inline GenericTaskQueueSet<T, F>::GenericTaskQueueSet(uint n) : _n(n) {
+   typedef T* GenericTaskQueuePtr;
+   _queues = NEW_C_HEAP_ARRAY(GenericTaskQueuePtr, n, F);
+-  for (int i = 0; i < n; i++) {
++  for (uint i = 0; i < n; i++) {
+     _queues[i] = NULL;
+   }
+ }
+@@ -232,18 +232,71 @@ bool GenericTaskQueue<E, F, N>::pop_global(volatile E& t) {
+   return resAge == oldAge;
+ }
+ 
++inline int randomParkAndMiller(int *seed0) {
++  const int a =      16807;
++  const int m = 2147483647;
++  const int q =     127773;  /* m div a */
++  const int r =       2836;  /* m mod a */
++  STATIC_ASSERT(sizeof(int) == 4);
++  int seed = *seed0;
++  int hi   = seed / q;
++  int lo   = seed % q;
++  int test = a * lo - r * hi;
++  if (test > 0) {
++    seed = test;
++  } else {
++    seed = test + m;
++  }
++  *seed0 = seed;
++  return seed;
++}
++
++template<class E, MEMFLAGS F, unsigned int N>
++int GenericTaskQueue<E, F, N>::next_random_queue_id() {
++  return randomParkAndMiller(&_seed);
++}
++
+ template<class T, MEMFLAGS F> bool
+-GenericTaskQueueSet<T, F>::steal_best_of_2(uint queue_num, int* seed, E& t) {
++GenericTaskQueueSet<T, F>::steal_best_of_2(uint queue_num, E& t) {
+   if (_n > 2) {
++    T* const local_queue = _queues[queue_num];
+     uint k1 = queue_num;
+-    while (k1 == queue_num) k1 = TaskQueueSetSuper::randomParkAndMiller(seed) % _n;
++
++    if (local_queue->is_last_stolen_queue_id_valid()) {
++      k1 = local_queue->last_stolen_queue_id();
++      assert(k1 != queue_num, "Should not be the same");
++    } else {
++      while (k1 == queue_num) {
++        k1 = local_queue->next_random_queue_id() % _n;
++      }
++    }
++
+     uint k2 = queue_num;
+-    while (k2 == queue_num || k2 == k1) k2 = TaskQueueSetSuper::randomParkAndMiller(seed) % _n;
++    while (k2 == queue_num || k2 == k1) {
++      k2 = local_queue->next_random_queue_id() % _n;
++    }
+     // Sample both and try the larger.
+     uint sz1 = _queues[k1]->size();
+     uint sz2 = _queues[k2]->size();
+-    if (sz2 > sz1) return _queues[k2]->pop_global(t);
+-    else return _queues[k1]->pop_global(t);
++
++    uint sel_k = 0;
++    bool suc = false;
++
++    if (sz2 > sz1) {
++      sel_k = k2;
++      suc = _queues[k2]->pop_global(t);
++    } else if (sz1 > 0) {
++      sel_k = k1;
++      suc = _queues[k1]->pop_global(t);
++    }
++
++    if (suc) {
++      local_queue->set_last_stolen_queue_id(sel_k);
++    } else {
++      local_queue->invalidate_last_stolen_queue_id();
++    }
++
++    return suc;
+   } else if (_n == 2) {
+     // Just try the other one.
+     uint k = (queue_num + 1) % 2;
+@@ -255,9 +308,9 @@ GenericTaskQueueSet<T, F>::steal_best_of_2(uint queue_num, int* seed, E& t) {
+ }
+ 
+ template<class T, MEMFLAGS F> bool
+-GenericTaskQueueSet<T, F>::steal(uint queue_num, int* seed, E& t) {
++GenericTaskQueueSet<T, F>::steal(uint queue_num, E& t) {
+   for (uint i = 0; i < 2 * _n; i++) {
+-    if (steal_best_of_2(queue_num, seed, t)) {
++    if (steal_best_of_2(queue_num, t)) {
+       TASKQUEUE_STATS_ONLY(queue(queue_num)->stats.record_steal(true));
+       return true;
+     }
