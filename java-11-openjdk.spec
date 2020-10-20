@@ -735,7 +735,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 8
+Release: 9
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -1604,6 +1604,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Tue Oct 20 2020 noah <hedongbo@huawei.com> - 1:11.0.8.10-9
+- delete redundant openjdk-11.0.8-ga.tar.xz
+
 * Mon Sep 21 2020 noah <hedongbo@huawei.com> - 1:11.0.8.10-8
 - add 8204947-Port-ShenandoahTaskTerminator-to-mainline-and-make-it-default.patch
 - add 8205921-Optimizing-best_of_2-work-stealing-queue-selection.patch
