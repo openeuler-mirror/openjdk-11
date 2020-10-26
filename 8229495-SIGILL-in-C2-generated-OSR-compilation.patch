@@ -1,8 +1,8 @@
 diff --git a/src/hotspot/share/opto/classes.hpp b/src/hotspot/share/opto/classes.hpp
-index da01e48..6938ed2 100644
+index 5ee23f7..b847caf 100644
 --- a/src/hotspot/share/opto/classes.hpp
 +++ b/src/hotspot/share/opto/classes.hpp
-@@ -225,6 +225,8 @@ macro(NegF)
+@@ -226,6 +226,8 @@ macro(NegF)
  macro(NeverBranch)
  macro(OnSpinWait)
  macro(Opaque1)
@@ -12,10 +12,10 @@ index da01e48..6938ed2 100644
  macro(Opaque3)
  macro(Opaque4)
 diff --git a/src/hotspot/share/opto/compile.cpp b/src/hotspot/share/opto/compile.cpp
-index b6980c4..ac7b848 100644
+index e5559a2..efe4cff 100644
 --- a/src/hotspot/share/opto/compile.cpp
 +++ b/src/hotspot/share/opto/compile.cpp
-@@ -1981,7 +1981,17 @@ void Compile::remove_opaque4_nodes(PhaseIterGVN &igvn) {
+@@ -1987,7 +1987,17 @@ void Compile::remove_opaque4_nodes(PhaseIterGVN &igvn) {
    for (int i = opaque4_count(); i > 0; i--) {
      Node* opaq = opaque4_node(i-1);
      assert(opaq->Opcode() == Op_Opaque4, "Opaque4 only");
@@ -34,10 +34,10 @@ index b6980c4..ac7b848 100644
    assert(opaque4_count() == 0, "should be empty");
  }
 diff --git a/src/hotspot/share/opto/loopPredicate.cpp b/src/hotspot/share/opto/loopPredicate.cpp
-index ee20972..e255f46 100644
+index 6e85398..a6d2257 100644
 --- a/src/hotspot/share/opto/loopPredicate.cpp
 +++ b/src/hotspot/share/opto/loopPredicate.cpp
-@@ -1244,8 +1244,9 @@ ProjNode* PhaseIdealLoop::insert_initial_skeleton_predicate(IfNode* iff, IdealLo
+@@ -1243,8 +1243,9 @@ ProjNode* PhaseIdealLoop::insert_initial_skeleton_predicate(IfNode* iff, IdealLo
                                                              Node* init, Node* limit, jint stride,
                                                              Node* rng, bool &overflow,
                                                              Deoptimization::DeoptReason reason) {
@@ -48,7 +48,7 @@ index ee20972..e255f46 100644
    register_new_node(opaque_init, upper_bound_proj);
    BoolNode* bol = rc_predicate(loop, upper_bound_proj, scale, offset, opaque_init, limit, stride, rng, (stride > 0) != (scale > 0), overflow);
    Node* opaque_bol = new Opaque4Node(C, bol, _igvn.intcon(1)); // This will go away once loop opts are over
-@@ -1253,6 +1254,22 @@ ProjNode* PhaseIdealLoop::insert_initial_skeleton_predicate(IfNode* iff, IdealLo
+@@ -1252,6 +1253,22 @@ ProjNode* PhaseIdealLoop::insert_initial_skeleton_predicate(IfNode* iff, IdealLo
    ProjNode* new_proj = create_new_if_for_predicate(predicate_proj, NULL, reason, overflow ? Op_If : iff->Opcode());
    _igvn.replace_input_of(new_proj->in(0), 1, opaque_bol);
    assert(opaque_init->outcnt() > 0, "should be used");
@@ -72,7 +72,7 @@ index ee20972..e255f46 100644
  }
  
 diff --git a/src/hotspot/share/opto/loopTransform.cpp b/src/hotspot/share/opto/loopTransform.cpp
-index 46790ef..c678544 100644
+index 5e6faaa..89628bb 100644
 --- a/src/hotspot/share/opto/loopTransform.cpp
 +++ b/src/hotspot/share/opto/loopTransform.cpp
 @@ -1080,7 +1080,7 @@ void PhaseIdealLoop::ensure_zero_trip_guard_proj(Node* node, bool is_main_loop)
@@ -218,44 +218,44 @@ index 46790ef..c678544 100644
          assert(!skeleton_predicate_has_opaque(prev_proj->in(0)->as_If()), "unexpected");
        }
      }
-@@ -2594,22 +2597,22 @@ int PhaseIdealLoop::do_range_check( IdealLoopTree *loop, Node_List &old_new ) {
-           // (0-offset)/scale could be outside of loop iterations range.
-           conditional_rc = true;
+@@ -2547,22 +2550,22 @@ int PhaseIdealLoop::do_range_check( IdealLoopTree *loop, Node_List &old_new ) {
+           // The underflow and overflow limits: 0 <= scale*I+offset < limit
+           add_constraint(stride_con, lscale_con, offset, zero, limit, pre_ctrl, &pre_limit, &main_limit);
            Node* init = cl->init_trip();
 -          Node* opaque_init = new Opaque1Node(C, init);
 +          Node* opaque_init = new OpaqueLoopInitNode(C, init);
            register_new_node(opaque_init, predicate_proj);
-+	  // predicate on first value of first iteration
++          // predicate on first value of first iteration
 +          predicate_proj = add_range_check_predicate(loop, cl, predicate_proj, scale_con, offset, limit, stride_con, init);
 +          assert(!skeleton_predicate_has_opaque(predicate_proj->in(0)->as_If()), "unexpected");
            // template predicate so it can be updated on next unrolling
-           predicate_proj = add_range_check_predicate(loop, cl, predicate_proj, scale_con, offset, limit, stride_con, opaque_init);
+           predicate_proj = add_range_check_predicate(loop, cl, predicate_proj, scale_con, int_offset, int_limit, stride_con, opaque_init);
            assert(skeleton_predicate_has_opaque(predicate_proj->in(0)->as_If()), "unexpected");
 -          // predicate on first value of first iteration
--          predicate_proj = add_range_check_predicate(loop, cl, predicate_proj, scale_con, offset, limit, stride_con, init);
+-          predicate_proj = add_range_check_predicate(loop, cl, predicate_proj, scale_con, int_offset, int_limit, stride_con, init);
 -          assert(!skeleton_predicate_has_opaque(predicate_proj->in(0)->as_If()), "unexpected");
 -          int init_inc = stride_con/cl->unrolled_count();
 -          assert(init_inc != 0, "invalid loop increment");
 -          Node* max_value = _igvn.intcon(stride_con - init_inc);
 -          max_value = new AddINode(init, max_value);
-+	  Node* opaque_stride = new OpaqueLoopStrideNode(C, cl->stride());
++          Node* opaque_stride = new OpaqueLoopStrideNode(C, cl->stride());
 +          register_new_node(opaque_stride, predicate_proj);
 +          Node* max_value = new SubINode(opaque_stride, cl->stride());
 +          register_new_node(max_value, predicate_proj);
-+	  max_value = new AddINode(opaque_init, max_value);
++          max_value = new AddINode(opaque_init, max_value);
            register_new_node(max_value, predicate_proj);
 -          // predicate on last value of first iteration (in case unrolling has already happened)
-           predicate_proj = add_range_check_predicate(loop, cl, predicate_proj, scale_con, offset, limit, stride_con, max_value);
+           predicate_proj = add_range_check_predicate(loop, cl, predicate_proj, scale_con, int_offset, int_limit, stride_con, max_value);
 -          assert(!skeleton_predicate_has_opaque(predicate_proj->in(0)->as_If()), "unexpected");
 +          assert(skeleton_predicate_has_opaque(predicate_proj->in(0)->as_If()), "unexpected");
          } else {
            if (PrintOpto) {
              tty->print_cr("missed RCE opportunity");
 diff --git a/src/hotspot/share/opto/loopnode.hpp b/src/hotspot/share/opto/loopnode.hpp
-index 3951259..6d68df0 100644
+index 53b9692..7c54113 100644
 --- a/src/hotspot/share/opto/loopnode.hpp
 +++ b/src/hotspot/share/opto/loopnode.hpp
-@@ -747,13 +747,13 @@ private:
+@@ -748,13 +748,13 @@ private:
  #ifdef ASSERT
    void ensure_zero_trip_guard_proj(Node* node, bool is_main_loop);
  #endif
@@ -333,10 +333,10 @@ index 6b85529..adbee17 100644
    if (res != NULL) {
      return n;
 diff --git a/src/hotspot/share/opto/macro.cpp b/src/hotspot/share/opto/macro.cpp
-index 9f3cb34..5f5cc75 100644
+index cf8eab1..8331d25 100644
 --- a/src/hotspot/share/opto/macro.cpp
 +++ b/src/hotspot/share/opto/macro.cpp
-@@ -2594,9 +2594,10 @@ void PhaseMacroExpand::eliminate_macro_nodes() {
+@@ -2617,9 +2617,10 @@ void PhaseMacroExpand::eliminate_macro_nodes() {
          break;
        case Node::Class_OuterStripMinedLoop:
          break;
@@ -348,7 +348,7 @@ index 9f3cb34..5f5cc75 100644
                 n->Opcode() == Op_Opaque2   ||
                 n->Opcode() == Op_Opaque3   ||
                 BarrierSet::barrier_set()->barrier_set_c2()->is_gc_barrier_node(n),
-@@ -2638,7 +2639,7 @@ bool PhaseMacroExpand::expand_macro_nodes() {
+@@ -2661,7 +2662,7 @@ bool PhaseMacroExpand::expand_macro_nodes() {
          C->remove_macro_node(n);
          _igvn._worklist.push(n);
          success = true;
@@ -358,7 +358,7 @@ index 9f3cb34..5f5cc75 100644
          success = true;
  #if INCLUDE_RTM_OPT
 diff --git a/src/hotspot/share/opto/node.hpp b/src/hotspot/share/opto/node.hpp
-index cf0975e..a36f3bb 100644
+index 2a42e99..0eac634 100644
 --- a/src/hotspot/share/opto/node.hpp
 +++ b/src/hotspot/share/opto/node.hpp
 @@ -116,6 +116,7 @@ class MulNode;
@@ -369,7 +369,7 @@ index cf0975e..a36f3bb 100644
  class OuterStripMinedLoopNode;
  class OuterStripMinedLoopEndNode;
  class Node;
-@@ -608,10 +609,10 @@ public:
+@@ -611,10 +612,10 @@ public:
    // This enum is used only for C2 ideal and mach nodes with is_<node>() methods
    // so that it's values fits into 16 bits.
    enum NodeClasses {
@@ -384,7 +384,7 @@ index cf0975e..a36f3bb 100644
      DEFINE_CLASS_ID(Multi, Node, 0)
        DEFINE_CLASS_ID(SafePoint, Multi, 0)
          DEFINE_CLASS_ID(Call,      SafePoint, 0)
-@@ -714,6 +715,7 @@ public:
+@@ -720,6 +721,7 @@ public:
      DEFINE_CLASS_ID(Vector,   Node, 13)
      DEFINE_CLASS_ID(ClearArray, Node, 14)
      DEFINE_CLASS_ID(Halt, Node, 15)
@@ -392,7 +392,7 @@ index cf0975e..a36f3bb 100644
  
      _max_classes  = ClassMask_Halt
    };
-@@ -740,12 +742,12 @@ public:
+@@ -746,12 +748,12 @@ public:
    };
  
  private:
@@ -407,7 +407,7 @@ index cf0975e..a36f3bb 100644
      _class_id = c; // cast out const
    }
    void init_flags(jushort fl) {
-@@ -758,7 +760,7 @@ protected:
+@@ -764,7 +766,7 @@ protected:
    }
  
  public:
@@ -416,7 +416,7 @@ index cf0975e..a36f3bb 100644
  
    const jushort flags() const { return _flags; }
  
-@@ -859,6 +861,7 @@ public:
+@@ -865,6 +867,7 @@ public:
    DEFINE_CLASS_QUERY(Mul)
    DEFINE_CLASS_QUERY(Multi)
    DEFINE_CLASS_QUERY(MultiBranch)
@@ -466,10 +466,10 @@ index f97de4a..4c00528 100644
  //------------------------------Opaque2Node------------------------------------
  // A node to prevent unwanted optimizations.  Allows constant folding.  Stops
 diff --git a/src/hotspot/share/runtime/vmStructs.cpp b/src/hotspot/share/runtime/vmStructs.cpp
-index 413188e..98b8ade 100644
+index ad7fb42..85c4dfe 100644
 --- a/src/hotspot/share/runtime/vmStructs.cpp
 +++ b/src/hotspot/share/runtime/vmStructs.cpp
-@@ -949,7 +949,7 @@ typedef PaddedEnd<ObjectMonitor>              PaddedObjectMonitor;
+@@ -951,7 +951,7 @@ typedef PaddedEnd<ObjectMonitor>              PaddedObjectMonitor;
    c2_nonstatic_field(Node,                     _outcnt,                                       node_idx_t)                            \
    c2_nonstatic_field(Node,                     _outmax,                                       node_idx_t)                            \
    c2_nonstatic_field(Node,                     _idx,                                          const node_idx_t)                      \

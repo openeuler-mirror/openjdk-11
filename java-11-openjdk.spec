@@ -114,13 +114,13 @@
 
 # New Version-String scheme-style defines
 %global majorver 11
-%global securityver 8
+%global securityver 9
 # buildjdkver is usually same as %%{majorver},
 # but in time of bootstrap of next jdk, it is majorver-1,
 # and this it is better to change it here, on single place
 %global buildjdkver %{majorver}
 
-%global vendor_version_string Boole
+%global vendor_version_string Bisheng
 
 # Define IcedTea version used for SystemTap tapsets and desktop file
 %global icedteaver      3.15.0
@@ -130,11 +130,11 @@
 %global origin_nice     OpenJDK
 %global top_level_dir_name   %{origin}
 %global minorver        0
-%global buildver        10
+%global buildver        11
 
 %global project		jdk-updates
 %global repo		jdk11u
-%global revision	jdk-11.0.8-ga
+%global revision	jdk-11.0.9-ga
 %global full_revision %{project}-%{repo}-%{revision}
 # priority must be 7 digits in total
 # setting to 1, so debug ones can have 0
@@ -735,7 +735,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 9
+Release: 0
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -805,8 +805,6 @@ Patch10: ZGC-aarch64-not-using-zr-register-avoid-sigill-in-Ma.patch
 Patch11: 8217856-ZGC-Break-out-C2-matching-rules-into-separat.patch
 Patch12: 8233073-Make-BitMap-accessors-more-memory-ordering-f.patch
 Patch13: 8233061-ZGC-Enforce-memory-ordering-in-segmented-bit.patch
-Patch14: Add-loadload-membar-to-avoid-loading-a-incorrect-offset.patch
-Patch15: 8226536-Catch-OOM-from-deopt-that-fails-rematerializ.patch
 Patch18: 8209375-ZGC-Use-dynamic-base-address-for-mark-stack-.patch
 Patch20: 8209894-ZGC-Cap-number-of-GC-workers-based-on-heap-s.patch
 Patch22: 8233506-ZGC-the-load-for-Reference.get-can-be-conver.patch
@@ -815,7 +813,6 @@ Patch26: ZGC-aarch64-fix-system-call-number-of-memfd_create.patch
 Patch27: ZGC-aarch64-fix-not-using-load-store-Pre-index.patch
 Patch28: address-s-offset-may-exceed-the-limit-of-ldrw-instru.patch
 Patch29: ZGC-reuse-entries-of-ResolvedMethodTable.patch
-Patch32: 8240360-NativeLibraryEvent-has-wrong-library-name-on-linux.patch
 
 # 11.0.8
 Patch33: 8210473-JEP-345-NUMA-Aware-Memory-Allocation-for-G1.patch
@@ -829,7 +826,6 @@ Patch40: 8223667-ASAN-build-broken.patch
 Patch41: 8229495-SIGILL-in-C2-generated-OSR-compilation.patch
 Patch42: 8229496-SIGFPE-division-by-zero-in-C2-OSR-compiled-method.patch
 Patch43: 8243670-Unexpected-test-result-caused-by-C2-MergeMem.patch
-Patch44: fix-IfNode-s-bugs.patch
 Patch45: leaf-optimize-in-ParallelScanvageGC.patch
 Patch46: ZGC-correct-free-heap-size-excluding-waste-in-rule_allocation_rate.patch
 Patch47: 8204947-Port-ShenandoahTaskTerminator-to-mainline-and-make-it-default.patch
@@ -1074,8 +1070,6 @@ pushd %{top_level_dir_name}
 %patch11 -p1
 %patch12 -p1
 %patch13 -p1
-%patch14 -p1
-%patch15 -p1
 %patch18 -p1
 %patch20 -p1
 %patch22 -p1
@@ -1084,7 +1078,6 @@ pushd %{top_level_dir_name}
 %patch27 -p1
 %patch28 -p1
 %patch29 -p1
-%patch32 -p1
 %patch33 -p1
 %patch34 -p1
 %patch35 -p1
@@ -1093,10 +1086,9 @@ pushd %{top_level_dir_name}
 %patch38 -p1
 %patch39 -p1
 %patch40 -p1
-%patch41 -p1
+# %patch41 -p1
 %patch42 -p1
 %patch43 -p1
-%patch44 -p1
 %patch45 -p1
 %patch46 -p1
 %patch47 -p1
@@ -1193,7 +1185,7 @@ bash ../configure \
     --with-version-pre="" \
     --with-version-opt="" \
     --with-vendor-version-string="%{vendor_version_string}" \
-    --with-vendor-name="Boole" \
+    --with-vendor-name="Bisheng" \
     --with-vendor-url="https://openeuler.org/" \
     --with-vendor-bug-url="https://gitee.com/src-openeuler/openjdk-11/issues/" \
     --with-vendor-vm-bug-url="https://gitee.com/src-openeuler/openjdk-11/issues/" \
@@ -1604,6 +1596,11 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Thu Oct 22 2020 noah <hedongbo@huawei.com> - 1:11.0.9.11-0
+- Update to 11.0.9+11 (GA)
+- rename Boole to Bisheng
+- remove 8229495-SIGILL-in-C2-generated-OSR-compilation.patch temporarily
+
 * Tue Oct 20 2020 noah <hedongbo@huawei.com> - 1:11.0.8.10-9
 - delete redundant openjdk-11.0.8-ga.tar.xz
 

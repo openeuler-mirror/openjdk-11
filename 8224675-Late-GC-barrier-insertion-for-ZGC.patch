@@ -1,48 +1,8 @@
-From f9885f88585a8299760f905b420af1adb5bcca44 Mon Sep 17 00:00:00 2001
-Date: Mon, 13 Apr 2020 10:46:11 +0800
-Subject: [PATCH] 8224675: Late GC barrier insertion for ZGC
-
-Summary: <gc>: <Insert ZGC load barriers after loop optimizations, before macro expansion.>
-LLT: jtreg
-Bug url: https://bugs.openjdk.java.net/browse/JDK-8224675
----
- src/hotspot/cpu/aarch64/aarch64.ad                 |   60 +-
- .../aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp  |    1 -
- src/hotspot/cpu/x86/x86_64.ad                      |   77 +-
- src/hotspot/share/adlc/formssel.cpp                |    9 +-
- src/hotspot/share/compiler/compilerDirectives.hpp  |    2 +-
- src/hotspot/share/gc/shared/c2/barrierSetC2.hpp    |    4 +-
- src/hotspot/share/gc/z/c2/zBarrierSetC2.cpp        | 1768 ++++++++---------
- src/hotspot/share/gc/z/c2/zBarrierSetC2.hpp        |  116 +-
- src/hotspot/share/gc/z/zHeap.cpp                   |   26 -
- src/hotspot/share/gc/z/z_globals.hpp               |    3 -
- src/hotspot/share/opto/classes.hpp                 |    5 +-
- src/hotspot/share/opto/compile.cpp                 |   43 +-
- src/hotspot/share/opto/compile.hpp                 |   23 +-
- src/hotspot/share/opto/escape.cpp                  |    8 -
- src/hotspot/share/opto/idealGraphPrinter.cpp       |   18 +-
- src/hotspot/share/opto/idealGraphPrinter.hpp       |   14 +-
- src/hotspot/share/opto/lcm.cpp                     |    1 -
- src/hotspot/share/opto/loopnode.cpp                |   43 +-
- src/hotspot/share/opto/loopnode.hpp                |    6 +-
- src/hotspot/share/opto/loopopts.cpp                |    6 -
- src/hotspot/share/opto/matcher.cpp                 |   27 +
- src/hotspot/share/opto/memnode.cpp                 |   21 +-
- src/hotspot/share/opto/memnode.hpp                 |   11 +-
- src/hotspot/share/opto/node.cpp                    |   13 +-
- src/hotspot/share/opto/node.hpp                    |    7 +-
- src/hotspot/share/opto/phaseX.cpp                  |    3 -
- src/hotspot/share/opto/phasetype.hpp               |    6 +
- src/hotspot/share/opto/vectornode.cpp              |    1 -
- src/hotspot/share/runtime/stackValue.cpp           |    8 +-
- src/hotspot/share/utilities/growableArray.hpp      |   37 +
- 30 files changed, 1259 insertions(+), 1108 deletions(-)
-
 diff --git a/src/hotspot/cpu/aarch64/aarch64.ad b/src/hotspot/cpu/aarch64/aarch64.ad
-index 57b20775e..a6d2e6609 100644
+index 0625053..af3e593 100644
 --- a/src/hotspot/cpu/aarch64/aarch64.ad
 +++ b/src/hotspot/cpu/aarch64/aarch64.ad
-@@ -17517,7 +17517,7 @@ instruct loadBarrierSlowReg(iRegP dst, memory mem, rFlagsReg cr,
+@@ -17518,7 +17518,7 @@ instruct loadBarrierSlowReg(iRegP dst, memory mem, rFlagsReg cr,
      vRegD_V25 v25, vRegD_V26 v26, vRegD_V27 v27, vRegD_V28 v28, vRegD_V29 v29,
      vRegD_V30 v30, vRegD_V31 v31) %{
    match(Set dst (LoadBarrierSlowReg mem));
@@ -51,7 +11,7 @@ index 57b20775e..a6d2e6609 100644
  
    effect(DEF dst, KILL cr,
       KILL v0, KILL v1, KILL v2, KILL v3, KILL v4, KILL v5, KILL v6, KILL v7,
-@@ -17546,7 +17546,7 @@ instruct loadBarrierWeakSlowReg(iRegP dst, memory mem, rFlagsReg cr,
+@@ -17547,7 +17547,7 @@ instruct loadBarrierWeakSlowReg(iRegP dst, memory mem, rFlagsReg cr,
      vRegD_V25 v25, vRegD_V26 v26, vRegD_V27 v27, vRegD_V28 v28, vRegD_V29 v29,
      vRegD_V30 v30, vRegD_V31 v31) %{
    match(Set dst (LoadBarrierSlowReg mem));
@@ -60,7 +20,7 @@ index 57b20775e..a6d2e6609 100644
  
    effect(DEF dst, KILL cr,
       KILL v0, KILL v1, KILL v2, KILL v3, KILL v4, KILL v5, KILL v6, KILL v7,
-@@ -17563,6 +17563,62 @@ instruct loadBarrierWeakSlowReg(iRegP dst, memory mem, rFlagsReg cr,
+@@ -17564,6 +17564,62 @@ instruct loadBarrierWeakSlowReg(iRegP dst, memory mem, rFlagsReg cr,
    ins_pipe(pipe_slow);
  %}
  
@@ -124,7 +84,7 @@ index 57b20775e..a6d2e6609 100644
  // These must follow all instruction definitions as they use the names
  // defined in the instructions definitions.
 diff --git a/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp
-index 90b2b4ca7..8e169ace4 100644
+index 90b2b4c..8e169ac 100644
 --- a/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp
 +++ b/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp
 @@ -245,7 +245,6 @@ void ZBarrierSetAssembler::generate_c1_load_barrier_stub(LIR_Assembler* ce,
@@ -136,23 +96,23 @@ index 90b2b4ca7..8e169ace4 100644
      ref_addr = tmp = stub->tmp()->as_pointer_register();
    } else {
 diff --git a/src/hotspot/cpu/x86/x86_64.ad b/src/hotspot/cpu/x86/x86_64.ad
-index 9d9eda84b..97c396875 100644
+index 3f92fdf..e256e22 100644
 --- a/src/hotspot/cpu/x86/x86_64.ad
 +++ b/src/hotspot/cpu/x86/x86_64.ad
-@@ -538,6 +538,12 @@ reg_class int_rdi_reg(RDI);
- 
+@@ -539,6 +539,12 @@ reg_class int_rdi_reg(RDI);
  %}
  
-+source_hpp %{
+ source_hpp %{
 +
 +#include "gc/z/c2/zBarrierSetC2.hpp"
 +
 +%}
 +
- source_hpp %{
++source_hpp %{
  #if INCLUDE_ZGC
  #include "gc/z/zBarrierSetAssembler.hpp"
-@@ -12630,7 +12636,7 @@ instruct RethrowException()
+ #endif
+@@ -12665,7 +12671,7 @@ instruct RethrowException()
  instruct loadBarrierSlowRegNoVec(rRegP dst, memory mem, rFlagsReg cr) %{
  
    match(Set dst (LoadBarrierSlowReg mem));
@@ -161,7 +121,7 @@ index 9d9eda84b..97c396875 100644
  
    effect(DEF dst, KILL cr);
  
-@@ -12661,7 +12667,7 @@ instruct loadBarrierSlowRegXmmAndYmm(rRegP dst, memory mem, rFlagsReg cr,
+@@ -12696,7 +12702,7 @@ instruct loadBarrierSlowRegXmmAndYmm(rRegP dst, memory mem, rFlagsReg cr,
                                       rxmm12 x12, rxmm13 x13, rxmm14 x14, rxmm15 x15) %{
  
    match(Set dst (LoadBarrierSlowReg mem));
@@ -170,7 +130,7 @@ index 9d9eda84b..97c396875 100644
  
    effect(DEF dst, KILL cr,
           KILL x0, KILL x1, KILL x2, KILL x3,
-@@ -12700,7 +12706,7 @@ instruct loadBarrierSlowRegZmm(rRegP dst, memory mem, rFlagsReg cr,
+@@ -12735,7 +12741,7 @@ instruct loadBarrierSlowRegZmm(rRegP dst, memory mem, rFlagsReg cr,
                                 rxmm28 x28, rxmm29 x29, rxmm30 x30, rxmm31 x31) %{
  
    match(Set dst (LoadBarrierSlowReg mem));
@@ -179,7 +139,7 @@ index 9d9eda84b..97c396875 100644
  
    effect(DEF dst, KILL cr,
           KILL x0, KILL x1, KILL x2, KILL x3,
-@@ -12739,7 +12745,7 @@ instruct loadBarrierSlowRegZmm(rRegP dst, memory mem, rFlagsReg cr,
+@@ -12774,7 +12780,7 @@ instruct loadBarrierSlowRegZmm(rRegP dst, memory mem, rFlagsReg cr,
  instruct loadBarrierWeakSlowRegNoVec(rRegP dst, memory mem, rFlagsReg cr) %{
  
    match(Set dst (LoadBarrierSlowReg mem));
@@ -188,7 +148,7 @@ index 9d9eda84b..97c396875 100644
  
    effect(DEF dst, KILL cr);
  
-@@ -12769,8 +12775,8 @@ instruct loadBarrierWeakSlowRegXmmAndYmm(rRegP dst, memory mem, rFlagsReg cr,
+@@ -12804,8 +12810,8 @@ instruct loadBarrierWeakSlowRegXmmAndYmm(rRegP dst, memory mem, rFlagsReg cr,
                                           rxmm8 x8, rxmm9 x9, rxmm10 x10, rxmm11 x11,
                                           rxmm12 x12, rxmm13 x13, rxmm14 x14, rxmm15 x15) %{
  
@@ -199,7 +159,7 @@ index 9d9eda84b..97c396875 100644
  
    effect(DEF dst, KILL cr,
           KILL x0, KILL x1, KILL x2, KILL x3,
-@@ -12808,8 +12814,8 @@ instruct loadBarrierWeakSlowRegZmm(rRegP dst, memory mem, rFlagsReg cr,
+@@ -12843,8 +12849,8 @@ instruct loadBarrierWeakSlowRegZmm(rRegP dst, memory mem, rFlagsReg cr,
                                     rxmm24 x24, rxmm25 x25, rxmm26 x26, rxmm27 x27,
                                     rxmm28 x28, rxmm29 x29, rxmm30 x30, rxmm31 x31) %{
  
@@ -210,7 +170,7 @@ index 9d9eda84b..97c396875 100644
  
    effect(DEF dst, KILL cr,
           KILL x0, KILL x1, KILL x2, KILL x3,
-@@ -12840,6 +12846,61 @@ instruct loadBarrierWeakSlowRegZmm(rRegP dst, memory mem, rFlagsReg cr,
+@@ -12875,6 +12881,61 @@ instruct loadBarrierWeakSlowRegZmm(rRegP dst, memory mem, rFlagsReg cr,
    ins_pipe(pipe_slow);
  %}
  
@@ -273,7 +233,7 @@ index 9d9eda84b..97c396875 100644
  // This name is KNOWN by the ADLC and cannot be changed.
  // The ADLC forces a 'TypeRawPtr::BOTTOM' output type
 diff --git a/src/hotspot/share/adlc/formssel.cpp b/src/hotspot/share/adlc/formssel.cpp
-index 466880d19..2845cf6d8 100644
+index 3c02c51..ef704f4 100644
 --- a/src/hotspot/share/adlc/formssel.cpp
 +++ b/src/hotspot/share/adlc/formssel.cpp
 @@ -775,8 +775,9 @@ bool InstructForm::captures_bottom_type(FormDict &globals) const {
@@ -285,11 +245,11 @@ index 466880d19..2845cf6d8 100644
         !strcmp(_matrule->_rChild->_opType,"LoadBarrierSlowReg") ||
 -       !strcmp(_matrule->_rChild->_opType,"LoadBarrierWeakSlowReg") ||
  #endif
-        !strcmp(_matrule->_rChild->_opType,"CompareAndExchangeP") ||
-        !strcmp(_matrule->_rChild->_opType,"CompareAndExchangeN")))  return true;
-@@ -3503,10 +3504,12 @@ int MatchNode::needs_ideal_memory_edge(FormDict &globals) const {
-     "WeakCompareAndSwapB", "WeakCompareAndSwapS", "WeakCompareAndSwapI", "WeakCompareAndSwapL", "WeakCompareAndSwapP", "WeakCompareAndSwapN",
-     "CompareAndExchangeB", "CompareAndExchangeS", "CompareAndExchangeI", "CompareAndExchangeL", "CompareAndExchangeP", "CompareAndExchangeN",
+ #if INCLUDE_SHENANDOAHGC
+        !strcmp(_matrule->_rChild->_opType,"ShenandoahCompareAndExchangeP") ||
+@@ -3510,10 +3511,12 @@ int MatchNode::needs_ideal_memory_edge(FormDict &globals) const {
+     "ShenandoahCompareAndSwapN", "ShenandoahCompareAndSwapP", "ShenandoahWeakCompareAndSwapP", "ShenandoahWeakCompareAndSwapN", "ShenandoahCompareAndExchangeP", "ShenandoahCompareAndExchangeN",
+ #endif
      "StoreCM",
 -    "ClearArray",
      "GetAndSetB", "GetAndSetS", "GetAndAddI", "GetAndSetI", "GetAndSetP",
@@ -303,7 +263,7 @@ index 466880d19..2845cf6d8 100644
    int cnt = sizeof(needs_ideal_memory_list)/sizeof(char*);
    if( strcmp(_opType,"PrefetchAllocation")==0 )
 diff --git a/src/hotspot/share/compiler/compilerDirectives.hpp b/src/hotspot/share/compiler/compilerDirectives.hpp
-index b4de7faed..8eba28f94 100644
+index b4de7fa..8eba28f 100644
 --- a/src/hotspot/share/compiler/compilerDirectives.hpp
 +++ b/src/hotspot/share/compiler/compilerDirectives.hpp
 @@ -67,7 +67,7 @@ NOT_PRODUCT(cflags(TraceOptoOutput,     bool, TraceOptoOutput, TraceOptoOutput))
@@ -316,7 +276,7 @@ index b4de7faed..8eba28f94 100644
    #define compilerdirectives_c2_flags(cflags)
  #endif
 diff --git a/src/hotspot/share/gc/shared/c2/barrierSetC2.hpp b/src/hotspot/share/gc/shared/c2/barrierSetC2.hpp
-index 8baf4d9de..eea74674f 100644
+index 8baf4d9..eea7467 100644
 --- a/src/hotspot/share/gc/shared/c2/barrierSetC2.hpp
 +++ b/src/hotspot/share/gc/shared/c2/barrierSetC2.hpp
 @@ -208,15 +208,17 @@ public:
@@ -339,7 +299,7 @@ index 8baf4d9de..eea74674f 100644
  
  #endif // SHARE_GC_SHARED_C2_BARRIERSETC2_HPP
 diff --git a/src/hotspot/share/gc/z/c2/zBarrierSetC2.cpp b/src/hotspot/share/gc/z/c2/zBarrierSetC2.cpp
-index 221ab4c2f..bf0bd43af 100644
+index 221ab4c..bf0bd43 100644
 --- a/src/hotspot/share/gc/z/c2/zBarrierSetC2.cpp
 +++ b/src/hotspot/share/gc/z/c2/zBarrierSetC2.cpp
 @@ -22,14 +22,21 @@
@@ -2331,7 +2291,7 @@ index 221ab4c2f..bf0bd43af 100644
 +  return true;
 +}
 diff --git a/src/hotspot/share/gc/z/c2/zBarrierSetC2.hpp b/src/hotspot/share/gc/z/c2/zBarrierSetC2.hpp
-index fc9dadd67..bef6a7048 100644
+index fc9dadd..bef6a70 100644
 --- a/src/hotspot/share/gc/z/c2/zBarrierSetC2.hpp
 +++ b/src/hotspot/share/gc/z/c2/zBarrierSetC2.hpp
 @@ -29,14 +29,33 @@
@@ -2525,7 +2485,7 @@ index fc9dadd67..bef6a7048 100644
  
  #endif // SHARE_GC_Z_C2_ZBARRIERSETC2_HPP
 diff --git a/src/hotspot/share/gc/z/zHeap.cpp b/src/hotspot/share/gc/z/zHeap.cpp
-index eb72707e0..62f97d2a2 100644
+index eb72707..62f97d2 100644
 --- a/src/hotspot/share/gc/z/zHeap.cpp
 +++ b/src/hotspot/share/gc/z/zHeap.cpp
 @@ -304,35 +304,9 @@ void ZHeap::mark_flush_and_free(Thread* thread) {
@@ -2565,7 +2525,7 @@ index eb72707e0..62f97d2a2 100644
    if (!_mark.end()) {
      // Marking not completed, continue concurrent mark
 diff --git a/src/hotspot/share/gc/z/z_globals.hpp b/src/hotspot/share/gc/z/z_globals.hpp
-index a75329372..9e0f8985b 100644
+index a753293..9e0f898 100644
 --- a/src/hotspot/share/gc/z/z_globals.hpp
 +++ b/src/hotspot/share/gc/z/z_globals.hpp
 @@ -94,9 +94,6 @@
@@ -2579,7 +2539,7 @@ index a75329372..9e0f8985b 100644
            "Verify that reference loads are followed by barriers")
  
 diff --git a/src/hotspot/share/opto/classes.hpp b/src/hotspot/share/opto/classes.hpp
-index 4314edd96..f6b588685 100644
+index 6b7050d..69f8a3c 100644
 --- a/src/hotspot/share/opto/classes.hpp
 +++ b/src/hotspot/share/opto/classes.hpp
 @@ -196,7 +196,10 @@ macro(LoadS)
@@ -2595,10 +2555,10 @@ index 4314edd96..f6b588685 100644
  macro(Loop)
  macro(LoopLimit)
 diff --git a/src/hotspot/share/opto/compile.cpp b/src/hotspot/share/opto/compile.cpp
-index dc92af402..ef4a6ab13 100644
+index 147ce88..45e2d11 100644
 --- a/src/hotspot/share/opto/compile.cpp
 +++ b/src/hotspot/share/opto/compile.cpp
-@@ -2207,8 +2207,8 @@ void Compile::Optimize() {
+@@ -2213,8 +2213,8 @@ void Compile::Optimize() {
  
  #endif
  
@@ -2608,7 +2568,7 @@ index dc92af402..ef4a6ab13 100644
    bs->verify_gc_barriers(true);
  #endif
  
-@@ -2380,12 +2380,6 @@ void Compile::Optimize() {
+@@ -2386,12 +2386,6 @@ void Compile::Optimize() {
      return;
    }
  
@@ -2621,7 +2581,7 @@ index dc92af402..ef4a6ab13 100644
    if (failing())  return;
  
    // Ensure that major progress is now clear
-@@ -2405,7 +2399,13 @@ void Compile::Optimize() {
+@@ -2411,7 +2405,13 @@ void Compile::Optimize() {
    }
  
  #ifdef ASSERT
@@ -2636,7 +2596,7 @@ index dc92af402..ef4a6ab13 100644
    bs->verify_gc_barriers(false);
  #endif
  
-@@ -2953,10 +2953,6 @@ void Compile::final_graph_reshaping_impl( Node *n, Final_Reshape_Counts &frc) {
+@@ -2980,10 +2980,6 @@ void Compile::final_graph_reshaping_impl( Node *n, Final_Reshape_Counts &frc) {
    case Op_LoadL_unaligned:
    case Op_LoadPLocked:
    case Op_LoadP:
@@ -2647,7 +2607,7 @@ index dc92af402..ef4a6ab13 100644
    case Op_LoadN:
    case Op_LoadRange:
    case Op_LoadS: {
-@@ -2973,6 +2969,29 @@ void Compile::final_graph_reshaping_impl( Node *n, Final_Reshape_Counts &frc) {
+@@ -3000,6 +2996,29 @@ void Compile::final_graph_reshaping_impl( Node *n, Final_Reshape_Counts &frc) {
      break;
    }
  
@@ -2678,7 +2638,7 @@ index dc92af402..ef4a6ab13 100644
      Node *addp = n->in(AddPNode::Address);
      assert( !addp->is_AddP() ||
 diff --git a/src/hotspot/share/opto/compile.hpp b/src/hotspot/share/opto/compile.hpp
-index a56439bbf..bfd85d032 100644
+index 04ced5d..320030e 100644
 --- a/src/hotspot/share/opto/compile.hpp
 +++ b/src/hotspot/share/opto/compile.hpp
 @@ -52,6 +52,7 @@ class C2Compiler;
@@ -2689,7 +2649,7 @@ index a56439bbf..bfd85d032 100644
  class InlineTree;
  class Int_Array;
  class LoadBarrierNode;
-@@ -655,6 +656,7 @@ class Compile : public Phase {
+@@ -659,6 +660,7 @@ class Compile : public Phase {
    void          set_inlining_incrementally(bool z) { _inlining_incrementally = z; }
    int               inlining_incrementally() const { return _inlining_incrementally; }
    void          set_major_progress()            { _major_progress++; }
@@ -2697,7 +2657,7 @@ index a56439bbf..bfd85d032 100644
    void        clear_major_progress()            { _major_progress = 0; }
    int               num_loop_opts() const       { return _num_loop_opts; }
    void          set_num_loop_opts(int n)        { _num_loop_opts = n; }
-@@ -744,7 +746,15 @@ class Compile : public Phase {
+@@ -748,7 +750,15 @@ class Compile : public Phase {
      C->_latest_stage_start_counter.stamp();
    }
  
@@ -2714,7 +2674,7 @@ index a56439bbf..bfd85d032 100644
      EventCompilerPhase event;
      if (event.should_commit()) {
        event.set_starttime(C->_latest_stage_start_counter);
-@@ -754,10 +764,15 @@ class Compile : public Phase {
+@@ -758,10 +768,15 @@ class Compile : public Phase {
        event.commit();
      }
  
@@ -2734,10 +2694,10 @@ index a56439bbf..bfd85d032 100644
  #endif
      C->_latest_stage_start_counter.stamp();
 diff --git a/src/hotspot/share/opto/escape.cpp b/src/hotspot/share/opto/escape.cpp
-index e0637ee47..235b31c4c 100644
+index b709058..cd0ef26 100644
 --- a/src/hotspot/share/opto/escape.cpp
 +++ b/src/hotspot/share/opto/escape.cpp
-@@ -453,10 +453,6 @@ void ConnectionGraph::add_node_to_connection_graph(Node *n, Unique_Node_List *de
+@@ -456,10 +456,6 @@ void ConnectionGraph::add_node_to_connection_graph(Node *n, Unique_Node_List *de
        break;
      }
      case Op_LoadP:
@@ -2748,7 +2708,7 @@ index e0637ee47..235b31c4c 100644
      case Op_LoadN:
      case Op_LoadPLocked: {
        add_objload_to_connection_graph(n, delayed_worklist);
-@@ -666,10 +662,6 @@ void ConnectionGraph::add_final_edges(Node *n) {
+@@ -696,10 +692,6 @@ void ConnectionGraph::add_final_edges(Node *n) {
        break;
      }
      case Op_LoadP:
@@ -2760,7 +2720,7 @@ index e0637ee47..235b31c4c 100644
      case Op_LoadPLocked: {
        // Using isa_ptr() instead of isa_oopptr() for LoadP and Phi because
 diff --git a/src/hotspot/share/opto/idealGraphPrinter.cpp b/src/hotspot/share/opto/idealGraphPrinter.cpp
-index d90f1d691..a07a51f3e 100644
+index d90f1d6..a07a51f 100644
 --- a/src/hotspot/share/opto/idealGraphPrinter.cpp
 +++ b/src/hotspot/share/opto/idealGraphPrinter.cpp
 @@ -350,14 +350,6 @@ void IdealGraphPrinter::end_method() {
@@ -2800,7 +2760,7 @@ index d90f1d691..a07a51f3e 100644
    // Warning, unsafe cast?
    _chaitin = (PhaseChaitin *)C->regalloc();
 diff --git a/src/hotspot/share/opto/idealGraphPrinter.hpp b/src/hotspot/share/opto/idealGraphPrinter.hpp
-index 2f4b9faf0..10dd02f9f 100644
+index 2f4b9fa..10dd02f 100644
 --- a/src/hotspot/share/opto/idealGraphPrinter.hpp
 +++ b/src/hotspot/share/opto/idealGraphPrinter.hpp
 @@ -81,10 +81,6 @@ class IdealGraphPrinter : public CHeapObj<mtCompiler> {
@@ -2846,7 +2806,7 @@ index 2f4b9faf0..10dd02f9f 100644
    void set_compile(Compile* compile) {C = compile; }
  };
 diff --git a/src/hotspot/share/opto/lcm.cpp b/src/hotspot/share/opto/lcm.cpp
-index 50c0c2dd3..05ec9fa9f 100644
+index 50c0c2d..05ec9fa 100644
 --- a/src/hotspot/share/opto/lcm.cpp
 +++ b/src/hotspot/share/opto/lcm.cpp
 @@ -170,7 +170,6 @@ void PhaseCFG::implicit_null_check(Block* block, Node *proj, Node *val, int allo
@@ -2858,10 +2818,10 @@ index 50c0c2dd3..05ec9fa9f 100644
      case Op_LoadS:
      case Op_LoadKlass:
 diff --git a/src/hotspot/share/opto/loopnode.cpp b/src/hotspot/share/opto/loopnode.cpp
-index 4103fa4bd..b0b7fe185 100644
+index 641c829..6aff3d5 100644
 --- a/src/hotspot/share/opto/loopnode.cpp
 +++ b/src/hotspot/share/opto/loopnode.cpp
-@@ -986,7 +986,7 @@ void LoopNode::verify_strip_mined(int expect_skeleton) const {
+@@ -990,7 +990,7 @@ void LoopNode::verify_strip_mined(int expect_skeleton) const {
          wq.push(u);
          bool found_sfpt = false;
          for (uint next = 0; next < wq.size() && !found_sfpt; next++) {
@@ -2870,7 +2830,7 @@ index 4103fa4bd..b0b7fe185 100644
            for (DUIterator_Fast imax, i = n->fast_outs(imax); i < imax && !found_sfpt; i++) {
              Node* u = n->fast_out(i);
              if (u == sfpt) {
-@@ -1000,6 +1000,19 @@ void LoopNode::verify_strip_mined(int expect_skeleton) const {
+@@ -1004,6 +1004,19 @@ void LoopNode::verify_strip_mined(int expect_skeleton) const {
          assert(found_sfpt, "no node in loop that's not input to safepoint");
        }
      }
@@ -2890,7 +2850,7 @@ index 4103fa4bd..b0b7fe185 100644
      CountedLoopEndNode* cle = inner_out->in(0)->as_CountedLoopEnd();
      assert(cle == inner->loopexit_or_null(), "mismatch");
      bool has_skeleton = outer_le->in(1)->bottom_type()->singleton() && outer_le->in(1)->bottom_type()->is_int()->get_con() == 0;
-@@ -2717,7 +2730,7 @@ bool PhaseIdealLoop::process_expensive_nodes() {
+@@ -2729,7 +2742,7 @@ bool PhaseIdealLoop::process_expensive_nodes() {
  //----------------------------build_and_optimize-------------------------------
  // Create a PhaseLoop.  Build the ideal Loop tree.  Map each Ideal Node to
  // its corresponding LoopNode.  If 'optimize' is true, do some loop cleanups.
@@ -2898,18 +2858,18 @@ index 4103fa4bd..b0b7fe185 100644
 +void PhaseIdealLoop::build_and_optimize(LoopOptsMode mode, bool z_barrier_insertion) {
    bool do_split_ifs = (mode == LoopOptsDefault || mode == LoopOptsLastRound);
    bool skip_loop_opts = (mode == LoopOptsNone);
- 
-@@ -2784,7 +2797,8 @@ void PhaseIdealLoop::build_and_optimize(LoopOptsMode mode) {
+ #if INCLUDE_SHENANDOAHGC
+@@ -2800,7 +2813,8 @@ void PhaseIdealLoop::build_and_optimize(LoopOptsMode mode) {
    }
  
    // Nothing to do, so get out
--  bool stop_early = !C->has_loops() && !skip_loop_opts && !do_split_ifs && !_verify_me && !_verify_only;
-+  bool stop_early = !C->has_loops() && !skip_loop_opts && !do_split_ifs && !_verify_me && !_verify_only &&
+-  bool stop_early = !C->has_loops() && !skip_loop_opts && !do_split_ifs && !_verify_me && !_verify_only SHENANDOAHGC_ONLY(&& !shenandoah_opts);
++  bool stop_early = !C->has_loops() && !skip_loop_opts && !do_split_ifs && !_verify_me && !_verify_only SHENANDOAHGC_ONLY(&& !shenandoah_opts) &&
 +    !z_barrier_insertion;
    bool do_expensive_nodes = C->should_optimize_expensive_nodes(_igvn);
    if (stop_early && !do_expensive_nodes) {
      _igvn.optimize();           // Cleanup NeverBranches
-@@ -2876,9 +2890,7 @@ void PhaseIdealLoop::build_and_optimize(LoopOptsMode mode) {
+@@ -2892,9 +2906,7 @@ void PhaseIdealLoop::build_and_optimize(LoopOptsMode mode) {
    build_loop_late( visited, worklist, nstack );
  
    if (_verify_only) {
@@ -2920,7 +2880,7 @@ index 4103fa4bd..b0b7fe185 100644
      assert(C->unique() == unique, "verification mode made Nodes? ? ?");
      assert(_igvn._worklist.size() == orig_worklist_size, "shouldn't push anything");
      return;
-@@ -2922,10 +2934,7 @@ void PhaseIdealLoop::build_and_optimize(LoopOptsMode mode) {
+@@ -2938,10 +2950,7 @@ void PhaseIdealLoop::build_and_optimize(LoopOptsMode mode) {
  
    if (skip_loop_opts) {
      // restore major progress flag
@@ -2932,9 +2892,9 @@ index 4103fa4bd..b0b7fe185 100644
      // Cleanup any modified bits
      _igvn.optimize();
  
-@@ -2935,6 +2944,16 @@ void PhaseIdealLoop::build_and_optimize(LoopOptsMode mode) {
-     return;
+@@ -2961,6 +2970,16 @@ void PhaseIdealLoop::build_and_optimize(LoopOptsMode mode) {
    }
+ #endif
  
 +  if(z_barrier_insertion) {
 +    BarrierSetC2* bs = BarrierSet::barrier_set()->barrier_set_c2();
@@ -2949,7 +2909,7 @@ index 4103fa4bd..b0b7fe185 100644
    if (ReassociateInvariants) {
      // Reassociate invariants and prep for split_thru_phi
      for (LoopTreeIterator iter(_ltree_root); !iter.done(); iter.next()) {
-@@ -3101,8 +3120,7 @@ void PhaseIdealLoop::verify() const {
+@@ -3127,8 +3146,7 @@ void PhaseIdealLoop::verify() const {
    _ltree_root->verify_tree(loop_verify._ltree_root, NULL);
    // Reset major-progress.  It was cleared by creating a verify version of
    // PhaseIdealLoop.
@@ -2959,7 +2919,7 @@ index 4103fa4bd..b0b7fe185 100644
  }
  
  //------------------------------verify_compare---------------------------------
-@@ -4225,7 +4243,6 @@ void PhaseIdealLoop::build_loop_late_post( Node *n ) {
+@@ -4256,7 +4274,6 @@ void PhaseIdealLoop::build_loop_late_post( Node *n ) {
      case Op_LoadS:
      case Op_LoadP:
      case Op_LoadBarrierSlowReg:
@@ -2968,10 +2928,10 @@ index 4103fa4bd..b0b7fe185 100644
      case Op_LoadRange:
      case Op_LoadD_unaligned:
 diff --git a/src/hotspot/share/opto/loopnode.hpp b/src/hotspot/share/opto/loopnode.hpp
-index 5efff246d..d2c50df70 100644
+index 7765ed9..53b9692 100644
 --- a/src/hotspot/share/opto/loopnode.hpp
 +++ b/src/hotspot/share/opto/loopnode.hpp
-@@ -929,7 +929,7 @@ public:
+@@ -936,7 +936,7 @@ public:
    }
  
    // build the loop tree and perform any requested optimizations
@@ -2980,7 +2940,7 @@ index 5efff246d..d2c50df70 100644
  
    // Dominators for the sea of nodes
    void Dominators();
-@@ -939,13 +939,13 @@ public:
+@@ -946,13 +946,13 @@ public:
    Node *dom_lca_internal( Node *n1, Node *n2 ) const;
  
    // Compute the Ideal Node to Loop mapping
@@ -2997,7 +2957,7 @@ index 5efff246d..d2c50df70 100644
  
    // Verify that verify_me made the same decisions as a fresh run.
 diff --git a/src/hotspot/share/opto/loopopts.cpp b/src/hotspot/share/opto/loopopts.cpp
-index 567069193..5793f51f2 100644
+index 5670691..5793f51 100644
 --- a/src/hotspot/share/opto/loopopts.cpp
 +++ b/src/hotspot/share/opto/loopopts.cpp
 @@ -1420,12 +1420,6 @@ void PhaseIdealLoop::split_if_with_blocks_post(Node *n, bool last_round) {
@@ -3014,10 +2974,10 @@ index 567069193..5793f51f2 100644
  
  //------------------------------split_if_with_blocks---------------------------
 diff --git a/src/hotspot/share/opto/matcher.cpp b/src/hotspot/share/opto/matcher.cpp
-index 1824c89cd..bdcf9c424 100644
+index 9437d37..45d2627 100644
 --- a/src/hotspot/share/opto/matcher.cpp
 +++ b/src/hotspot/share/opto/matcher.cpp
-@@ -2279,6 +2279,33 @@ void Matcher::find_shared( Node *n ) {
+@@ -2294,6 +2294,33 @@ void Matcher::find_shared( Node *n ) {
          n->del_req(LoadStoreConditionalNode::ExpectedIn);
          break;
        }
@@ -3052,10 +3012,10 @@ index 1824c89cd..bdcf9c424 100644
        case Op_CMoveF:
        case Op_CMoveI:
 diff --git a/src/hotspot/share/opto/memnode.cpp b/src/hotspot/share/opto/memnode.cpp
-index ea33eef95..cdaf7669c 100644
+index 6f88074..76e950c 100644
 --- a/src/hotspot/share/opto/memnode.cpp
 +++ b/src/hotspot/share/opto/memnode.cpp
-@@ -927,14 +927,6 @@ static bool skip_through_membars(Compile::AliasType* atp, const TypeInstPtr* tp,
+@@ -930,14 +930,6 @@ static bool skip_through_membars(Compile::AliasType* atp, const TypeInstPtr* tp,
  // a load node that reads from the source array so we may be able to
  // optimize out the ArrayCopy node later.
  Node* LoadNode::can_see_arraycopy_value(Node* st, PhaseGVN* phase) const {
@@ -3070,7 +3030,7 @@ index ea33eef95..cdaf7669c 100644
    Node* ld_adr = in(MemNode::Address);
    intptr_t ld_off = 0;
    AllocateNode* ld_alloc = AllocateNode::Ideal_allocation(ld_adr, phase, ld_off);
-@@ -2825,7 +2817,8 @@ const Type* SCMemProjNode::Value(PhaseGVN* phase) const
+@@ -2833,7 +2825,8 @@ const Type* SCMemProjNode::Value(PhaseGVN* phase) const
  LoadStoreNode::LoadStoreNode( Node *c, Node *mem, Node *adr, Node *val, const TypePtr* at, const Type* rt, uint required )
    : Node(required),
      _type(rt),
@@ -3080,7 +3040,7 @@ index ea33eef95..cdaf7669c 100644
  {
    init_req(MemNode::Control, c  );
    init_req(MemNode::Memory , mem);
-@@ -3119,16 +3112,6 @@ Node *MemBarNode::Ideal(PhaseGVN *phase, bool can_reshape) {
+@@ -3127,16 +3120,6 @@ Node *MemBarNode::Ideal(PhaseGVN *phase, bool can_reshape) {
      return NULL;
    }
  
@@ -3098,7 +3058,7 @@ index ea33eef95..cdaf7669c 100644
    // Eliminate volatile MemBars for scalar replaced objects.
    if (can_reshape && req() == (Precedent+1)) {
 diff --git a/src/hotspot/share/opto/memnode.hpp b/src/hotspot/share/opto/memnode.hpp
-index 529075761..e2bd6a6d8 100644
+index 5290757..e2bd6a6 100644
 --- a/src/hotspot/share/opto/memnode.hpp
 +++ b/src/hotspot/share/opto/memnode.hpp
 @@ -182,6 +182,8 @@ private:
@@ -3148,7 +3108,7 @@ index 529075761..e2bd6a6d8 100644
  
  class LoadStoreConditionalNode : public LoadStoreNode {
 diff --git a/src/hotspot/share/opto/node.cpp b/src/hotspot/share/opto/node.cpp
-index a7d26152e..9bfc3a3b9 100644
+index 7d12e97..bb020c4 100644
 --- a/src/hotspot/share/opto/node.cpp
 +++ b/src/hotspot/share/opto/node.cpp
 @@ -546,6 +546,9 @@ Node *Node::clone() const {
@@ -3180,7 +3140,7 @@ index a7d26152e..9bfc3a3b9 100644
  
  
 diff --git a/src/hotspot/share/opto/node.hpp b/src/hotspot/share/opto/node.hpp
-index 608aa0c8f..49f415a31 100644
+index b5c6168..a4c5fd8 100644
 --- a/src/hotspot/share/opto/node.hpp
 +++ b/src/hotspot/share/opto/node.hpp
 @@ -84,8 +84,8 @@ class JumpProjNode;
@@ -3193,7 +3153,7 @@ index 608aa0c8f..49f415a31 100644
  class LockNode;
  class LoopNode;
  class MachBranchNode;
-@@ -691,8 +691,7 @@ public:
+@@ -696,8 +696,7 @@ public:
      DEFINE_CLASS_ID(Mem,   Node, 4)
        DEFINE_CLASS_ID(Load,  Mem, 0)
          DEFINE_CLASS_ID(LoadVector,  Load, 0)
@@ -3203,7 +3163,7 @@ index 608aa0c8f..49f415a31 100644
        DEFINE_CLASS_ID(Store, Mem, 1)
          DEFINE_CLASS_ID(StoreVector, Store, 0)
        DEFINE_CLASS_ID(LoadStore, Mem, 2)
-@@ -834,9 +833,9 @@ public:
+@@ -839,9 +838,9 @@ public:
    DEFINE_CLASS_QUERY(JumpProj)
    DEFINE_CLASS_QUERY(Load)
    DEFINE_CLASS_QUERY(LoadStore)
@@ -3215,7 +3175,7 @@ index 608aa0c8f..49f415a31 100644
    DEFINE_CLASS_QUERY(Loop)
    DEFINE_CLASS_QUERY(Mach)
 diff --git a/src/hotspot/share/opto/phaseX.cpp b/src/hotspot/share/opto/phaseX.cpp
-index 686e709c3..d1177a56e 100644
+index c65121d..07b8490 100644
 --- a/src/hotspot/share/opto/phaseX.cpp
 +++ b/src/hotspot/share/opto/phaseX.cpp
 @@ -947,9 +947,6 @@ PhaseIterGVN::PhaseIterGVN( PhaseGVN *gvn ) : PhaseGVN(gvn),
@@ -3229,12 +3189,12 @@ index 686e709c3..d1177a56e 100644
  
  /**
 diff --git a/src/hotspot/share/opto/phasetype.hpp b/src/hotspot/share/opto/phasetype.hpp
-index f0eac0b0b..b01b7630f 100644
+index 2f0b6ae..100db17 100644
 --- a/src/hotspot/share/opto/phasetype.hpp
 +++ b/src/hotspot/share/opto/phasetype.hpp
-@@ -53,6 +53,9 @@ enum CompilerPhaseType {
-   PHASE_INCREMENTAL_INLINE,
-   PHASE_INCREMENTAL_BOXING_INLINE,
+@@ -56,6 +56,9 @@ enum CompilerPhaseType {
+   PHASE_BEFORE_BARRIER_EXPAND,
+ #endif
    PHASE_BEFORE_MACRO_EXPANSION,
 +  PHASE_CALL_CATCH_CLEANUP,
 +  PHASE_INSERT_BARRIER,
@@ -3242,9 +3202,9 @@ index f0eac0b0b..b01b7630f 100644
    PHASE_END,
    PHASE_FAILURE,
  
-@@ -90,6 +93,9 @@ class CompilerPhaseTypeHelper {
-       case PHASE_INCREMENTAL_INLINE:         return "Incremental Inline";
-       case PHASE_INCREMENTAL_BOXING_INLINE:  return "Incremental Boxing Inline";
+@@ -96,6 +99,9 @@ class CompilerPhaseTypeHelper {
+       case PHASE_BEFORE_BARRIER_EXPAND:      return "Before Barrier Expand";
+ #endif
        case PHASE_BEFORE_MACRO_EXPANSION:     return "Before macro expansion";
 +      case PHASE_CALL_CATCH_CLEANUP:         return "Call catch cleanup";
 +      case PHASE_INSERT_BARRIER:             return "Insert barrier";
@@ -3253,10 +3213,10 @@ index f0eac0b0b..b01b7630f 100644
        case PHASE_FAILURE:                    return "Failure";
        default:
 diff --git a/src/hotspot/share/opto/vectornode.cpp b/src/hotspot/share/opto/vectornode.cpp
-index 593baf972..b40587ba5 100644
+index d85b57b..0258db3 100644
 --- a/src/hotspot/share/opto/vectornode.cpp
 +++ b/src/hotspot/share/opto/vectornode.cpp
-@@ -253,7 +253,6 @@ void VectorNode::vector_operands(Node* n, uint* start, uint* end) {
+@@ -265,7 +265,6 @@ void VectorNode::vector_operands(Node* n, uint* start, uint* end) {
    case Op_LoadF:   case Op_LoadD:
    case Op_LoadP:   case Op_LoadN:
    case Op_LoadBarrierSlowReg:
@@ -3265,26 +3225,24 @@ index 593baf972..b40587ba5 100644
      *end   = 0; // no vector operands
      break;
 diff --git a/src/hotspot/share/runtime/stackValue.cpp b/src/hotspot/share/runtime/stackValue.cpp
-index e7a122ce1..3573555c8 100644
+index acc8726..cab1de7 100644
 --- a/src/hotspot/share/runtime/stackValue.cpp
 +++ b/src/hotspot/share/runtime/stackValue.cpp
-@@ -122,13 +122,7 @@ StackValue* StackValue::create_stack_value(const frame* fr, const RegisterMap* r
-          val = (oop)NULL;
+@@ -139,11 +139,7 @@ StackValue* StackValue::create_stack_value(const frame* fr, const RegisterMap* r
        }
  #endif
--#if INCLUDE_ZGC
--      // Deoptimization must make sure all oop have passed load barrier
--      if (UseZGC) {
--        val = ZBarrier::load_barrier_on_oop_field_preloaded((oop*)value_addr, val);
+ 
+-#if INCLUDE_SHENANDOAHGC
+-      if (UseShenandoahGC) {
+-        val = ShenandoahBarrierSet::barrier_set()->load_reference_barrier(val);
 -      }
 -#endif
--
 +      assert(oopDesc::is_oop_or_null(val, false), "bad oop found");
        Handle h(Thread::current(), val); // Wrap a handle around the oop
        return new StackValue(h);
      }
 diff --git a/src/hotspot/share/utilities/growableArray.hpp b/src/hotspot/share/utilities/growableArray.hpp
-index f37d94a05..6c84180a6 100644
+index f37d94a..6c84180 100644
 --- a/src/hotspot/share/utilities/growableArray.hpp
 +++ b/src/hotspot/share/utilities/growableArray.hpp
 @@ -152,6 +152,12 @@ class GenericGrowableArray : public ResourceObj {
@@ -3338,6 +3296,3 @@ index f37d94a05..6c84180a6 100644
  };
  
  // Global GrowableArray methods (one instance in the library per each 'E' type).
--- 
-2.19.1
-
