@@ -1,15 +1,5 @@
-From b61b8df19a63354db26efb582e84bc276c076e3a Mon Sep 17 00:00:00 2001
-Date: Wed, 5 Feb 2020 17:26:06 +0800
-Subject: [PATCH] 8230565: ZGC: Redesign C2 load barrier to expand on the
- MachNode level
-
-Summary: <gc>: <expand C2 load barrier in load instruction avoid safepoint between load and load barrier>
-LLT: jtreg
-Bug url: https://bugs.openjdk.java.net/browse/JDK-8230565
----
-
 diff --git a/src/hotspot/cpu/aarch64/aarch64.ad b/src/hotspot/cpu/aarch64/aarch64.ad
-index d64566b81..b6e5d7267 100644
+index af3e593..05b36e2 100644
 --- a/src/hotspot/cpu/aarch64/aarch64.ad
 +++ b/src/hotspot/cpu/aarch64/aarch64.ad
 @@ -1131,6 +1131,7 @@ definitions %{
@@ -20,7 +10,7 @@ index d64566b81..b6e5d7267 100644
  
  %}
  
-@@ -2497,17 +2498,7 @@ void Compile::reshape_address(AddPNode* addp) {
+@@ -2501,17 +2502,7 @@ void Compile::reshape_address(AddPNode* addp) {
      __ INSN(REG, as_Register(BASE));                                    \
    }
  
@@ -39,7 +29,7 @@ index d64566b81..b6e5d7267 100644
    {
      Address::extend scale;
  
-@@ -2526,16 +2517,33 @@ typedef void (MacroAssembler::* mem_vector_insn)(FloatRegister Rt,
+@@ -2530,16 +2521,33 @@ typedef void (MacroAssembler::* mem_vector_insn)(FloatRegister Rt,
      }
  
      if (index == -1) {
@@ -77,7 +67,7 @@ index d64566b81..b6e5d7267 100644
    {
      Address::extend scale;
  
-@@ -2557,8 +2565,8 @@ typedef void (MacroAssembler::* mem_vector_insn)(FloatRegister Rt,
+@@ -2561,8 +2569,8 @@ typedef void (MacroAssembler::* mem_vector_insn)(FloatRegister Rt,
    }
  
    static void loadStore(MacroAssembler masm, mem_vector_insn insn,
@@ -88,7 +78,7 @@ index d64566b81..b6e5d7267 100644
    {
      if (index == -1) {
        (masm.*insn)(reg, T, Address(base, disp));
-@@ -3793,7 +3801,7 @@ frame %{
+@@ -3797,7 +3805,7 @@ frame %{
      static const int hi[Op_RegL + 1] = { // enum name
        0,                                 // Op_Node
        0,                                 // Op_Set
@@ -97,7 +87,7 @@ index d64566b81..b6e5d7267 100644
        OptoReg::Bad,                      // Op_RegI
        R0_H_num,                          // Op_RegP
        OptoReg::Bad,                      // Op_RegF
-@@ -6923,7 +6931,7 @@ instruct loadRange(iRegINoSp dst, memory mem)
+@@ -6929,7 +6937,7 @@ instruct loadRange(iRegINoSp dst, memory mem)
  instruct loadP(iRegPNoSp dst, memory mem)
  %{
    match(Set dst (LoadP mem));
@@ -106,7 +96,7 @@ index d64566b81..b6e5d7267 100644
  
    ins_cost(4 * INSN_COST);
    format %{ "ldr  $dst, $mem\t# ptr" %}
-@@ -7616,6 +7624,7 @@ instruct loadL_volatile(iRegLNoSp dst, /* sync_memory*/indirect mem)
+@@ -7622,6 +7630,7 @@ instruct loadL_volatile(iRegLNoSp dst, /* sync_memory*/indirect mem)
  instruct loadP_volatile(iRegPNoSp dst, /* sync_memory*/indirect mem)
  %{
    match(Set dst (LoadP mem));
@@ -114,7 +104,7 @@ index d64566b81..b6e5d7267 100644
  
    ins_cost(VOLATILE_REF_COST);
    format %{ "ldar  $dst, $mem\t# ptr" %}
-@@ -8500,6 +8509,7 @@ instruct compareAndSwapL(iRegINoSp res, indirect mem, iRegLNoSp oldval, iRegLNoS
+@@ -8506,6 +8515,7 @@ instruct compareAndSwapL(iRegINoSp res, indirect mem, iRegLNoSp oldval, iRegLNoS
  instruct compareAndSwapP(iRegINoSp res, indirect mem, iRegP oldval, iRegP newval, rFlagsReg cr) %{
  
    match(Set res (CompareAndSwapP mem (Binary oldval newval)));
@@ -122,7 +112,7 @@ index d64566b81..b6e5d7267 100644
    ins_cost(2 * VOLATILE_REF_COST);
  
    effect(KILL cr);
-@@ -8613,7 +8623,7 @@ instruct compareAndSwapLAcq(iRegINoSp res, indirect mem, iRegLNoSp oldval, iRegL
+@@ -8619,7 +8629,7 @@ instruct compareAndSwapLAcq(iRegINoSp res, indirect mem, iRegLNoSp oldval, iRegL
  
  instruct compareAndSwapPAcq(iRegINoSp res, indirect mem, iRegP oldval, iRegP newval, rFlagsReg cr) %{
  
@@ -131,7 +121,7 @@ index d64566b81..b6e5d7267 100644
    match(Set res (CompareAndSwapP mem (Binary oldval newval)));
    ins_cost(VOLATILE_REF_COST);
  
-@@ -8744,6 +8754,7 @@ instruct compareAndExchangeN(iRegNNoSp res, indirect mem, iRegN oldval, iRegN ne
+@@ -8750,6 +8760,7 @@ instruct compareAndExchangeN(iRegNNoSp res, indirect mem, iRegN oldval, iRegN ne
  %}
  
  instruct compareAndExchangeP(iRegPNoSp res, indirect mem, iRegP oldval, iRegP newval, rFlagsReg cr) %{
@@ -139,7 +129,7 @@ index d64566b81..b6e5d7267 100644
    match(Set res (CompareAndExchangeP mem (Binary oldval newval)));
    ins_cost(2 * VOLATILE_REF_COST);
    effect(TEMP_DEF res, KILL cr);
-@@ -8843,7 +8854,7 @@ instruct compareAndExchangeNAcq(iRegNNoSp res, indirect mem, iRegN oldval, iRegN
+@@ -8849,7 +8860,7 @@ instruct compareAndExchangeNAcq(iRegNNoSp res, indirect mem, iRegN oldval, iRegN
  %}
  
  instruct compareAndExchangePAcq(iRegPNoSp res, indirect mem, iRegP oldval, iRegP newval, rFlagsReg cr) %{
@@ -148,7 +138,7 @@ index d64566b81..b6e5d7267 100644
    match(Set res (CompareAndExchangeP mem (Binary oldval newval)));
    ins_cost(VOLATILE_REF_COST);
    effect(TEMP_DEF res, KILL cr);
-@@ -8944,6 +8955,7 @@ instruct weakCompareAndSwapN(iRegINoSp res, indirect mem, iRegN oldval, iRegN ne
+@@ -8950,6 +8961,7 @@ instruct weakCompareAndSwapN(iRegINoSp res, indirect mem, iRegN oldval, iRegN ne
  %}
  
  instruct weakCompareAndSwapP(iRegINoSp res, indirect mem, iRegP oldval, iRegP newval, rFlagsReg cr) %{
@@ -156,7 +146,7 @@ index d64566b81..b6e5d7267 100644
    match(Set res (WeakCompareAndSwapP mem (Binary oldval newval)));
    ins_cost(2 * VOLATILE_REF_COST);
    effect(KILL cr);
-@@ -9051,8 +9063,8 @@ instruct weakCompareAndSwapNAcq(iRegINoSp res, indirect mem, iRegN oldval, iRegN
+@@ -9057,8 +9069,8 @@ instruct weakCompareAndSwapNAcq(iRegINoSp res, indirect mem, iRegN oldval, iRegN
  %}
  
  instruct weakCompareAndSwapPAcq(iRegINoSp res, indirect mem, iRegP oldval, iRegP newval, rFlagsReg cr) %{
@@ -166,7 +156,7 @@ index d64566b81..b6e5d7267 100644
    ins_cost(VOLATILE_REF_COST);
    effect(KILL cr);
    format %{
-@@ -9102,6 +9114,7 @@ instruct get_and_setN(indirect mem, iRegN newv, iRegINoSp prev) %{
+@@ -9108,6 +9120,7 @@ instruct get_and_setN(indirect mem, iRegN newv, iRegINoSp prev) %{
  %}
  
  instruct get_and_setP(indirect mem, iRegP newv, iRegPNoSp prev) %{
@@ -174,7 +164,7 @@ index d64566b81..b6e5d7267 100644
    match(Set prev (GetAndSetP mem newv));
    ins_cost(2 * VOLATILE_REF_COST);
    format %{ "atomic_xchg  $prev, $newv, [$mem]" %}
-@@ -9145,7 +9158,7 @@ instruct get_and_setNAcq(indirect mem, iRegN newv, iRegINoSp prev) %{
+@@ -9151,7 +9164,7 @@ instruct get_and_setNAcq(indirect mem, iRegN newv, iRegINoSp prev) %{
  %}
  
  instruct get_and_setPAcq(indirect mem, iRegP newv, iRegPNoSp prev) %{
@@ -183,7 +173,7 @@ index d64566b81..b6e5d7267 100644
    match(Set prev (GetAndSetP mem newv));
    ins_cost(VOLATILE_REF_COST);
    format %{ "atomic_xchg_acq  $prev, $newv, [$mem]" %}
-@@ -17465,145 +17478,238 @@ instruct vsrl2L_imm(vecX dst, vecX src, immI shift) %{
+@@ -17477,145 +17490,238 @@ instruct vsrl2L_imm(vecX dst, vecX src, immI shift) %{
  
  source %{
  
@@ -528,7 +518,7 @@ index d64566b81..b6e5d7267 100644
    ins_pipe(pipe_serial);
  %}
 diff --git a/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp
-index 8e169ace4..787c0c1af 100644
+index 8e169ac..787c0c1 100644
 --- a/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp
 +++ b/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp
 @@ -24,22 +24,23 @@
@@ -884,7 +874,7 @@ index 8e169ace4..787c0c1af 100644
 -}
 +#endif // COMPILER2
 diff --git a/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.hpp b/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.hpp
-index 7e8be01cc..cca873825 100644
+index 7e8be01..cca8738 100644
 --- a/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.hpp
 +++ b/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.hpp
 @@ -24,6 +24,12 @@
@@ -938,7 +928,7 @@ index 7e8be01cc..cca873825 100644
  
  #endif // CPU_AARCH64_GC_Z_ZBARRIERSETASSEMBLER_AARCH64_HPP
 diff --git a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
-index c0d093191..bd6ebb28b 100644
+index 279ff79..f9b2b3b 100644
 --- a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
 +++ b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
 @@ -2096,6 +2096,65 @@ int MacroAssembler::pop(unsigned int bitset, Register stack) {
@@ -1008,7 +998,7 @@ index c0d093191..bd6ebb28b 100644
  void MacroAssembler::verify_heapbase(const char* msg) {
  #if 0
 diff --git a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp
-index af8056be0..44497ea7c 100644
+index af8056b..44497ea 100644
 --- a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp
 +++ b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp
 @@ -440,12 +440,18 @@ private:
@@ -1031,7 +1021,7 @@ index af8056be0..44497ea7c 100644
    // runtime call except rscratch1 and rscratch2.  (They are always
    // scratch, so we don't have to protect them.)  Only save the lower
 diff --git a/src/hotspot/cpu/aarch64/register_aarch64.hpp b/src/hotspot/cpu/aarch64/register_aarch64.hpp
-index 8cda52a0a..5f7662c89 100644
+index 8cda52a..5f7662c 100644
 --- a/src/hotspot/cpu/aarch64/register_aarch64.hpp
 +++ b/src/hotspot/cpu/aarch64/register_aarch64.hpp
 @@ -230,6 +230,11 @@ public:
@@ -1047,22 +1037,22 @@ index 8cda52a0a..5f7662c89 100644
      return RegSet(r1);
    }
 diff --git a/src/hotspot/cpu/aarch64/templateInterpreterGenerator_aarch64.cpp b/src/hotspot/cpu/aarch64/templateInterpreterGenerator_aarch64.cpp
-index 2144a78f3..4ba3a6326 100644
+index c162024..6e4eb1a 100644
 --- a/src/hotspot/cpu/aarch64/templateInterpreterGenerator_aarch64.cpp
 +++ b/src/hotspot/cpu/aarch64/templateInterpreterGenerator_aarch64.cpp
-@@ -872,8 +872,8 @@ void TemplateInterpreterGenerator::generate_fixed_frame(bool native_call) {
+@@ -880,8 +880,8 @@ void TemplateInterpreterGenerator::generate_fixed_frame(bool native_call) {
+   } else
+ #endif
+   {
+-    __ load_mirror(rscratch1, rmethod);
+-    __ stp(rscratch1, zr, Address(sp, 4 * wordSize));
++    __ load_mirror(r10, rmethod);
++    __ stp(r10, zr, Address(sp, 4 * wordSize));
    }
  
-   // Get mirror and store it in the frame as GC root for this Method*
--  __ load_mirror(rscratch1, rmethod);
--  __ stp(rscratch1, zr, Address(sp, 4 * wordSize));
-+  __ load_mirror(r10, rmethod);
-+  __ stp(r10, zr, Address(sp, 4 * wordSize));
- 
    __ ldr(rcpool, Address(rmethod, Method::const_offset()));
-   __ ldr(rcpool, Address(rcpool, ConstMethod::constants_offset()));
 diff --git a/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp b/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp
-index 381211ecc..d88ecf7b8 100644
+index 381211e..d88ecf7 100644
 --- a/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp
 +++ b/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp
 @@ -27,16 +27,16 @@
@@ -1520,7 +1510,7 @@ index 381211ecc..d88ecf7b8 100644
 +
 +#endif // COMPILER2
 diff --git a/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.hpp b/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.hpp
-index 3687754e7..e433882a4 100644
+index 3687754..e433882 100644
 --- a/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.hpp
 +++ b/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.hpp
 @@ -24,6 +24,14 @@
@@ -1577,7 +1567,7 @@ index 3687754e7..e433882a4 100644
  
  #endif // CPU_X86_GC_Z_ZBARRIERSETASSEMBLER_X86_HPP
 diff --git a/src/hotspot/cpu/x86/x86.ad b/src/hotspot/cpu/x86/x86.ad
-index 1052ea6e3..e21074b4a 100644
+index 6eefe33..8fb9a3e 100644
 --- a/src/hotspot/cpu/x86/x86.ad
 +++ b/src/hotspot/cpu/x86/x86.ad
 @@ -1097,138 +1097,6 @@ reg_class vectorz_reg_legacy(XMM0,  XMM0b,  XMM0c,  XMM0d,  XMM0e,  XMM0f,  XMM0
@@ -1719,7 +1709,7 @@ index 1052ea6e3..e21074b4a 100644
  %}
  
  
-@@ -1735,8 +1603,8 @@ static int vec_mov_helper(CodeBuffer *cbuf, bool do_size, int src_lo, int dst_lo
+@@ -1775,8 +1643,8 @@ static int vec_mov_helper(CodeBuffer *cbuf, bool do_size, int src_lo, int dst_lo
    return (UseAVX > 2) ? 6 : 4;
  }
  
@@ -1731,7 +1721,7 @@ index 1052ea6e3..e21074b4a 100644
    // into scratch buffer is used to get size in 64-bit VM.
    LP64_ONLY( assert(!do_size, "this method calculates size only for 32-bit VM"); )
 diff --git a/src/hotspot/cpu/x86/x86_64.ad b/src/hotspot/cpu/x86/x86_64.ad
-index 84bed19aa..8b975311e 100644
+index e256e22..d127732 100644
 --- a/src/hotspot/cpu/x86/x86_64.ad
 +++ b/src/hotspot/cpu/x86/x86_64.ad
 @@ -541,6 +541,7 @@ reg_class int_rdi_reg(RDI);
@@ -1952,7 +1942,7 @@ index 84bed19aa..8b975311e 100644
    format %{ "XCHGQ  $newval,[$mem]" %}
    ins_encode %{
      __ xchgq($newval$$Register, $mem$$Address);
-@@ -11603,6 +11490,7 @@ instruct compP_rReg(rFlagsRegU cr, rRegP op1, rRegP op2)
+@@ -11649,6 +11536,7 @@ instruct compP_rReg(rFlagsRegU cr, rRegP op1, rRegP op2)
  instruct compP_rReg_mem(rFlagsRegU cr, rRegP op1, memory op2)
  %{
    match(Set cr (CmpP op1 (LoadP op2)));
@@ -1960,7 +1950,7 @@ index 84bed19aa..8b975311e 100644
  
    ins_cost(500); // XXX
    format %{ "cmpq    $op1, $op2\t# ptr" %}
-@@ -11628,7 +11516,8 @@ instruct compP_rReg_mem(rFlagsRegU cr, rRegP op1, memory op2)
+@@ -11674,7 +11562,8 @@ instruct compP_rReg_mem(rFlagsRegU cr, rRegP op1, memory op2)
  // and raw pointers have no anti-dependencies.
  instruct compP_mem_rReg(rFlagsRegU cr, rRegP op1, memory op2)
  %{
@@ -1970,7 +1960,7 @@ index 84bed19aa..8b975311e 100644
    match(Set cr (CmpP op1 (LoadP op2)));
  
    format %{ "cmpq    $op1, $op2\t# raw ptr" %}
-@@ -11653,7 +11542,8 @@ instruct testP_reg(rFlagsReg cr, rRegP src, immP0 zero)
+@@ -11699,7 +11588,8 @@ instruct testP_reg(rFlagsReg cr, rRegP src, immP0 zero)
  // any compare to a zero should be eq/neq.
  instruct testP_mem(rFlagsReg cr, memory op, immP0 zero)
  %{
@@ -1980,7 +1970,7 @@ index 84bed19aa..8b975311e 100644
    match(Set cr (CmpP (LoadP op) zero));
  
    ins_cost(500); // XXX
-@@ -11666,7 +11556,9 @@ instruct testP_mem(rFlagsReg cr, memory op, immP0 zero)
+@@ -11712,7 +11602,9 @@ instruct testP_mem(rFlagsReg cr, memory op, immP0 zero)
  
  instruct testP_mem_reg0(rFlagsReg cr, memory mem, immP0 zero)
  %{
@@ -1991,7 +1981,7 @@ index 84bed19aa..8b975311e 100644
    match(Set cr (CmpP (LoadP mem) zero));
  
    format %{ "cmpq    R12, $mem\t# ptr (R12_heapbase==0)" %}
-@@ -12621,274 +12513,126 @@ instruct RethrowException()
+@@ -12667,274 +12559,126 @@ instruct RethrowException()
  // Execute ZGC load barrier (strong) slow path
  //
  
@@ -2356,7 +2346,7 @@ index 84bed19aa..8b975311e 100644
  // ============================================================================
  // This name is KNOWN by the ADLC and cannot be changed.
 diff --git a/src/hotspot/share/adlc/formssel.cpp b/src/hotspot/share/adlc/formssel.cpp
-index 2845cf6d8..c41ac52c7 100644
+index ef704f4..5ba1fdc 100644
 --- a/src/hotspot/share/adlc/formssel.cpp
 +++ b/src/hotspot/share/adlc/formssel.cpp
 @@ -774,11 +774,6 @@ bool InstructForm::captures_bottom_type(FormDict &globals) const {
@@ -2368,10 +2358,10 @@ index 2845cf6d8..c41ac52c7 100644
 -       !strcmp(_matrule->_rChild->_opType,"ZCompareAndExchangeP") ||
 -       !strcmp(_matrule->_rChild->_opType,"LoadBarrierSlowReg") ||
 -#endif
-        !strcmp(_matrule->_rChild->_opType,"CompareAndExchangeP") ||
-        !strcmp(_matrule->_rChild->_opType,"CompareAndExchangeN")))  return true;
-   else if ( is_ideal_load() == Form::idealP )                return true;
-@@ -3506,9 +3501,6 @@ int MatchNode::needs_ideal_memory_edge(FormDict &globals) const {
+ #if INCLUDE_SHENANDOAHGC
+        !strcmp(_matrule->_rChild->_opType,"ShenandoahCompareAndExchangeP") ||
+        !strcmp(_matrule->_rChild->_opType,"ShenandoahCompareAndExchangeN") ||
+@@ -3513,9 +3508,6 @@ int MatchNode::needs_ideal_memory_edge(FormDict &globals) const {
      "StoreCM",
      "GetAndSetB", "GetAndSetS", "GetAndAddI", "GetAndSetI", "GetAndSetP",
      "GetAndAddB", "GetAndAddS", "GetAndAddL", "GetAndSetL", "GetAndSetN",
@@ -2382,7 +2372,7 @@ index 2845cf6d8..c41ac52c7 100644
    };
    int cnt = sizeof(needs_ideal_memory_list)/sizeof(char*);
 diff --git a/src/hotspot/share/compiler/compilerDirectives.hpp b/src/hotspot/share/compiler/compilerDirectives.hpp
-index 8eba28f94..b20cd73d9 100644
+index 8eba28f..b20cd73 100644
 --- a/src/hotspot/share/compiler/compilerDirectives.hpp
 +++ b/src/hotspot/share/compiler/compilerDirectives.hpp
 @@ -66,8 +66,7 @@ NOT_PRODUCT(cflags(TraceOptoOutput,     bool, TraceOptoOutput, TraceOptoOutput))
@@ -2396,7 +2386,7 @@ index 8eba28f94..b20cd73d9 100644
    #define compilerdirectives_c2_flags(cflags)
  #endif
 diff --git a/src/hotspot/share/gc/shared/c2/barrierSetC2.hpp b/src/hotspot/share/gc/shared/c2/barrierSetC2.hpp
-index eea74674f..487988bd8 100644
+index eea7467..487988b 100644
 --- a/src/hotspot/share/gc/shared/c2/barrierSetC2.hpp
 +++ b/src/hotspot/share/gc/shared/c2/barrierSetC2.hpp
 @@ -198,7 +198,7 @@ public:
@@ -2426,7 +2416,7 @@ index eea74674f..487988bd8 100644
  
  #endif // SHARE_GC_SHARED_C2_BARRIERSETC2_HPP
 diff --git a/src/hotspot/share/gc/z/c2/zBarrierSetC2.cpp b/src/hotspot/share/gc/z/c2/zBarrierSetC2.cpp
-index bf0bd43af..a12973464 100644
+index bf0bd43..a129734 100644
 --- a/src/hotspot/share/gc/z/c2/zBarrierSetC2.cpp
 +++ b/src/hotspot/share/gc/z/c2/zBarrierSetC2.cpp
 @@ -22,443 +22,156 @@
@@ -4216,7 +4206,7 @@ index bf0bd43af..a12973464 100644
 -  return true;
  }
 diff --git a/src/hotspot/share/gc/z/c2/zBarrierSetC2.hpp b/src/hotspot/share/gc/z/c2/zBarrierSetC2.hpp
-index bef6a7048..accae1f72 100644
+index bef6a70..accae1f 100644
 --- a/src/hotspot/share/gc/z/c2/zBarrierSetC2.hpp
 +++ b/src/hotspot/share/gc/z/c2/zBarrierSetC2.hpp
 @@ -29,134 +29,38 @@
@@ -4423,7 +4413,7 @@ index bef6a7048..accae1f72 100644
  
  #endif // SHARE_GC_Z_C2_ZBARRIERSETC2_HPP
 diff --git a/src/hotspot/share/gc/z/zBarrierSetAssembler.hpp b/src/hotspot/share/gc/z/zBarrierSetAssembler.hpp
-index 52133c073..9d07f9e8c 100644
+index 52133c0..9d07f9e 100644
 --- a/src/hotspot/share/gc/z/zBarrierSetAssembler.hpp
 +++ b/src/hotspot/share/gc/z/zBarrierSetAssembler.hpp
 @@ -1,5 +1,5 @@
@@ -4445,7 +4435,7 @@ index 52133c073..9d07f9e8c 100644
  
  class ZBarrierSetAssemblerBase : public BarrierSetAssembler {
 diff --git a/src/hotspot/share/opto/classes.cpp b/src/hotspot/share/opto/classes.cpp
-index e8ac3a61d..eec705013 100644
+index 75f070f..d1282ac 100644
 --- a/src/hotspot/share/opto/classes.cpp
 +++ b/src/hotspot/share/opto/classes.cpp
 @@ -48,9 +48,6 @@
@@ -4455,14 +4445,14 @@ index e8ac3a61d..eec705013 100644
 -#if INCLUDE_ZGC
 -#include "gc/z/c2/zBarrierSetC2.hpp"
 -#endif
- 
- // ----------------------------------------------------------------------------
- // Build a table of virtual functions to map from Nodes to dense integer
+ #if INCLUDE_SHENANDOAHGC
+ #include "gc/shenandoah/c2/shenandoahBarrierSetC2.hpp"
+ #endif
 diff --git a/src/hotspot/share/opto/classes.hpp b/src/hotspot/share/opto/classes.hpp
-index cdca7e7c0..da01e4811 100644
+index 69f8a3c..5ee23f7 100644
 --- a/src/hotspot/share/opto/classes.hpp
 +++ b/src/hotspot/share/opto/classes.hpp
-@@ -188,17 +188,6 @@ macro(LoadP)
+@@ -189,17 +189,6 @@ macro(LoadP)
  macro(LoadN)
  macro(LoadRange)
  macro(LoadS)
@@ -4481,7 +4471,7 @@ index cdca7e7c0..da01e4811 100644
  macro(Loop)
  macro(LoopLimit)
 diff --git a/src/hotspot/share/opto/compile.cpp b/src/hotspot/share/opto/compile.cpp
-index ef4a6ab13..b6980c4e7 100644
+index 45e2d11..e5559a2 100644
 --- a/src/hotspot/share/opto/compile.cpp
 +++ b/src/hotspot/share/opto/compile.cpp
 @@ -79,9 +79,6 @@
@@ -4491,10 +4481,10 @@ index ef4a6ab13..b6980c4e7 100644
 -#if INCLUDE_ZGC
 -#include "gc/z/c2/zBarrierSetC2.hpp"
 -#endif
- 
- 
- // -------------------- Compile::mach_constant_base_node -----------------------
-@@ -636,16 +633,12 @@ debug_only( int Compile::_debug_idx = 100000; )
+ #if INCLUDE_SHENANDOAHGC
+ #include "gc/shenandoah/c2/shenandoahBarrierSetC2.hpp"
+ #endif
+@@ -639,16 +636,12 @@ debug_only( int Compile::_debug_idx = 100000; )
  Compile::Compile( ciEnv* ci_env, C2Compiler* compiler, ciMethod* target, int osr_bci,
                    bool subsume_loads, bool do_escape_analysis, bool eliminate_boxing, DirectiveSet* directive)
                  : Phase(Compiler),
@@ -4511,7 +4501,7 @@ index ef4a6ab13..b6980c4e7 100644
                    _entry_bci(osr_bci),
                    _initial_gvn(NULL),
                    _for_igvn(NULL),
-@@ -665,8 +658,6 @@ Compile::Compile( ciEnv* ci_env, C2Compiler* compiler, ciMethod* target, int osr
+@@ -668,8 +661,6 @@ Compile::Compile( ciEnv* ci_env, C2Compiler* compiler, ciMethod* target, int osr
                    _inner_loops(0),
                    _scratch_const_size(-1),
                    _in_scratch_emit_size(false),
@@ -4520,7 +4510,7 @@ index ef4a6ab13..b6980c4e7 100644
  #ifndef PRODUCT
                    _trace_opto_output(directive->TraceOptoOutputOption),
                    _in_dump_cnt(0),
-@@ -674,9 +665,15 @@ Compile::Compile( ciEnv* ci_env, C2Compiler* compiler, ciMethod* target, int osr
+@@ -677,9 +668,15 @@ Compile::Compile( ciEnv* ci_env, C2Compiler* compiler, ciMethod* target, int osr
  #endif
                    _congraph(NULL),
                    _comp_arena(mtCompiler),
@@ -4536,7 +4526,7 @@ index ef4a6ab13..b6980c4e7 100644
                    _replay_inline_data(NULL),
                    _late_inlines(comp_arena(), 2, 0, NULL),
                    _string_late_inlines(comp_arena(), 2, 0, NULL),
-@@ -959,9 +956,6 @@ Compile::Compile( ciEnv* ci_env,
+@@ -962,9 +959,6 @@ Compile::Compile( ciEnv* ci_env,
                    bool return_pc,
                    DirectiveSet* directive)
    : Phase(Compiler),
@@ -4546,7 +4536,7 @@ index ef4a6ab13..b6980c4e7 100644
      _compile_id(0),
      _save_argument_registers(save_arg_registers),
      _method(NULL),
-@@ -991,6 +985,10 @@ Compile::Compile( ciEnv* ci_env,
+@@ -994,6 +988,10 @@ Compile::Compile( ciEnv* ci_env,
      _printer(NULL),
  #endif
      _comp_arena(mtCompiler),
@@ -4557,21 +4547,21 @@ index ef4a6ab13..b6980c4e7 100644
      _node_arena(mtCompiler),
      _old_arena(mtCompiler),
      _Compile_types(mtCompiler),
-@@ -2398,13 +2396,6 @@ void Compile::Optimize() {
-     igvn.optimize();
-   }
+@@ -2408,13 +2406,6 @@ void Compile::Optimize() {
+   bs->verify_gc_barriers(false);
+ #endif
  
+-  bs->barrier_insertion_phase(C, igvn);
+-  if (failing())  return;
+-
 -#ifdef ASSERT
 -  bs->verify_gc_barriers(false);
 -#endif
 -
--  bs->barrier_insertion_phase(C, igvn);
--  if (failing())  return;
--
- #ifdef ASSERT
-   bs->verify_gc_barriers(false);
- #endif
-@@ -2969,29 +2960,6 @@ void Compile::final_graph_reshaping_impl( Node *n, Final_Reshape_Counts &frc) {
+   {
+     TracePhase tp("macroExpand", &timers[_t_macroExpand]);
+     PhaseMacroExpand  mex(igvn);
+@@ -2996,29 +2987,6 @@ void Compile::final_graph_reshaping_impl( Node *n, Final_Reshape_Counts &frc) {
      break;
    }
  
@@ -4602,7 +4592,7 @@ index ef4a6ab13..b6980c4e7 100644
      Node *addp = n->in(AddPNode::Address);
      assert( !addp->is_AddP() ||
 diff --git a/src/hotspot/share/opto/compile.hpp b/src/hotspot/share/opto/compile.hpp
-index bfd85d032..a885d9f8d 100644
+index 320030e..1246b1b 100644
 --- a/src/hotspot/share/opto/compile.hpp
 +++ b/src/hotspot/share/opto/compile.hpp
 @@ -55,7 +55,6 @@ class ConnectionGraph;
@@ -4613,7 +4603,7 @@ index bfd85d032..a885d9f8d 100644
  class Matcher;
  class MachConstantNode;
  class MachConstantBaseNode;
-@@ -1181,11 +1180,7 @@ class Compile : public Phase {
+@@ -1185,11 +1184,7 @@ class Compile : public Phase {
    bool           in_scratch_emit_size() const   { return _in_scratch_emit_size;     }
  
    enum ScratchBufferBlob {
@@ -4625,7 +4615,7 @@ index bfd85d032..a885d9f8d 100644
      MAX_locs_size       = 128, // number of relocInfo elements
      MAX_const_size      = 128,
      MAX_stubs_size      = 128
-@@ -1260,14 +1255,30 @@ class Compile : public Phase {
+@@ -1264,14 +1259,30 @@ class Compile : public Phase {
    // Process an OopMap Element while emitting nodes
    void Process_OopMap_Node(MachNode *mach, int code_offset);
  
@@ -4659,10 +4649,10 @@ index bfd85d032..a885d9f8d 100644
    // Compute the size of first NumberOfLoopInstrToAlign instructions
    // at the head of a loop.
 diff --git a/src/hotspot/share/opto/escape.cpp b/src/hotspot/share/opto/escape.cpp
-index 235b31c4c..15d483f33 100644
+index cd0ef26..0a22c89 100644
 --- a/src/hotspot/share/opto/escape.cpp
 +++ b/src/hotspot/share/opto/escape.cpp
-@@ -487,13 +487,6 @@ void ConnectionGraph::add_node_to_connection_graph(Node *n, Unique_Node_List *de
+@@ -490,13 +490,6 @@ void ConnectionGraph::add_node_to_connection_graph(Node *n, Unique_Node_List *de
          add_local_var_and_edge(n, PointsToNode::NoEscape,
                                 n->in(0), delayed_worklist);
        }
@@ -4676,7 +4666,7 @@ index 235b31c4c..15d483f33 100644
        break;
      }
      case Op_Rethrow: // Exception object escapes
-@@ -701,14 +694,6 @@ void ConnectionGraph::add_final_edges(Node *n) {
+@@ -731,14 +724,6 @@ void ConnectionGraph::add_final_edges(Node *n) {
          add_local_var_and_edge(n, PointsToNode::NoEscape, n->in(0), NULL);
          break;
        }
@@ -4692,7 +4682,7 @@ index 235b31c4c..15d483f33 100644
      }
      case Op_Rethrow: // Exception object escapes
 diff --git a/src/hotspot/share/opto/lcm.cpp b/src/hotspot/share/opto/lcm.cpp
-index 05ec9fa9f..16b80bfc3 100644
+index 05ec9fa..16b80bf 100644
 --- a/src/hotspot/share/opto/lcm.cpp
 +++ b/src/hotspot/share/opto/lcm.cpp
 @@ -169,7 +169,6 @@ void PhaseCFG::implicit_null_check(Block* block, Node *proj, Node *val, int allo
@@ -4704,10 +4694,10 @@ index 05ec9fa9f..16b80bfc3 100644
      case Op_LoadS:
      case Op_LoadKlass:
 diff --git a/src/hotspot/share/opto/loopnode.cpp b/src/hotspot/share/opto/loopnode.cpp
-index 7c3033162..25fab93cf 100644
+index 6aff3d5..38f0449 100644
 --- a/src/hotspot/share/opto/loopnode.cpp
 +++ b/src/hotspot/share/opto/loopnode.cpp
-@@ -1001,18 +1001,6 @@ void LoopNode::verify_strip_mined(int expect_skeleton) const {
+@@ -1005,18 +1005,6 @@ void LoopNode::verify_strip_mined(int expect_skeleton) const {
        }
      }
  
@@ -4726,7 +4716,7 @@ index 7c3033162..25fab93cf 100644
      CountedLoopEndNode* cle = inner_out->in(0)->as_CountedLoopEnd();
      assert(cle == inner->loopexit_or_null(), "mismatch");
      bool has_skeleton = outer_le->in(1)->bottom_type()->singleton() && outer_le->in(1)->bottom_type()->is_int()->get_con() == 0;
-@@ -4250,7 +4238,6 @@ void PhaseIdealLoop::build_loop_late_post( Node *n ) {
+@@ -4273,7 +4261,6 @@ void PhaseIdealLoop::build_loop_late_post( Node *n ) {
      case Op_LoadL:
      case Op_LoadS:
      case Op_LoadP:
@@ -4735,7 +4725,7 @@ index 7c3033162..25fab93cf 100644
      case Op_LoadRange:
      case Op_LoadD_unaligned:
 diff --git a/src/hotspot/share/opto/loopopts.cpp b/src/hotspot/share/opto/loopopts.cpp
-index 5793f51f2..6b85529f4 100644
+index 5793f51..6b85529 100644
 --- a/src/hotspot/share/opto/loopopts.cpp
 +++ b/src/hotspot/share/opto/loopopts.cpp
 @@ -41,9 +41,6 @@
@@ -4749,7 +4739,7 @@ index 5793f51f2..6b85529f4 100644
  //=============================================================================
  //------------------------------split_thru_phi---------------------------------
 diff --git a/src/hotspot/share/opto/machnode.hpp b/src/hotspot/share/opto/machnode.hpp
-index 66adf9be1..90d5b0af1 100644
+index 66adf9b..90d5b0a 100644
 --- a/src/hotspot/share/opto/machnode.hpp
 +++ b/src/hotspot/share/opto/machnode.hpp
 @@ -197,7 +197,7 @@ public:
@@ -4783,7 +4773,7 @@ index 66adf9be1..90d5b0af1 100644
    // more leafs.  Must be set by MachNode constructor to point to an
    // internal array of MachOpers.  The MachOper array is sized by
 diff --git a/src/hotspot/share/opto/matcher.cpp b/src/hotspot/share/opto/matcher.cpp
-index 79b366fd5..41d92b3d0 100644
+index 45d2627..05fdab2 100644
 --- a/src/hotspot/share/opto/matcher.cpp
 +++ b/src/hotspot/share/opto/matcher.cpp
 @@ -1752,6 +1752,13 @@ MachNode *Matcher::ReduceInst( State *s, int rule, Node *&mem ) {
@@ -4818,7 +4808,7 @@ index 79b366fd5..41d92b3d0 100644
        default:
          if( n->is_Store() ) {
            // Do match stores, despite no ideal reg
-@@ -2286,33 +2282,6 @@ void Matcher::find_shared( Node *n ) {
+@@ -2294,33 +2290,6 @@ void Matcher::find_shared( Node *n ) {
          n->del_req(LoadStoreConditionalNode::ExpectedIn);
          break;
        }
@@ -4853,7 +4843,7 @@ index 79b366fd5..41d92b3d0 100644
        case Op_CMoveF:
        case Op_CMoveI:
 diff --git a/src/hotspot/share/opto/memnode.cpp b/src/hotspot/share/opto/memnode.cpp
-index 2de221a1e..4147c6d46 100644
+index 76e950c..028d1a9 100644
 --- a/src/hotspot/share/opto/memnode.cpp
 +++ b/src/hotspot/share/opto/memnode.cpp
 @@ -49,9 +49,6 @@
@@ -4863,10 +4853,10 @@ index 2de221a1e..4147c6d46 100644
 -#if INCLUDE_ZGC
 -#include "gc/z/c2/zBarrierSetC2.hpp"
 -#endif
- 
- // Portions of code courtesy of Clifford Click
- 
-@@ -2818,7 +2815,7 @@ LoadStoreNode::LoadStoreNode( Node *c, Node *mem, Node *adr, Node *val, const Ty
+ #if INCLUDE_SHENANDOAHGC
+ #include "gc/shenandoah/c2/shenandoahBarrierSetC2.hpp"
+ #endif
+@@ -2826,7 +2823,7 @@ LoadStoreNode::LoadStoreNode( Node *c, Node *mem, Node *adr, Node *val, const Ty
    : Node(required),
      _type(rt),
      _adr_type(at),
@@ -4876,7 +4866,7 @@ index 2de221a1e..4147c6d46 100644
    init_req(MemNode::Control, c  );
    init_req(MemNode::Memory , mem);
 diff --git a/src/hotspot/share/opto/memnode.hpp b/src/hotspot/share/opto/memnode.hpp
-index e2bd6a6d8..3bf3dc420 100644
+index e2bd6a6..3bf3dc4 100644
 --- a/src/hotspot/share/opto/memnode.hpp
 +++ b/src/hotspot/share/opto/memnode.hpp
 @@ -43,6 +43,8 @@ private:
@@ -5002,7 +4992,7 @@ index e2bd6a6d8..3bf3dc420 100644
  
  //------------------------------CompareAndSwapBNode---------------------------
 diff --git a/src/hotspot/share/opto/node.cpp b/src/hotspot/share/opto/node.cpp
-index 9bfc3a3b9..8d0475f53 100644
+index bb020c4..5a5e44e 100644
 --- a/src/hotspot/share/opto/node.cpp
 +++ b/src/hotspot/share/opto/node.cpp
 @@ -546,9 +546,6 @@ Node *Node::clone() const {
@@ -5027,7 +5017,7 @@ index 9bfc3a3b9..8d0475f53 100644
  }
  
 diff --git a/src/hotspot/share/opto/node.hpp b/src/hotspot/share/opto/node.hpp
-index d69974be2..cf0975e37 100644
+index a4c5fd8..2a42e99 100644
 --- a/src/hotspot/share/opto/node.hpp
 +++ b/src/hotspot/share/opto/node.hpp
 @@ -82,8 +82,6 @@ class JVMState;
@@ -5039,7 +5029,7 @@ index d69974be2..cf0975e37 100644
  class LoadStoreNode;
  class LoadStoreConditionalNode;
  class LockNode;
-@@ -641,7 +639,6 @@ public:
+@@ -644,7 +642,6 @@ public:
        DEFINE_CLASS_ID(MemBar,      Multi, 3)
          DEFINE_CLASS_ID(Initialize,       MemBar, 0)
          DEFINE_CLASS_ID(MemBarStoreStore, MemBar, 1)
@@ -5047,7 +5037,7 @@ index d69974be2..cf0975e37 100644
  
      DEFINE_CLASS_ID(Mach,  Node, 1)
        DEFINE_CLASS_ID(MachReturn, Mach, 0)
-@@ -690,7 +687,6 @@ public:
+@@ -696,7 +693,6 @@ public:
      DEFINE_CLASS_ID(Mem,   Node, 4)
        DEFINE_CLASS_ID(Load,  Mem, 0)
          DEFINE_CLASS_ID(LoadVector,  Load, 0)
@@ -5055,7 +5045,7 @@ index d69974be2..cf0975e37 100644
        DEFINE_CLASS_ID(Store, Mem, 1)
          DEFINE_CLASS_ID(StoreVector, Store, 0)
        DEFINE_CLASS_ID(LoadStore, Mem, 2)
-@@ -833,8 +829,6 @@ public:
+@@ -839,8 +835,6 @@ public:
    DEFINE_CLASS_QUERY(Load)
    DEFINE_CLASS_QUERY(LoadStore)
    DEFINE_CLASS_QUERY(LoadStoreConditional)
@@ -5065,19 +5055,19 @@ index d69974be2..cf0975e37 100644
    DEFINE_CLASS_QUERY(Loop)
    DEFINE_CLASS_QUERY(Mach)
 diff --git a/src/hotspot/share/opto/output.cpp b/src/hotspot/share/opto/output.cpp
-index b8f72ffca..4319f9fd1 100644
+index 3c02a6f..e3933f4 100644
 --- a/src/hotspot/share/opto/output.cpp
 +++ b/src/hotspot/share/opto/output.cpp
-@@ -31,6 +31,8 @@
- #include "compiler/compileBroker.hpp"
+@@ -32,6 +32,8 @@
  #include "compiler/compilerDirectives.hpp"
+ #include "compiler/disassembler.hpp"
  #include "compiler/oopMap.hpp"
 +#include "gc/shared/barrierSet.hpp"
 +#include "gc/shared/c2/barrierSetC2.hpp"
  #include "memory/allocation.inline.hpp"
  #include "opto/ad.hpp"
  #include "opto/callnode.hpp"
-@@ -114,35 +116,35 @@ void Compile::Output() {
+@@ -115,35 +117,35 @@ void Compile::Output() {
      }
    }
  
@@ -5134,7 +5124,7 @@ index b8f72ffca..4319f9fd1 100644
      return;
    }
  
-@@ -223,7 +225,7 @@ void Compile::compute_loop_first_inst_sizes() {
+@@ -224,7 +226,7 @@ void Compile::compute_loop_first_inst_sizes() {
  
  // The architecture description provides short branch variants for some long
  // branch instructions. Replace eligible long branches with short branches.
@@ -5143,7 +5133,7 @@ index b8f72ffca..4319f9fd1 100644
    // Compute size of each block, method size, and relocation information size
    uint nblocks  = _cfg->number_of_blocks();
  
-@@ -241,11 +243,11 @@ void Compile::shorten_branches(uint* blk_starts, int& code_size, int& reloc_size
+@@ -242,11 +244,11 @@ void Compile::shorten_branches(uint* blk_starts, int& code_size, int& reloc_size
    bool has_short_branch_candidate = false;
  
    // Initialize the sizes to 0
@@ -5158,7 +5148,7 @@ index b8f72ffca..4319f9fd1 100644
  
    // Make three passes.  The first computes pessimistic blk_starts,
    // relative jmp_offset and reloc_size information.  The second performs
-@@ -479,6 +481,10 @@ void Compile::shorten_branches(uint* blk_starts, int& code_size, int& reloc_size
+@@ -480,6 +482,10 @@ void Compile::shorten_branches(uint* blk_starts, int& code_size, int& reloc_size
    // a relocation index.
    // The CodeBuffer will expand the locs array if this estimate is too low.
    reloc_size *= 10 / sizeof(relocInfo);
@@ -5169,7 +5159,7 @@ index b8f72ffca..4319f9fd1 100644
  }
  
  //------------------------------FillLocArray-----------------------------------
-@@ -490,8 +496,8 @@ static LocationValue *new_loc_value( PhaseRegAlloc *ra, OptoReg::Name regnum, Lo
+@@ -491,8 +497,8 @@ static LocationValue *new_loc_value( PhaseRegAlloc *ra, OptoReg::Name regnum, Lo
    // This should never have accepted Bad before
    assert(OptoReg::is_valid(regnum), "location must be valid");
    return (OptoReg::is_reg(regnum))
@@ -5180,7 +5170,7 @@ index b8f72ffca..4319f9fd1 100644
  }
  
  
-@@ -610,12 +616,12 @@ void Compile::FillLocArray( int idx, MachSafePointNode* sfpt, Node *local,
+@@ -611,12 +617,12 @@ void Compile::FillLocArray( int idx, MachSafePointNode* sfpt, Node *local,
      }
  #endif //_LP64
      else if( (t->base() == Type::FloatBot || t->base() == Type::FloatCon) &&
@@ -5196,7 +5186,7 @@ index b8f72ffca..4319f9fd1 100644
      } else if( t->base() == Type::NarrowOop ) {
        array->append(new_loc_value( _regalloc, regnum, Location::narrowoop ));
      } else {
-@@ -626,48 +632,48 @@ void Compile::FillLocArray( int idx, MachSafePointNode* sfpt, Node *local,
+@@ -627,48 +633,48 @@ void Compile::FillLocArray( int idx, MachSafePointNode* sfpt, Node *local,
  
    // No register.  It must be constant data.
    switch (t->base()) {
@@ -5281,7 +5271,7 @@ index b8f72ffca..4319f9fd1 100644
      // The convention the interpreter uses is that the second local
      // holds the first raw word of the native double representation.
      // This is actually reasonable, since locals and stack arrays
-@@ -679,15 +685,15 @@ void Compile::FillLocArray( int idx, MachSafePointNode* sfpt, Node *local,
+@@ -680,15 +686,15 @@ void Compile::FillLocArray( int idx, MachSafePointNode* sfpt, Node *local,
      array->append(new ConstantIntValue(acc.words[1]));
      array->append(new ConstantIntValue(acc.words[0]));
  #endif
@@ -5304,7 +5294,7 @@ index b8f72ffca..4319f9fd1 100644
      // The convention the interpreter uses is that the second local
      // holds the first raw word of the native double representation.
      // This is actually reasonable, since locals and stack arrays
-@@ -699,14 +705,14 @@ void Compile::FillLocArray( int idx, MachSafePointNode* sfpt, Node *local,
+@@ -700,14 +706,14 @@ void Compile::FillLocArray( int idx, MachSafePointNode* sfpt, Node *local,
      array->append(new ConstantIntValue(acc.words[1]));
      array->append(new ConstantIntValue(acc.words[0]));
  #endif
@@ -5327,7 +5317,7 @@ index b8f72ffca..4319f9fd1 100644
    }
  }
  
-@@ -871,58 +877,58 @@ void Compile::Process_OopMap_Node(MachNode *mach, int current_offset) {
+@@ -872,58 +878,58 @@ void Compile::Process_OopMap_Node(MachNode *mach, int current_offset) {
  
  // A simplified version of Process_OopMap_Node, to handle non-safepoints.
  class NonSafepointEmitter {
@@ -5424,7 +5414,7 @@ index b8f72ffca..4319f9fd1 100644
  };
  
  void NonSafepointEmitter::emit_non_safepoint() {
-@@ -952,15 +958,11 @@ void NonSafepointEmitter::emit_non_safepoint() {
+@@ -953,15 +959,11 @@ void NonSafepointEmitter::emit_non_safepoint() {
  }
  
  //------------------------------init_buffer------------------------------------
@@ -5442,7 +5432,7 @@ index b8f72ffca..4319f9fd1 100644
    // The extra spacing after the code is necessary on some platforms.
    // Sometimes we need to patch in a jump after the last instruction,
    // if the nmethod has been deoptimized.  (See 4932387, 4894843.)
-@@ -972,7 +974,7 @@ CodeBuffer* Compile::init_buffer(uint* blk_starts) {
+@@ -973,7 +975,7 @@ CodeBuffer* Compile::init_buffer(uint* blk_starts) {
  
    // Compute prolog code size
    _method_size = 0;
@@ -5451,7 +5441,7 @@ index b8f72ffca..4319f9fd1 100644
  #if defined(IA64) && !defined(AIX)
    if (save_argument_registers()) {
      // 4815101: this is a stub with implicit and unknown precision fp args.
-@@ -1021,12 +1023,18 @@ CodeBuffer* Compile::init_buffer(uint* blk_starts) {
+@@ -1022,12 +1024,18 @@ CodeBuffer* Compile::init_buffer(uint* blk_starts) {
    // Initialize the space for the BufferBlob used to find and verify
    // instruction size in MachNode::emit_size()
    init_scratch_buffer_blob(const_req);
@@ -5474,7 +5464,7 @@ index b8f72ffca..4319f9fd1 100644
    // nmethod and CodeBuffer count stubs & constants as part of method's code.
    // class HandlerImpl is platform-specific and defined in the *.ad files.
    int exception_handler_req = HandlerImpl::size_exception_handler() + MAX_stubs_size; // add marginal slop for handler
-@@ -1038,18 +1046,18 @@ CodeBuffer* Compile::init_buffer(uint* blk_starts) {
+@@ -1039,18 +1047,18 @@ CodeBuffer* Compile::init_buffer(uint* blk_starts) {
      code_req = const_req = stub_req = exception_handler_req = deopt_handler_req = 0x10;  // force expansion
  
    int total_req =
@@ -5500,7 +5490,7 @@ index b8f72ffca..4319f9fd1 100644
  
    // Have we run out of code space?
    if ((cb->blob() == NULL) || (!CompileBroker::should_compile_new_jobs())) {
-@@ -1263,12 +1271,12 @@ void Compile::fill_buffer(CodeBuffer* cb, uint* blk_starts) {
+@@ -1264,12 +1272,12 @@ void Compile::fill_buffer(CodeBuffer* cb, uint* blk_starts) {
            Process_OopMap_Node(mach, current_offset);
          } // End if safepoint
  
@@ -5515,7 +5505,7 @@ index b8f72ffca..4319f9fd1 100644
          else if (mach->is_MachBranch()) {
            // This requires the TRUE branch target be in succs[0]
            uint block_num = block->non_connector_successor(0)->_pre_order;
-@@ -1279,8 +1287,8 @@ void Compile::fill_buffer(CodeBuffer* cb, uint* blk_starts) {
+@@ -1280,8 +1288,8 @@ void Compile::fill_buffer(CodeBuffer* cb, uint* blk_starts) {
            bool delay_slot_is_used = valid_bundle_info(n) &&
                                      node_bundling(n)->use_unconditional_delay();
            if (!delay_slot_is_used && mach->may_be_short_branch()) {
@@ -5526,7 +5516,7 @@ index b8f72ffca..4319f9fd1 100644
              int offset = blk_starts[block_num] - current_offset;
              if (block_num >= i) {
                // Current and following block's offset are not
-@@ -1338,7 +1346,7 @@ void Compile::fill_buffer(CodeBuffer* cb, uint* blk_starts) {
+@@ -1339,7 +1347,7 @@ void Compile::fill_buffer(CodeBuffer* cb, uint* blk_starts) {
            }
          }
  #ifdef ASSERT
@@ -5535,7 +5525,7 @@ index b8f72ffca..4319f9fd1 100644
          else if (mach->ideal_Opcode() == Op_StoreCM) {
            uint storeCM_idx = j;
            int count = 0;
-@@ -1507,6 +1515,10 @@ void Compile::fill_buffer(CodeBuffer* cb, uint* blk_starts) {
+@@ -1517,6 +1525,10 @@ void Compile::fill_buffer(CodeBuffer* cb, uint* blk_starts) {
    }
  #endif
  
@@ -5546,7 +5536,7 @@ index b8f72ffca..4319f9fd1 100644
  #ifndef PRODUCT
    // Information on the size of the method, without the extraneous code
    Scheduling::increment_method_size(cb->insts_size());
-@@ -1671,20 +1683,20 @@ uint Scheduling::_total_instructions_per_bundle[Pipeline::_max_instrs_per_cycle+
+@@ -1681,20 +1693,20 @@ uint Scheduling::_total_instructions_per_bundle[Pipeline::_max_instrs_per_cycle+
  // Initializer for class Scheduling
  
  Scheduling::Scheduling(Arena *arena, Compile &compile)
@@ -5580,7 +5570,7 @@ index b8f72ffca..4319f9fd1 100644
  #endif
  {
    // Create a MachNopNode
-@@ -1763,8 +1775,8 @@ void Scheduling::step_and_clear() {
+@@ -1773,8 +1785,8 @@ void Scheduling::step_and_clear() {
    _bundle_use.reset();
  
    memcpy(_bundle_use_elements,
@@ -5591,7 +5581,7 @@ index b8f72ffca..4319f9fd1 100644
  }
  
  // Perform instruction scheduling and bundling over the sequence of
-@@ -1791,6 +1803,22 @@ void Compile::ScheduleAndBundle() {
+@@ -1801,6 +1813,22 @@ void Compile::ScheduleAndBundle() {
    // Walk backwards over each basic block, computing the needed alignment
    // Walk over all the basic blocks
    scheduling.DoScheduling();
@@ -5614,7 +5604,7 @@ index b8f72ffca..4319f9fd1 100644
  }
  
  // Compute the latency of all the instructions.  This is fairly simple,
-@@ -1859,7 +1887,7 @@ bool Scheduling::NodeFitsInBundle(Node *n) {
+@@ -1869,7 +1897,7 @@ bool Scheduling::NodeFitsInBundle(Node *n) {
  #ifndef PRODUCT
      if (_cfg->C->trace_opto_output())
        tty->print("#     NodeFitsInBundle [%4d]: FALSE; latency %4d > %d\n",
@@ -5623,7 +5613,7 @@ index b8f72ffca..4319f9fd1 100644
  #endif
      return (false);
    }
-@@ -2084,12 +2112,12 @@ void Scheduling::AddNodeToBundle(Node *n, const Block *bb) {
+@@ -2094,12 +2122,12 @@ void Scheduling::AddNodeToBundle(Node *n, const Block *bb) {
          // Don't allow safepoints in the branch shadow, that will
          // cause a number of difficulties
          if ( avail_pipeline->instructionCount() == 1 &&
@@ -5642,7 +5632,7 @@ index b8f72ffca..4319f9fd1 100644
  
            if (d->is_Mach() && !d->is_MachSafePoint()) {
              // A node that fits in the delay slot was found, so we need to
-@@ -2134,13 +2162,13 @@ void Scheduling::AddNodeToBundle(Node *n, const Block *bb) {
+@@ -2144,13 +2172,13 @@ void Scheduling::AddNodeToBundle(Node *n, const Block *bb) {
      // step of the bundles
      if (!NodeFitsInBundle(n)) {
  #ifndef PRODUCT
@@ -5661,7 +5651,7 @@ index b8f72ffca..4319f9fd1 100644
      }
    }
  
-@@ -2186,8 +2214,8 @@ void Scheduling::AddNodeToBundle(Node *n, const Block *bb) {
+@@ -2196,8 +2224,8 @@ void Scheduling::AddNodeToBundle(Node *n, const Block *bb) {
  #ifndef PRODUCT
          if (_cfg->C->trace_opto_output())
            tty->print("#  *** STEP(%d >= %d instructions) ***\n",
@@ -5672,7 +5662,7 @@ index b8f72ffca..4319f9fd1 100644
  #endif
          step(1);
        }
-@@ -2393,7 +2421,7 @@ void Scheduling::DoScheduling() {
+@@ -2403,7 +2431,7 @@ void Scheduling::DoScheduling() {
      }
      assert(!last->is_Mach() || last->as_Mach()->ideal_Opcode() != Op_Con, "");
      if( last->is_Catch() ||
@@ -5681,7 +5671,7 @@ index b8f72ffca..4319f9fd1 100644
        // There might be a prior call.  Skip it.
        while (_bb_start < _bb_end && bb->get_node(--_bb_end)->is_MachProj());
      } else if( last->is_MachNullCheck() ) {
-@@ -2463,7 +2491,7 @@ void Scheduling::DoScheduling() {
+@@ -2473,7 +2501,7 @@ void Scheduling::DoScheduling() {
      }
  #endif
  #ifdef ASSERT
@@ -5690,7 +5680,7 @@ index b8f72ffca..4319f9fd1 100644
  #endif
    }
  
-@@ -2811,31 +2839,31 @@ void Scheduling::ComputeRegisterAntidependencies(Block *b) {
+@@ -2821,31 +2849,31 @@ void Scheduling::ComputeRegisterAntidependencies(Block *b) {
  //
  void Scheduling::garbage_collect_pinch_nodes() {
  #ifndef PRODUCT
@@ -5742,7 +5732,7 @@ index b8f72ffca..4319f9fd1 100644
  #endif
  }
  
-@@ -2872,19 +2900,19 @@ void Scheduling::dump_available() const {
+@@ -2882,19 +2910,19 @@ void Scheduling::dump_available() const {
  void Scheduling::print_statistics() {
    // Print the size added by nops for bundling
    tty->print("Nops added %d bytes to total of %d bytes",
@@ -5766,7 +5756,7 @@ index b8f72ffca..4319f9fd1 100644
      tty->print("\n");
    }
  
-@@ -2898,6 +2926,6 @@ void Scheduling::print_statistics() {
+@@ -2908,6 +2936,6 @@ void Scheduling::print_statistics() {
  
    if (total_bundles > 0)
      tty->print("Average ILP (excluding nops) is %.2f\n",
@@ -5775,7 +5765,7 @@ index b8f72ffca..4319f9fd1 100644
  }
  #endif
 diff --git a/src/hotspot/share/opto/output.hpp b/src/hotspot/share/opto/output.hpp
-index ab3c1a304..ec3cc2981 100644
+index ab3c1a3..ec3cc29 100644
 --- a/src/hotspot/share/opto/output.hpp
 +++ b/src/hotspot/share/opto/output.hpp
 @@ -49,10 +49,7 @@ class Pipeline_Use;
@@ -5791,10 +5781,10 @@ index ab3c1a304..ec3cc2981 100644
  
  //------------------------------Scheduling----------------------------------
 diff --git a/src/hotspot/share/opto/phaseX.cpp b/src/hotspot/share/opto/phaseX.cpp
-index d1177a56e..f9b883ef6 100644
+index 07b8490..9d5d4de 100644
 --- a/src/hotspot/share/opto/phaseX.cpp
 +++ b/src/hotspot/share/opto/phaseX.cpp
-@@ -1650,14 +1650,14 @@ void PhaseIterGVN::add_users_to_worklist( Node *n ) {
+@@ -1648,14 +1648,14 @@ void PhaseIterGVN::add_users_to_worklist( Node *n ) {
      // of the mirror load depends on the type of 'n'. See LoadNode::Value().
      //   LoadBarrier?(LoadP(LoadP(AddP(foo:Klass, #java_mirror))))
      BarrierSetC2* bs = BarrierSet::barrier_set()->barrier_set_c2();
@@ -5811,7 +5801,7 @@ index d1177a56e..f9b883ef6 100644
              // Search for load barriers behind the load
              for (DUIterator_Fast i3max, i3 = u->fast_outs(i3max); i3 < i3max; i3++) {
                Node* b = u->fast_out(i3);
-@@ -1811,14 +1811,14 @@ void PhaseCCP::analyze() {
+@@ -1818,14 +1818,14 @@ void PhaseCCP::analyze() {
          // Loading the java mirror from a Klass requires two loads and the type
          // of the mirror load depends on the type of 'n'. See LoadNode::Value().
          BarrierSetC2* bs = BarrierSet::barrier_set()->barrier_set_c2();
@@ -5829,10 +5819,10 @@ index d1177a56e..f9b883ef6 100644
                  for (DUIterator_Fast i3max, i3 = u->fast_outs(i3max); i3 < i3max; i3++) {
                    Node* b = u->fast_out(i3);
 diff --git a/src/hotspot/share/opto/vectornode.cpp b/src/hotspot/share/opto/vectornode.cpp
-index b40587ba5..e0bf8410a 100644
+index 0258db3..fae147f 100644
 --- a/src/hotspot/share/opto/vectornode.cpp
 +++ b/src/hotspot/share/opto/vectornode.cpp
-@@ -252,7 +252,6 @@ void VectorNode::vector_operands(Node* n, uint* start, uint* end) {
+@@ -264,7 +264,6 @@ void VectorNode::vector_operands(Node* n, uint* start, uint* end) {
    case Op_LoadI:   case Op_LoadL:
    case Op_LoadF:   case Op_LoadD:
    case Op_LoadP:   case Op_LoadN:
@@ -5840,4 +5830,3 @@ index b40587ba5..e0bf8410a 100644
      *start = 0;
      *end   = 0; // no vector operands
      break;
-
