@@ -1,5 +1,5 @@
 diff --git a/src/hotspot/share/c1/c1_Instruction.cpp b/src/hotspot/share/c1/c1_Instruction.cpp
-index ee3be899a..62d8b48bc 100644
+index ee3be89..62d8b48 100644
 --- a/src/hotspot/share/c1/c1_Instruction.cpp
 +++ b/src/hotspot/share/c1/c1_Instruction.cpp
 @@ -29,6 +29,7 @@
@@ -11,7 +11,7 @@ index ee3be899a..62d8b48bc 100644
  
  // Implementation of Instruction
 diff --git a/src/hotspot/share/opto/graphKit.cpp b/src/hotspot/share/opto/graphKit.cpp
-index 852b763c1..31b8ffa21 100644
+index bf9179f..e0696de 100644
 --- a/src/hotspot/share/opto/graphKit.cpp
 +++ b/src/hotspot/share/opto/graphKit.cpp
 @@ -43,6 +43,7 @@
@@ -19,11 +19,11 @@ index 852b763c1..31b8ffa21 100644
  #include "runtime/deoptimization.hpp"
  #include "runtime/sharedRuntime.hpp"
 +#include "utilities/bitMap.inline.hpp"
- 
- //----------------------------GraphKit-----------------------------------------
- // Main utility constructor.
+ #include "utilities/macros.hpp"
+ #if INCLUDE_SHENANDOAHGC
+ #include "gc/shenandoah/c2/shenandoahBarrierSetC2.hpp"
 diff --git a/src/hotspot/share/opto/parse1.cpp b/src/hotspot/share/opto/parse1.cpp
-index 177663653..eae7673f9 100644
+index 99b1a67..f94f028 100644
 --- a/src/hotspot/share/opto/parse1.cpp
 +++ b/src/hotspot/share/opto/parse1.cpp
 @@ -41,6 +41,7 @@
@@ -35,7 +35,7 @@ index 177663653..eae7673f9 100644
  
  // Static array so we can figure out which bytecodes stop us from compiling
 diff --git a/src/hotspot/share/utilities/bitMap.hpp b/src/hotspot/share/utilities/bitMap.hpp
-index c671535c9..e26f34687 100644
+index c671535..e26f346 100644
 --- a/src/hotspot/share/utilities/bitMap.hpp
 +++ b/src/hotspot/share/utilities/bitMap.hpp
 @@ -26,6 +26,7 @@
@@ -84,7 +84,7 @@ index c671535c9..e26f34687 100644
    // Put the given value at the given offset. The parallel version
    // will CAS the value into the bitmap and is quite a bit slower.
 diff --git a/src/hotspot/share/utilities/bitMap.inline.hpp b/src/hotspot/share/utilities/bitMap.inline.hpp
-index b10726d18..7a7e2ad43 100644
+index b10726d..7a7e2ad 100644
 --- a/src/hotspot/share/utilities/bitMap.inline.hpp
 +++ b/src/hotspot/share/utilities/bitMap.inline.hpp
 @@ -26,6 +26,7 @@
