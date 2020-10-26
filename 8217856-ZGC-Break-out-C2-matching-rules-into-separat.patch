@@ -1,28 +1,10 @@
-From 12c28e19bf70b610a723828ce8395902381436fb Mon Sep 17 00:00:00 2001
-Date: Tue, 18 Feb 2020 18:03:42 +0800
-Subject: [PATCH] 8217856: ZGC: Break out C2 matching rules into separate AD
- file
-
-Summary: <gc>: <separate AD files to handle C2 matching rules>
-LLT: jtreg
-Bug url: https://bugs.openjdk.java.net/browse/JDK-8217856
----
- make/hotspot/gensrc/GensrcAdlc.gmk        |   6 +
- src/hotspot/cpu/aarch64/aarch64.ad        | 244 ---------------------------
- src/hotspot/cpu/aarch64/gc/z/z_aarch64.ad | 268 ++++++++++++++++++++++++++++++
- src/hotspot/cpu/x86/gc/z/z_x86_64.ad      | 168 +++++++++++++++++++
- src/hotspot/cpu/x86/x86_64.ad             | 151 -----------------
- 5 files changed, 442 insertions(+), 395 deletions(-)
- create mode 100644 src/hotspot/cpu/aarch64/gc/z/z_aarch64.ad
- create mode 100644 src/hotspot/cpu/x86/gc/z/z_x86_64.ad
-
 diff --git a/make/hotspot/gensrc/GensrcAdlc.gmk b/make/hotspot/gensrc/GensrcAdlc.gmk
-index 92b030b69..1eaed25d9 100644
+index 6878962..bb9721c 100644
 --- a/make/hotspot/gensrc/GensrcAdlc.gmk
 +++ b/make/hotspot/gensrc/GensrcAdlc.gmk
-@@ -136,6 +136,12 @@ ifeq ($(call check-jvm-feature, compiler2), true)
-       $d/os_cpu/$(HOTSPOT_TARGET_OS)_$(HOTSPOT_TARGET_CPU_ARCH)/$(HOTSPOT_TARGET_OS)_$(HOTSPOT_TARGET_CPU_ARCH).ad \
-     )))
+@@ -146,6 +146,12 @@ ifeq ($(call check-jvm-feature, compiler2), true)
+       )))
+   endif
  
 +  ifeq ($(call check-jvm-feature, zgc), true)
 +    AD_SRC_FILES += $(call uniq, $(wildcard $(foreach d, $(AD_SRC_ROOTS), \
@@ -34,7 +16,7 @@ index 92b030b69..1eaed25d9 100644
  
    INSERT_FILENAME_AWK_SCRIPT := \
 diff --git a/src/hotspot/cpu/aarch64/aarch64.ad b/src/hotspot/cpu/aarch64/aarch64.ad
-index 93dd78e51..3cca2da5b 100644
+index 05b36e2..18e774f 100644
 --- a/src/hotspot/cpu/aarch64/aarch64.ad
 +++ b/src/hotspot/cpu/aarch64/aarch64.ad
 @@ -1128,13 +1128,6 @@ definitions %{
@@ -51,7 +33,7 @@ index 93dd78e51..3cca2da5b 100644
  //----------SOURCE BLOCK-------------------------------------------------------
  // This is a block of C++ code which provides values, functions, and
  // definitions necessary in the rest of the architecture description
-@@ -17487,243 +17480,6 @@ instruct vsrl2L_imm(vecX dst, vecX src, immI shift) %{
+@@ -17488,243 +17481,6 @@ instruct vsrl2L_imm(vecX dst, vecX src, immI shift) %{
    ins_pipe(vshift128_imm);
  %}
  
@@ -297,7 +279,7 @@ index 93dd78e51..3cca2da5b 100644
  // These must follow all instruction definitions as they use the names
 diff --git a/src/hotspot/cpu/aarch64/gc/z/z_aarch64.ad b/src/hotspot/cpu/aarch64/gc/z/z_aarch64.ad
 new file mode 100644
-index 000000000..50cc6f924
+index 0000000..50cc6f9
 --- /dev/null
 +++ b/src/hotspot/cpu/aarch64/gc/z/z_aarch64.ad
 @@ -0,0 +1,268 @@
@@ -571,7 +553,7 @@ index 000000000..50cc6f924
 +
 diff --git a/src/hotspot/cpu/x86/gc/z/z_x86_64.ad b/src/hotspot/cpu/x86/gc/z/z_x86_64.ad
 new file mode 100644
-index 000000000..38c2e926b
+index 0000000..38c2e92
 --- /dev/null
 +++ b/src/hotspot/cpu/x86/gc/z/z_x86_64.ad
 @@ -0,0 +1,168 @@
@@ -744,7 +726,7 @@ index 000000000..38c2e926b
 +%}
 +
 diff --git a/src/hotspot/cpu/x86/x86_64.ad b/src/hotspot/cpu/x86/x86_64.ad
-index f795fb823..7879547ce 100644
+index d127732..fce1b85 100644
 --- a/src/hotspot/cpu/x86/x86_64.ad
 +++ b/src/hotspot/cpu/x86/x86_64.ad
 @@ -538,19 +538,6 @@ reg_class int_rdi_reg(RDI);
@@ -787,7 +769,7 @@ index f795fb823..7879547ce 100644
  %}
  
  //----------ENCODING BLOCK-----------------------------------------------------
-@@ -12520,131 +12494,6 @@ instruct RethrowException()
+@@ -12555,131 +12529,6 @@ instruct RethrowException()
    ins_pipe(pipe_jmp);
  %}
  
@@ -919,6 +901,3 @@ index f795fb823..7879547ce 100644
  // ============================================================================
  // This name is KNOWN by the ADLC and cannot be changed.
  // The ADLC forces a 'TypeRawPtr::BOTTOM' output type
--- 
-2.12.3
-
