@@ -735,7 +735,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 0
+Release: 1
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -1086,7 +1086,7 @@ pushd %{top_level_dir_name}
 %patch38 -p1
 %patch39 -p1
 %patch40 -p1
-# %patch41 -p1
+%patch41 -p1
 %patch42 -p1
 %patch43 -p1
 %patch45 -p1
@@ -1596,6 +1596,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Mon Oct 26 2020 noah <hedongbo@huawei.com> - 1:11.0.9.11-1
+- add 8229495-SIGILL-in-C2-generated-OSR-compilation.patch 
+
 * Thu Oct 22 2020 noah <hedongbo@huawei.com> - 1:11.0.9.11-0
 - Update to 11.0.9+11 (GA)
 - rename Boole to Bisheng
