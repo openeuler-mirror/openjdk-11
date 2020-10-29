@@ -226,7 +226,7 @@ index 5e6faaa..89628bb 100644
 +          Node* opaque_init = new OpaqueLoopInitNode(C, init);
            register_new_node(opaque_init, predicate_proj);
 +          // predicate on first value of first iteration
-+          predicate_proj = add_range_check_predicate(loop, cl, predicate_proj, scale_con, offset, limit, stride_con, init);
++          predicate_proj = add_range_check_predicate(loop, cl, predicate_proj, scale_con, int_offset, int_limit, stride_con, init);
 +          assert(!skeleton_predicate_has_opaque(predicate_proj->in(0)->as_If()), "unexpected");
            // template predicate so it can be updated on next unrolling
            predicate_proj = add_range_check_predicate(loop, cl, predicate_proj, scale_con, int_offset, int_limit, stride_con, opaque_init);
