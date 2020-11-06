@@ -735,7 +735,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 2
+Release: 3
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -832,6 +832,10 @@ Patch47: 8204947-Port-ShenandoahTaskTerminator-to-mainline-and-make-it-default.p
 Patch48: 8205921-Optimizing-best_of_2-work-stealing-queue-selection.patch
 Patch49: 8237483-AArch64-C1-OopMap-inserted-twice-fatal-error.patch
 Patch50: 8248336-AArch64-C2-offset-overflow-in-BoxLockNode-em.patch
+
+# 11.0.9
+Patch51: 8255781-Bump-patch-update-version-for-OpenJDK-jdk-11.0.9.1.patch
+Patch52: 8250861-Crash-in-MinINode-Ideal.patch
 
 
 BuildRequires: autoconf
@@ -1096,6 +1100,8 @@ pushd %{top_level_dir_name}
 %patch48 -p1
 %patch49 -p1
 %patch50 -p1
+%patch51 -p1
+%patch52 -p1
 popd # openjdk
 
 %patch1000
@@ -1389,7 +1395,7 @@ if ! echo $suffix | grep -q "debug" ; then
   # Install Javadoc documentation
   install -d -m 755 $RPM_BUILD_ROOT%{_javadocdir}
   cp -a %{buildoutputdir -- $suffix}/images/docs $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}
-  cp -a %{buildoutputdir -- $suffix}/bundles/jdk-%{newjavaver}+%{buildver}-docs.zip $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}.zip
+  cp -a %{buildoutputdir -- $suffix}/bundles/jdk-%{newjavaver}.1+%{buildver}-docs.zip $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}.zip
 fi
 
 # Install icons and menu entries
@@ -1598,6 +1604,10 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Fri Nov 6 2020 noah <hedongbo@huawei.com> - 1:11.0.9.11-3
+- add 8255781-Bump-patch-update-version-for-OpenJDK-jdk-11.0.9.1.patch
+- add 8250861-Crash-in-MinINode-Ideal.patch
+
 * Fri Nov 6 2020 wuyan <wuyan34@huawei.com> - 1:11.0.9.11-2
 - add 8248336-AArch64-C2-offset-overflow-in-BoxLockNode-em.patch
 
