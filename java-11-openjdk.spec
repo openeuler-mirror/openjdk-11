@@ -735,7 +735,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 3
+Release: 4
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -1604,6 +1604,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Mon Dec 21 2020 noah <hedongbo@huawei.com> - 1:11.0.9.11-4
+- add a license to this repo
+
 * Fri Nov 6 2020 noah <hedongbo@huawei.com> - 1:11.0.9.11-3
 - add 8255781-Bump-patch-update-version-for-OpenJDK-jdk-11.0.9.1.patch
 - add 8250861-Crash-in-MinINode-Ideal.patch
