@@ -735,7 +735,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 4
+Release: 5
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -836,7 +836,7 @@ Patch50: 8248336-AArch64-C2-offset-overflow-in-BoxLockNode-em.patch
 # 11.0.9
 Patch51: 8255781-Bump-patch-update-version-for-OpenJDK-jdk-11.0.9.1.patch
 Patch52: 8250861-Crash-in-MinINode-Ideal.patch
-
+Patch53: 8236512-PKCS11-Connection-closed-after-Cipher-doFinal-and-NoPadding.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1102,6 +1102,7 @@ pushd %{top_level_dir_name}
 %patch50 -p1
 %patch51 -p1
 %patch52 -p1
+%patch53 -p1
 popd # openjdk
 
 %patch1000
@@ -1604,6 +1605,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Thu Dec 22 2020 aijm <aijiaming1@huawei.com> - 1:11.0.9.11-5
+- add 8236512-PKCS11-Connection-closed-after-Cipher-doFinal-and-NoPadding.patch
+
 * Mon Dec 21 2020 noah <hedongbo@huawei.com> - 1:11.0.9.11-4
 - add a license to this repo
 
