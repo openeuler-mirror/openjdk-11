@@ -735,7 +735,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 7
+Release: 8
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -840,6 +840,7 @@ Patch53: 8236512-PKCS11-Connection-closed-after-Cipher-doFinal-and-NoPadding.pat
 Patch54: 8207160-ClassReader-adjustMethodParams-can-potentially-return-null-if-the-args-list-is-empty.patch
 Patch55: 8215047-Task-terminators-do-not-complete-termination-in-consistent-state.patch
 Patch56: 8247766-aarch64-guarantee-val-1U--nbits-failed-Field-too-big-for-insn.patch
+Patch57: add-zgc-parameter-adaptation-feature.patch 
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1109,6 +1110,7 @@ pushd %{top_level_dir_name}
 %patch54 -p1
 %patch55 -p1
 %patch56 -p1
+%patch57 -p1
 popd # openjdk
 
 %patch1000
@@ -1611,6 +1613,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Thu Dec 24 2020 kuenking <wangkun49@huawei.com> - 1:11.0.9.11-8
+- add add-zgc-parameter-adaptation-feature.patch
+
 * Wed Dec 23 2020 alapha <sunjianye@huawei.com> - 1:11.0.9.11-7
 - add 8215047-Task-terminators-do-not-complete-termination-in-consistent-state.patch
 - add 8247766-aarch64-guarantee-val-1U--nbits-failed-Field-too-big-for-insn.patch
@@ -1618,7 +1623,7 @@ require "copy_jdk_configs.lua"
 * Wed Dec 23 2020 eapen <zhangyipeng7@huawei.com> - 1:11.0.9.11-6
 - add 8207160-ClassReader-adjustMethodParams-can-potentially-return-null-if-the-args-list-is-empty.patch
 
-* Thu Dec 22 2020 aijm <aijiaming1@huawei.com> - 1:11.0.9.11-5
+* Tue Dec 22 2020 aijm <aijiaming1@huawei.com> - 1:11.0.9.11-5
 - add 8236512-PKCS11-Connection-closed-after-Cipher-doFinal-and-NoPadding.patch
 
 * Mon Dec 21 2020 noah <hedongbo@huawei.com> - 1:11.0.9.11-4
