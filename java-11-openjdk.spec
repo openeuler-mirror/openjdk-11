@@ -735,7 +735,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 4
+Release: 10
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -836,7 +836,13 @@ Patch50: 8248336-AArch64-C2-offset-overflow-in-BoxLockNode-em.patch
 # 11.0.9
 Patch51: 8255781-Bump-patch-update-version-for-OpenJDK-jdk-11.0.9.1.patch
 Patch52: 8250861-Crash-in-MinINode-Ideal.patch
-
+Patch53: 8236512-PKCS11-Connection-closed-after-Cipher-doFinal-and-NoPadding.patch
+Patch54: 8207160-ClassReader-adjustMethodParams-can-potentially-return-null-if-the-args-list-is-empty.patch
+Patch55: 8215047-Task-terminators-do-not-complete-termination-in-consistent-state.patch
+Patch56: 8247766-aarch64-guarantee-val-1U--nbits-failed-Field-too-big-for-insn.patch
+Patch57: add-zgc-parameter-adaptation-feature.patch
+Patch58: add-integerCache-feature.patch
+Patch59: add-SVE-backend-feature.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1102,6 +1108,13 @@ pushd %{top_level_dir_name}
 %patch50 -p1
 %patch51 -p1
 %patch52 -p1
+%patch53 -p1
+%patch54 -p1
+%patch55 -p1
+%patch56 -p1
+%patch57 -p1
+%patch58 -p1
+%patch59 -p1
 popd # openjdk
 
 %patch1000
@@ -1604,6 +1617,25 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Thu Dec 24 2020 kuenking <wangkun49@huawei.com> - 1:11.0.9.11-10
+- add add-SVE-backend-feature.patch
+
+* Thu Dec 24 2020 kuenking <wangkun49@huawei.com> - 1:11.0.9.11-9
+- add add-integerCache-feature.patch
+
+* Thu Dec 24 2020 kuenking <wangkun49@huawei.com> - 1:11.0.9.11-8
+- add add-zgc-parameter-adaptation-feature.patch
+
+* Wed Dec 23 2020 alapha <sunjianye@huawei.com> - 1:11.0.9.11-7
+- add 8215047-Task-terminators-do-not-complete-termination-in-consistent-state.patch
+- add 8247766-aarch64-guarantee-val-1U--nbits-failed-Field-too-big-for-insn.patch
+
+* Wed Dec 23 2020 eapen <zhangyipeng7@huawei.com> - 1:11.0.9.11-6
+- add 8207160-ClassReader-adjustMethodParams-can-potentially-return-null-if-the-args-list-is-empty.patch
+
+* Tue Dec 22 2020 aijm <aijiaming1@huawei.com> - 1:11.0.9.11-5
+- add 8236512-PKCS11-Connection-closed-after-Cipher-doFinal-and-NoPadding.patch
+
 * Mon Dec 21 2020 noah <hedongbo@huawei.com> - 1:11.0.9.11-4
 - add a license to this repo
 
