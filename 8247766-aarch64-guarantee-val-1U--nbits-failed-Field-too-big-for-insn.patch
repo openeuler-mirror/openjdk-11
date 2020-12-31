@@ -1,0 +1,257 @@
+diff --git a/src/hotspot/cpu/aarch64/assembler_aarch64.hpp b/src/hotspot/cpu/aarch64/assembler_aarch64.hpp
+index db582f25f..80ddb9b31 100644
+--- a/src/hotspot/cpu/aarch64/assembler_aarch64.hpp
++++ b/src/hotspot/cpu/aarch64/assembler_aarch64.hpp
+@@ -553,14 +553,7 @@ class Address {
+ 
+   void lea(MacroAssembler *, Register) const;
+ 
+-  static bool offset_ok_for_immed(long offset, int shift = 0) {
+-    unsigned mask = (1 << shift) - 1;
+-    if (offset < 0 || offset & mask) {
+-      return (uabs(offset) < (1 << (20 - 12))); // Unscaled offset
+-    } else {
+-      return ((offset >> shift) < (1 << (21 - 10 + 1))); // Scaled, unsigned offset
+-    }
+-  }
++  static bool offset_ok_for_immed(long offset, uint shift);
+ };
+ 
+ // Convience classes
+diff --git a/src/hotspot/cpu/aarch64/assembler_aarch64.inline.hpp b/src/hotspot/cpu/aarch64/assembler_aarch64.inline.hpp
+index 86eb8c2f8..a475575bf 100644
+--- a/src/hotspot/cpu/aarch64/assembler_aarch64.inline.hpp
++++ b/src/hotspot/cpu/aarch64/assembler_aarch64.inline.hpp
+@@ -30,4 +30,15 @@
+ #include "asm/codeBuffer.hpp"
+ #include "code/codeCache.hpp"
+ 
++inline bool Address::offset_ok_for_immed(long offset, uint shift = 0) {
++  uint mask = (1 << shift) - 1;
++  if (offset < 0 || (offset & mask) != 0) {
++    // Unscaled signed offset, encoded in a signed imm9 field.
++    return Assembler::is_simm9(offset);
++  } else {
++    // Scaled unsigned offset, encoded in an unsigned imm12:_ field.
++    return Assembler::is_uimm12(offset >> shift);
++  }
++}
++
+ #endif // CPU_AARCH64_VM_ASSEMBLER_AARCH64_INLINE_HPP
+diff --git a/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp
+index f6a77dc78..7798aa509 100644
+--- a/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp
++++ b/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp
+@@ -226,6 +226,19 @@ Address LIR_Assembler::as_Address_lo(LIR_Address* addr) {
+   // FIXME: This needs to be much more clever.  See x86.
+ }
+ 
++// Ensure a valid Address (base + offset) to a stack-slot. If stack access is
++// not encodable as a base + (immediate) offset, generate an explicit address
++// calculation to hold the address in a temporary register.
++Address LIR_Assembler::stack_slot_address(int index, uint size, Register tmp, int adjust) {
++  precond(size == 4 || size == 8);
++  Address addr = frame_map()->address_for_slot(index, adjust);
++  precond(addr.getMode() == Address::base_plus_offset);
++  precond(addr.base() == sp);
++  precond(addr.offset() > 0);
++  uint mask = size - 1;
++  assert((addr.offset() & mask) == 0, "scaled offsets only");
++  return __ legitimize_address(addr, size, tmp);
++}
+ 
+ void LIR_Assembler::osr_entry() {
+   offsets()->set_value(CodeOffsets::OSR_Entry, code_offset());
+@@ -745,32 +758,38 @@ void LIR_Assembler::reg2reg(LIR_Opr src, LIR_Opr dest) {
+ }
+ 
+ void LIR_Assembler::reg2stack(LIR_Opr src, LIR_Opr dest, BasicType type, bool pop_fpu_stack) {
++  precond(src->is_register() && dest->is_stack());
++
++  uint const c_sz32 = sizeof(uint32_t);
++  uint const c_sz64 = sizeof(uint64_t);
++
+   if (src->is_single_cpu()) {
++    int index = dest->single_stack_ix();
+     if (type == T_ARRAY || type == T_OBJECT) {
+-      __ str(src->as_register(), frame_map()->address_for_slot(dest->single_stack_ix()));
++      __ str(src->as_register(), stack_slot_address(index, c_sz64, rscratch1));
+       __ verify_oop(src->as_register());
+     } else if (type == T_METADATA || type == T_DOUBLE || type == T_ADDRESS) {
+-      __ str(src->as_register(), frame_map()->address_for_slot(dest->single_stack_ix()));
++      __ str(src->as_register(), stack_slot_address(index, c_sz64, rscratch1));
+     } else {
+-      __ strw(src->as_register(), frame_map()->address_for_slot(dest->single_stack_ix()));
++      __ strw(src->as_register(), stack_slot_address(index, c_sz32, rscratch1));
+     }
+ 
+   } else if (src->is_double_cpu()) {
+-    Address dest_addr_LO = frame_map()->address_for_slot(dest->double_stack_ix(), lo_word_offset_in_bytes);
++    int index = dest->double_stack_ix();
++    Address dest_addr_LO = stack_slot_address(index, c_sz64, rscratch1, lo_word_offset_in_bytes);
+     __ str(src->as_register_lo(), dest_addr_LO);
+ 
+   } else if (src->is_single_fpu()) {
+-    Address dest_addr = frame_map()->address_for_slot(dest->single_stack_ix());
+-    __ strs(src->as_float_reg(), dest_addr);
++    int index = dest->single_stack_ix();
++    __ strs(src->as_float_reg(), stack_slot_address(index, c_sz32, rscratch1));
+ 
+   } else if (src->is_double_fpu()) {
+-    Address dest_addr = frame_map()->address_for_slot(dest->double_stack_ix());
+-    __ strd(src->as_double_reg(), dest_addr);
++    int index = dest->double_stack_ix();
++    __ strd(src->as_double_reg(), stack_slot_address(index, c_sz64, rscratch1));
+ 
+   } else {
+     ShouldNotReachHere();
+   }
+-
+ }
+ 
+ 
+@@ -855,32 +874,34 @@ void LIR_Assembler::reg2mem(LIR_Opr src, LIR_Opr dest, BasicType type, LIR_Patch
+ 
+ 
+ void LIR_Assembler::stack2reg(LIR_Opr src, LIR_Opr dest, BasicType type) {
+-  assert(src->is_stack(), "should not call otherwise");
+-  assert(dest->is_register(), "should not call otherwise");
++  precond(src->is_stack() && dest->is_register());
++
++  uint const c_sz32 = sizeof(uint32_t);
++  uint const c_sz64 = sizeof(uint64_t);
+ 
+   if (dest->is_single_cpu()) {
++    int index = src->single_stack_ix();
+     if (type == T_ARRAY || type == T_OBJECT) {
+-      __ ldr(dest->as_register(), frame_map()->address_for_slot(src->single_stack_ix()));
++      __ ldr(dest->as_register(), stack_slot_address(index, c_sz64, rscratch1));
+       __ verify_oop(dest->as_register());
+     } else if (type == T_METADATA || type == T_ADDRESS) {
+-      __ ldr(dest->as_register(), frame_map()->address_for_slot(src->single_stack_ix()));
++      __ ldr(dest->as_register(), stack_slot_address(index, c_sz64, rscratch1));
+     } else {
+-      Address src_addr = frame_map()->address_for_slot(src->single_stack_ix());
+-      Address data_addr = __ form_address(rscratch1, sp, src_addr.offset(), 2);
+-      __ ldrw(dest->as_register(), data_addr);
++      __ ldrw(dest->as_register(), stack_slot_address(index, c_sz32, rscratch1));
+     }
+ 
+   } else if (dest->is_double_cpu()) {
+-    Address src_addr_LO = frame_map()->address_for_slot(src->double_stack_ix(), lo_word_offset_in_bytes);
++    int index = src->double_stack_ix();
++    Address src_addr_LO = stack_slot_address(index, c_sz64, rscratch1, lo_word_offset_in_bytes);
+     __ ldr(dest->as_register_lo(), src_addr_LO);
+ 
+   } else if (dest->is_single_fpu()) {
+-    Address src_addr = frame_map()->address_for_slot(src->single_stack_ix());
+-    __ ldrs(dest->as_float_reg(), src_addr);
++    int index = src->single_stack_ix();
++    __ ldrs(dest->as_float_reg(), stack_slot_address(index, c_sz32, rscratch1));
+ 
+   } else if (dest->is_double_fpu()) {
+-    Address src_addr = frame_map()->address_for_slot(src->double_stack_ix());
+-    __ ldrd(dest->as_double_reg(), src_addr);
++    int index = src->double_stack_ix();
++    __ ldrd(dest->as_double_reg(), stack_slot_address(index, c_sz64, rscratch1));
+ 
+   } else {
+     ShouldNotReachHere();
+diff --git a/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.hpp b/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.hpp
+index 6374a33e6..9db81fed9 100644
+--- a/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.hpp
++++ b/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.hpp
+@@ -45,10 +45,12 @@ friend class ArrayCopyStub;
+ 
+   bool is_literal_address(LIR_Address* addr);
+ 
+-  // When we need to use something other than rscratch1 use this
+-  // method.
++  // When we need to use something other than rscratch1 use this method.
+   Address as_Address(LIR_Address* addr, Register tmp);
+ 
++  // Ensure we have a valid Address (base+offset) to a stack-slot.
++  Address stack_slot_address(int index, uint shift, Register tmp, int adjust = 0);
++
+   // Record the type of the receiver in ReceiverTypeData
+   void type_profile_helper(Register mdo,
+                            ciMethodData *md, ciProfileData *data,
+diff --git a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp
+index 44497ea7c..014a4d3c6 100644
+--- a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp
++++ b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp
+@@ -26,7 +26,7 @@
+ #ifndef CPU_AARCH64_VM_MACROASSEMBLER_AARCH64_HPP
+ #define CPU_AARCH64_VM_MACROASSEMBLER_AARCH64_HPP
+ 
+-#include "asm/assembler.hpp"
++#include "asm/assembler.inline.hpp"
+ 
+ // MacroAssembler extends Assembler by frequently used macros.
+ //
+@@ -132,6 +132,20 @@ class MacroAssembler: public Assembler {
+     a.lea(this, r);
+   }
+ 
++  /* Sometimes we get misaligned loads and stores, usually from Unsafe
++     accesses, and these can exceed the offset range. */
++  Address legitimize_address(const Address &a, int size, Register scratch) {
++    if (a.getMode() == Address::base_plus_offset) {
++      if (! Address::offset_ok_for_immed(a.offset(), exact_log2(size))) {
++        block_comment("legitimize_address {");
++        lea(scratch, a);
++        block_comment("} legitimize_address");
++        return Address(scratch);
++      }
++    }
++    return a;
++  }
++
+   void addmw(Address a, Register incr, Register scratch) {
+     ldrw(scratch, a);
+     addw(scratch, scratch, incr);
+diff --git a/src/hotspot/share/asm/assembler.hpp b/src/hotspot/share/asm/assembler.hpp
+index da181b90b..56c3068e4 100644
+--- a/src/hotspot/share/asm/assembler.hpp
++++ b/src/hotspot/share/asm/assembler.hpp
+@@ -302,6 +302,7 @@ class AbstractAssembler : public ResourceObj  {
+   // Define some:
+   static bool is_simm5( intptr_t x) { return is_simm(x, 5 ); }
+   static bool is_simm8( intptr_t x) { return is_simm(x, 8 ); }
++  static bool is_simm9( intptr_t x) { return is_simm(x, 9 ); }
+   static bool is_simm10(intptr_t x) { return is_simm(x, 10); }
+   static bool is_simm11(intptr_t x) { return is_simm(x, 11); }
+   static bool is_simm12(intptr_t x) { return is_simm(x, 12); }
+@@ -310,6 +311,15 @@ class AbstractAssembler : public ResourceObj  {
+   static bool is_simm26(intptr_t x) { return is_simm(x, 26); }
+   static bool is_simm32(intptr_t x) { return is_simm(x, 32); }
+ 
++  // Test if x is within unsigned immediate range for width.
++  static bool is_uimm(intptr_t x, uint w) {
++    precond(0 < w && w < 64);
++    intptr_t limes = intptr_t(1) << w;
++    return x < limes;
++  }
++
++  static bool is_uimm12(intptr_t x) { return is_uimm(x, 12); }
++
+   // Accessors
+   CodeSection*  code_section() const   { return _code_section; }
+   CodeBuffer*   code()         const   { return code_section()->outer(); }
+diff --git a/src/hotspot/share/utilities/debug.hpp b/src/hotspot/share/utilities/debug.hpp
+index aa594754a..c66c710f2 100644
+--- a/src/hotspot/share/utilities/debug.hpp
++++ b/src/hotspot/share/utilities/debug.hpp
+@@ -66,6 +66,9 @@ do {                                                                           \
+ // For backward compatibility.
+ #define assert(p, ...) vmassert(p, __VA_ARGS__)
+ 
++#define precond(p)   assert(p, "precond")
++#define postcond(p)  assert(p, "postcond")
++
+ #ifndef ASSERT
+ #define vmassert_status(p, status, msg)
+ #else
+-- 
+2.19.1
+

@@ -1,0 +1,328 @@
+diff --git a/src/hotspot/os/linux/os_linux.cpp b/src/hotspot/os/linux/os_linux.cpp
+index fa2b2ddea..b357a36cd 100644
+--- a/src/hotspot/os/linux/os_linux.cpp
++++ b/src/hotspot/os/linux/os_linux.cpp
+@@ -5273,7 +5273,6 @@ void os::Linux::numa_init() {
+           ls.print(" %d", node);
+         }
+       }
+-      log_info(gc, heap)("UseNUMA enabled for G1");
+     }
+   }
+ 
+diff --git a/src/hotspot/share/gc/z/zDriver.cpp b/src/hotspot/share/gc/z/zDriver.cpp
+index b3056bfcc..a9b905341 100644
+--- a/src/hotspot/share/gc/z/zDriver.cpp
++++ b/src/hotspot/share/gc/z/zDriver.cpp
+@@ -324,6 +324,17 @@ public:
+   }
+ };
+ 
++class ZDriverRelocationScopeHelper : public StackObj {
++public:
++  ZDriverRelocationScopeHelper() {
++    ZStatRelocationRate::at_start();
++  }
++
++  ~ZDriverRelocationScopeHelper() {
++    ZStatRelocationRate::at_end();
++  }
++};
++
+ void ZDriver::run_gc_cycle(GCCause::Cause cause) {
+   ZDriverCycleScope scope(cause);
+ 
+@@ -381,12 +392,12 @@ void ZDriver::run_gc_cycle(GCCause::Cause cause) {
+ 
+   // Phase 9: Pause Relocate Start
+   {
++    ZDriverRelocationScopeHelper scope_helper();
+     ZRelocateStartClosure cl;
+     vm_operation(&cl);
+-  }
+ 
+-  // Phase 10: Concurrent Relocate
+-  {
++    // Phase 10: Concurrent Relocate
++
+     ZStatTimer timer(ZPhaseConcurrentRelocated);
+     ZHeap::heap()->relocate();
+   }
+diff --git a/src/hotspot/share/gc/z/zRelocationSetSelector.cpp b/src/hotspot/share/gc/z/zRelocationSetSelector.cpp
+index 222529f14..780415498 100644
+--- a/src/hotspot/share/gc/z/zRelocationSetSelector.cpp
++++ b/src/hotspot/share/gc/z/zRelocationSetSelector.cpp
+@@ -26,27 +26,52 @@
+ #include "gc/z/zPage.inline.hpp"
+ #include "gc/z/zRelocationSet.hpp"
+ #include "gc/z/zRelocationSetSelector.hpp"
++#include "gc/z/zStat.hpp"
+ #include "logging/log.hpp"
+ #include "runtime/globals.hpp"
+ #include "utilities/debug.hpp"
+ 
++// means the probability is 1 in 1000 that a sample is outside of the confidence interval.
++const double ZRelocationSetSelectorGroup::one_in_1000 = 3.290527;
++
+ ZRelocationSetSelectorGroup::ZRelocationSetSelectorGroup(const char* name,
+                                                          size_t page_size,
+                                                          size_t object_size_limit) :
+     _name(name),
+     _page_size(page_size),
+     _object_size_limit(object_size_limit),
+-    _fragmentation_limit(page_size * (ZFragmentationLimit / 100)),
++    _fragmentation_limit(ZAdatpivePageRelcaim ? (page_size * (ZPageMinWastePercent / 100)) :
++                                                (page_size * (ZFragmentationLimit / 100))),
++    _predication_relocation_size(0),
+     _registered_pages(),
+     _sorted_pages(NULL),
+     _nselected(0),
+     _relocating(0),
+-    _fragmentation(0) {}
++    _fragmentation(0) {
++    if (is_fragment_limit_adatpive() && page_size == ZPageSizeSmall) {
++      // Predicate the relocation rate
++      double max_relocation_rate = 0.0;
++      max_relocation_rate = (ZStatRelocationRate::small_avg() * ZAllocationSpikeTolerance) +
++                            (ZStatRelocationRate::small_avg_sd() * one_in_1000);
++
++      // The decay average time
++      const AbsSeq& duration_of_relocation = ZStatRelocationRate::duration();
++      const double max_duration_of_relocation =
++              duration_of_relocation.davg() + (duration_of_relocation.dsd() * one_in_1000);
++
++      _predication_relocation_size = (size_t)max_relocation_rate * max_duration_of_relocation;
++      log_info(gc, reloc)("Predication Relocation size: " SIZE_FORMAT, _predication_relocation_size);
++    }
++}
+ 
+ ZRelocationSetSelectorGroup::~ZRelocationSetSelectorGroup() {
+   FREE_C_HEAP_ARRAY(const ZPage*, _sorted_pages);
+ }
+ 
++bool ZRelocationSetSelectorGroup::is_fragment_limit_adatpive() {
++  return ZAdatpivePageRelcaim && ZStatCycle::ncycles() >= 3; // warm up needs 2 cycles
++}
++
+ void ZRelocationSetSelectorGroup::register_live_page(const ZPage* page, size_t garbage) {
+   if (garbage > _fragmentation_limit) {
+     _registered_pages.add(page);
+@@ -104,12 +129,25 @@ void ZRelocationSetSelectorGroup::select() {
+   size_t selected_from = 0;
+   size_t selected_to = 0;
+   size_t from_size = 0;
++  bool   is_abortable_selection = false;
++  size_t cur_page_live_bytes = 0;
++  double page_min_live_percent = 100 - ZPageMaxWastePercent;
+ 
+   semi_sort();
+ 
+   for (size_t from = 1; from <= npages; from++) {
+     // Add page to the candidate relocation set
+-    from_size += _sorted_pages[from - 1]->live_bytes();
++    cur_page_live_bytes = _sorted_pages[from - 1]->live_bytes();
++    from_size += cur_page_live_bytes;
++    // Abortable selection for relocation
++    if (is_fragment_limit_adatpive() &&  _page_size == ZPageSizeSmall &&
++      from_size >= _predication_relocation_size &&
++      percent_of(cur_page_live_bytes, ZPageSizeSmall) > page_min_live_percent) {
++      // Get really relocation bytes
++      from_size -= cur_page_live_bytes;
++      is_abortable_selection = true;
++      break;
++    }
+ 
+     // Calculate the maximum number of pages needed by the candidate relocation set.
+     // By subtracting the object size limit from the pages size we get the maximum
+@@ -130,8 +168,13 @@ void ZRelocationSetSelectorGroup::select() {
+     }
+ 
+     log_trace(gc, reloc)("Candidate Relocation Set (%s Pages): "
+-                         SIZE_FORMAT "->" SIZE_FORMAT ", %.1f%% relative defragmentation, %s",
+-                         _name, from, to, diff_reclaimable, (selected_from == from) ? "Selected" : "Rejected");
++                        SIZE_FORMAT "->" SIZE_FORMAT ", %.1f%% relative defragmentation, %s",
++                        _name, from, to, diff_reclaimable, (selected_from == from) ? "Selected" : "Rejected");
++  }
++
++  if (is_abortable_selection) {
++    log_info(gc, reloc)("Abortable selection for Small Page really relocation byte is: " SIZE_FORMAT
++		               ", predication relocation byte is: " SIZE_FORMAT, from_size, _predication_relocation_size);
+   }
+ 
+   // Finalize selection
+@@ -146,6 +189,22 @@ void ZRelocationSetSelectorGroup::select() {
+ 
+   log_debug(gc, reloc)("Relocation Set (%s Pages): " SIZE_FORMAT "->" SIZE_FORMAT ", " SIZE_FORMAT " skipped",
+                        _name, selected_from, selected_to, npages - _nselected);
++
++  calculate_live_bytes();
++}
++
++void ZRelocationSetSelectorGroup::calculate_live_bytes() {
++  if (_page_size != ZPageSizeSmall) {
++    return;
++  }
++
++  if ((!ZAdatpivePageRelcaim) && (ZStatCycle::ncycles() >= 3)) {
++    return;
++  }
++
++  for (size_t from = 0; from < _nselected; from++) {
++    ZStatRelocation::_small_page_live_bytes += _sorted_pages[from]->live_bytes();
++  }
+ }
+ 
+ const ZPage* const* ZRelocationSetSelectorGroup::selected() const {
+diff --git a/src/hotspot/share/gc/z/zRelocationSetSelector.hpp b/src/hotspot/share/gc/z/zRelocationSetSelector.hpp
+index 1aa1142d5..92d2a6f39 100644
+--- a/src/hotspot/share/gc/z/zRelocationSetSelector.hpp
++++ b/src/hotspot/share/gc/z/zRelocationSetSelector.hpp
+@@ -32,10 +32,13 @@ class ZRelocationSet;
+ 
+ class ZRelocationSetSelectorGroup {
+ private:
++  static const double one_in_1000;
++
+   const char* const    _name;
+   const size_t         _page_size;
+   const size_t         _object_size_limit;
+   const size_t         _fragmentation_limit;
++  size_t               _predication_relocation_size;
+ 
+   ZArray<const ZPage*> _registered_pages;
+   const ZPage**        _sorted_pages;
+@@ -43,6 +46,7 @@ private:
+   size_t               _relocating;
+   size_t               _fragmentation;
+ 
++  bool is_fragment_limit_adatpive();
+   void semi_sort();
+ 
+ public:
+@@ -53,6 +57,7 @@ public:
+ 
+   void register_live_page(const ZPage* page, size_t garbage);
+   void select();
++  void calculate_live_bytes();
+ 
+   const ZPage* const* selected() const;
+   size_t nselected() const;
+diff --git a/src/hotspot/share/gc/z/zStat.cpp b/src/hotspot/share/gc/z/zStat.cpp
+index 3b55bdadd..a586e2897 100644
+--- a/src/hotspot/share/gc/z/zStat.cpp
++++ b/src/hotspot/share/gc/z/zStat.cpp
+@@ -1101,6 +1101,7 @@ void ZStatMark::print() {
+ // Stat relocation
+ //
+ size_t ZStatRelocation::_relocating;
++size_t ZStatRelocation::_small_page_live_bytes;
+ bool ZStatRelocation::_success;
+ 
+ void ZStatRelocation::set_at_select_relocation_set(size_t relocating) {
+@@ -1119,6 +1120,42 @@ void ZStatRelocation::print() {
+   }
+ }
+ 
++//
++// Stat relcoation rate
++//
++Ticks                       ZStatRelocationRate::_start_of_last;
++Ticks                       ZStatRelocationRate::_end_of_last;
++NumberSeq                   ZStatRelocationRate::_duration(0.3 /* alpha */);
++TruncatedSeq                ZStatRelocationRate::_small_rate;
++TruncatedSeq                ZStatRelocationRate::_small_rate_avg;
++
++void ZStatRelocationRate::at_start() {
++  _start_of_last = Ticks::now();
++}
++
++void ZStatRelocationRate::at_end() {
++  _end_of_last = Ticks::now();
++
++  const double duration = (_end_of_last - _start_of_last).seconds() + 1.0; // Add 1.0 to avoid the duration close zero
++  _duration.add(duration);
++
++  const double small_bytes_per_second = ZStatRelocation::_small_page_live_bytes / duration;
++  _small_rate.add(small_bytes_per_second);
++  _small_rate_avg.add(_small_rate.avg());
++}
++
++const AbsSeq& ZStatRelocationRate::duration() {
++  return _duration;
++}
++
++double ZStatRelocationRate::small_avg() {
++  return _small_rate.avg();
++}
++
++double ZStatRelocationRate::small_avg_sd() {
++  return _small_rate_avg.sd();
++}
++
+ //
+ // Stat nmethods
+ //
+diff --git a/src/hotspot/share/gc/z/zStat.hpp b/src/hotspot/share/gc/z/zStat.hpp
+index 3390466e6..f826378f3 100644
+--- a/src/hotspot/share/gc/z/zStat.hpp
++++ b/src/hotspot/share/gc/z/zStat.hpp
+@@ -392,12 +392,33 @@ private:
+   static bool   _success;
+ 
+ public:
++  static size_t _small_page_live_bytes;
+   static void set_at_select_relocation_set(size_t relocating);
+   static void set_at_relocate_end(bool success);
+-
+   static void print();
+ };
+ 
++//
++// Stat relocation rate
++//
++class ZStatRelocationRate : public AllStatic {
++private:
++  static Ticks                       _start_of_last;
++  static Ticks                       _end_of_last;
++  static NumberSeq                   _duration;
++  static TruncatedSeq                _small_rate;     // B/s
++  static TruncatedSeq                _small_rate_avg; // B/s
++
++public:
++  static void   at_start();
++  static void   at_end();
++
++  static const AbsSeq& duration();
++
++  static double small_avg();
++  static double small_avg_sd();
++};
++
+ //
+ // Stat nmethods
+ //
+diff --git a/src/hotspot/share/gc/z/z_globals.hpp b/src/hotspot/share/gc/z/z_globals.hpp
+index 8cee59be7..326e8ec40 100644
+--- a/src/hotspot/share/gc/z/z_globals.hpp
++++ b/src/hotspot/share/gc/z/z_globals.hpp
+@@ -49,6 +49,17 @@
+   product(double, ZFragmentationLimit, 25.0,                                \
+           "Maximum allowed heap fragmentation")                             \
+                                                                             \
++  experimental(bool, ZAdatpivePageRelcaim, false,                           \
++          "Adapptive page relcaim at relcoation phase")                     \
++                                                                            \
++  develop(double, ZPageMinWastePercent, 5.0,                                \
++          "Amount of space, expressed as a percentage of the page size, "   \
++          "that ZGC is willing not to collect to avoid expensive GCs.")     \
++          range(0.0, 100.0)                                                 \
++                                                                            \
++  product(double, ZPageMaxWastePercent, 30.0, "Adaptive small page "        \
++          "seclect minmum pages percent.")range(0.0, 100.0)                 \
++                                                                            \
+   product(bool, ZStallOnOutOfMemory, true,                                  \
+           "Allow Java threads to stall and wait for GC to complete "        \
+           "instead of immediately throwing an OutOfMemoryError")            \
+-- 
+2.19.1
+
