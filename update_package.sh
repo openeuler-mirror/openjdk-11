@@ -7,7 +7,7 @@ set -e
 export PROJECT_NAME="jdk-updates"
 export REPO_NAME="jdk11u"
 # warning, clonning without shenadnaoh prefix, you will clone pure jdk - thus without shenandaoh GC
-export VERSION="jdk-11.0.8-ga"
+export VERSION="jdk-11.0.10-ga"
 export COMPRESSION=xz
 # unset tapsets overrides
 export OPENJDK_URL=""
