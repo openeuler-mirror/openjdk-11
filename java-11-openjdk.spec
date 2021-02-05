@@ -857,6 +857,7 @@ BuildRequires: freetype-devel
 BuildRequires: giflib-devel
 BuildRequires: gcc-c++
 BuildRequires: gdb
+BuildRequires: harfbuzz-devel
 BuildRequires: lcms2-devel
 BuildRequires: libjpeg-devel
 BuildRequires: libpng-devel
@@ -1216,6 +1217,7 @@ bash ../configure \
     --with-giflib=system \
     --with-libpng=system \
     --with-lcms=system \
+    --with-harfbuzz=system \
     --with-stdc++lib=dynamic \
     --with-extra-cxxflags="$EXTRA_CPP_FLAGS" \
     --with-extra-cflags="$EXTRA_CFLAGS" \
@@ -1614,8 +1616,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
-* Thu Feb 2 2021 eapen <zhangyipeng7@huawei.com> - 1:11.0.10.9-0
+* Thu Feb 5 2021 eapen <zhangyipeng7@huawei.com> - 1:11.0.10.9-0
 - update to 11.0.10+9(GA)
+- use system harfbuzz now this is supported
 
 * Thu Dec 24 2020 kuenking <wangkun49@huawei.com> - 1:11.0.9.11-10
 - add add-SVE-backend-feature.patch
