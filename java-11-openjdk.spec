@@ -735,7 +735,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 10
+Release: 1
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -843,6 +843,9 @@ Patch56: 8247766-aarch64-guarantee-val-1U--nbits-failed-Field-too-big-for-insn.p
 Patch57: add-zgc-parameter-adaptation-feature.patch
 Patch58: add-integerCache-feature.patch
 Patch59: add-SVE-backend-feature.patch
+
+#11.0.10
+Patch60: 8240353.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1115,6 +1118,7 @@ pushd %{top_level_dir_name}
 %patch57 -p1
 %patch58 -p1
 %patch59 -p1
+%patch60 -p1
 popd # openjdk
 
 %patch1000
@@ -1617,6 +1621,13 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Thu Feb 5 2021 eapen <zhangyipeng7@huawei.com> - 1:11.0.10.9-1
+- add 8240353.patch
+
+* Thu Feb 5 2021 eapen <zhangyipeng7@huawei.com> - 1:11.0.10.9-0
+- update to 11.0.10+9(GA)
+- use system harfbuzz now this is supported
+
 * Thu Dec 24 2020 kuenking <wangkun49@huawei.com> - 1:11.0.9.11-10
 - add add-SVE-backend-feature.patch
 
