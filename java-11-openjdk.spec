@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 4
+Release: 5
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -852,6 +852,7 @@ Patch62: 8254078-DataOutputStream-is-very-slow-post-disabling.patch
 Patch63: 8217918-C2-XX-AggressiveUnboxing-is-broken.patch
 Patch64: Fix-the-memcpy-symbol-issue-during-JDK11-x64-build.patch
 Patch65: add-LazyBox-feature.patch
+Patch66: add-G1-Full-GC-optimization.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1127,6 +1128,7 @@ pushd %{top_level_dir_name}
 %patch63 -p1
 %patch64 -p1
 %patch65 -p1
+%patch66 -p1
 popd # openjdk
 
 %patch1000
@@ -1630,6 +1632,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Fri Mar 19 2021 aijm <aijiaming1@huawei.com> - 1:11.0.10.9-5
+- add add-G1-Full-GC-optimization.patch
+
 * Fri Mar 19 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.10.9-4
 - add add-LazyBox-feature.patch
 
