@@ -1,0 +1,218 @@
+From 0f9ef0bc57aa0e7d8457b645374be74d510ea7ae Mon Sep 17 00:00:00 2001
+Date: Thu, 18 Mar 2021 12:35:14 +0000
+Subject: [PATCH 2/4] 8254078: DataOutputStream is very slow post disabling
+
+---
+ .../classes/java/io/DataInputStream.java      |   7 +-
+ .../classes/java/io/DataOutputStream.java     |  24 ++--
+ .../bench/java/io/DataOutputStreamTest.java   | 124 ++++++++++++++++++
+ 3 files changed, 144 insertions(+), 11 deletions(-)
+ create mode 100644 test/micro/org/openjdk/bench/java/io/DataOutputStreamTest.java
+
+diff --git a/src/java.base/share/classes/java/io/DataInputStream.java b/src/java.base/share/classes/java/io/DataInputStream.java
+index f92c4f91b..114857691 100644
+--- a/src/java.base/share/classes/java/io/DataInputStream.java
++++ b/src/java.base/share/classes/java/io/DataInputStream.java
+@@ -31,9 +31,10 @@ package java.io;
+  * way. An application uses a data output stream to write data that
+  * can later be read by a data input stream.
+  * <p>
+- * DataInputStream is not necessarily safe for multithreaded access.
+- * Thread safety is optional and is the responsibility of users of
+- * methods in this class.
++ * A DataInputStream is not safe for use by multiple concurrent
++ * threads. If a DataInputStream is to be used by more than one
++ * thread then access to the data input stream should be controlled
++ * by appropriate synchronization.
+  *
+  * @author  Arthur van Hoff
+  * @see     java.io.DataOutputStream
+diff --git a/src/java.base/share/classes/java/io/DataOutputStream.java b/src/java.base/share/classes/java/io/DataOutputStream.java
+index 392abba92..7c0962442 100644
+--- a/src/java.base/share/classes/java/io/DataOutputStream.java
++++ b/src/java.base/share/classes/java/io/DataOutputStream.java
+@@ -29,6 +29,11 @@ package java.io;
+  * A data output stream lets an application write primitive Java data
+  * types to an output stream in a portable way. An application can
+  * then use a data input stream to read the data back in.
++ * <p>
++ * A DataOutputStream is not safe for use by multiple concurrent
++ * threads. If a DataOutputStream is to be used by more than one
++ * thread then access to the data output stream should be controlled
++ * by appropriate synchronization.
+  *
+  * @author  unascribed
+  * @see     java.io.DataInputStream
+@@ -164,8 +169,9 @@ class DataOutputStream extends FilterOutputStream implements DataOutput {
+      * @see        java.io.FilterOutputStream#out
+      */
+     public final void writeShort(int v) throws IOException {
+-        out.write((v >>> 8) & 0xFF);
+-        out.write((v >>> 0) & 0xFF);
++        writeBuffer[0] = (byte)(v >>> 8);
++        writeBuffer[1] = (byte)(v >>> 0);
++        out.write(writeBuffer, 0, 2);
+         incCount(2);
+     }
+ 
+@@ -179,8 +185,9 @@ class DataOutputStream extends FilterOutputStream implements DataOutput {
+      * @see        java.io.FilterOutputStream#out
+      */
+     public final void writeChar(int v) throws IOException {
+-        out.write((v >>> 8) & 0xFF);
+-        out.write((v >>> 0) & 0xFF);
++        writeBuffer[0] = (byte)(v >>> 8);
++        writeBuffer[1] = (byte)(v >>> 0);
++        out.write(writeBuffer, 0, 2);
+         incCount(2);
+     }
+ 
+@@ -194,10 +201,11 @@ class DataOutputStream extends FilterOutputStream implements DataOutput {
+      * @see        java.io.FilterOutputStream#out
+      */
+     public final void writeInt(int v) throws IOException {
+-        out.write((v >>> 24) & 0xFF);
+-        out.write((v >>> 16) & 0xFF);
+-        out.write((v >>>  8) & 0xFF);
+-        out.write((v >>>  0) & 0xFF);
++        writeBuffer[0] = (byte)(v >>> 24);
++        writeBuffer[1] = (byte)(v >>> 16);
++        writeBuffer[2] = (byte)(v >>>  8);
++        writeBuffer[3] = (byte)(v >>>  0);
++        out.write(writeBuffer, 0, 4);
+         incCount(4);
+     }
+ 
+diff --git a/test/micro/org/openjdk/bench/java/io/DataOutputStreamTest.java b/test/micro/org/openjdk/bench/java/io/DataOutputStreamTest.java
+new file mode 100644
+index 000000000..2f573e6dd
+--- /dev/null
++++ b/test/micro/org/openjdk/bench/java/io/DataOutputStreamTest.java
+@@ -0,0 +1,124 @@
++/*
++ * Copyright (c) 2020, Red Hat Inc. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++package org.openjdk.bench.java.io;
++
++import org.openjdk.jmh.annotations.*;
++
++import java.io.*;
++import java.util.concurrent.TimeUnit;
++
++@BenchmarkMode(Mode.AverageTime)
++@OutputTimeUnit(TimeUnit.MICROSECONDS)
++@Fork(value = 1, warmups = 0)
++@Measurement(iterations = 6, time = 1)
++@Warmup(iterations=2, time = 2)
++@State(Scope.Benchmark)
++public class DataOutputStreamTest {
++
++    public enum BasicType {CHAR, SHORT, INT, STRING}
++    @Param({"CHAR", "SHORT", "INT", /* "STRING"*/}) BasicType basicType;
++
++    @Param({"4096"}) int size;
++
++    final ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream(size);
++    File f;
++    String outputString;
++    FileOutputStream fileOutputStream;
++    DataOutput bufferedFileStream, rawFileStream, byteArrayStream;
++
++    @Setup(Level.Trial)
++    public void setup() throws Exception {
++        f = File.createTempFile("DataOutputStreamTest","out");
++        fileOutputStream = new FileOutputStream(f);
++        byteArrayStream = new DataOutputStream(byteArrayOutputStream);
++        rawFileStream = new DataOutputStream(fileOutputStream);
++        bufferedFileStream = new DataOutputStream(new BufferedOutputStream(fileOutputStream));
++        outputString = new String(new byte[size]);
++    }
++
++    public void writeChars(DataOutput dataOutput)
++            throws Exception {
++        for (int i = 0; i < size; i += 2) {
++            dataOutput.writeChar(i);
++        }
++    }
++
++    public void writeShorts(DataOutput dataOutput)
++            throws Exception {
++        for (int i = 0; i < size; i += 2) {
++            dataOutput.writeShort(i);
++        }
++    }
++
++    public void writeInts(DataOutput dataOutput)
++            throws Exception {
++        for (int i = 0; i < size; i += 4) {
++            dataOutput.writeInt(i);
++        }
++    }
++
++    public void writeString(DataOutput dataOutput)
++            throws Exception {
++        dataOutput.writeChars(outputString);
++    }
++
++    public void write(DataOutput dataOutput)
++            throws Exception {
++        switch (basicType) {
++            case CHAR:
++                writeChars(dataOutput);
++                break;
++            case SHORT:
++                writeShorts(dataOutput);
++                break;
++            case INT:
++                writeInts(dataOutput);
++                break;
++            case STRING:
++                writeString(dataOutput);
++                break;
++        }
++    }
++
++    @Benchmark
++    public void dataOutputStreamOverByteArray() throws Exception {
++        byteArrayOutputStream.reset();
++        write(byteArrayStream);
++        byteArrayOutputStream.flush();
++    }
++
++    @Benchmark
++    public void dataOutputStreamOverRawFileStream() throws Exception {
++        fileOutputStream.getChannel().position(0);
++        write(rawFileStream);
++        fileOutputStream.flush();
++    }
++
++    @Benchmark
++    public void dataOutputStreamOverBufferedFileStream() throws Exception{
++        fileOutputStream.getChannel().position(0);
++        write(bufferedFileStream);
++        fileOutputStream.flush();
++    }
++}
+-- 
+2.19.0
+
