@@ -114,7 +114,7 @@
 
 # New Version-String scheme-style defines
 %global majorver 11
-%global securityver 9
+%global securityver 10
 # buildjdkver is usually same as %%{majorver},
 # but in time of bootstrap of next jdk, it is majorver-1,
 # and this it is better to change it here, on single place
@@ -130,16 +130,21 @@
 %global origin_nice     OpenJDK
 %global top_level_dir_name   %{origin}
 %global minorver        0
-%global buildver        11
+%global buildver        9
+%global patchver	0
 
 %global project		jdk-updates
 %global repo		jdk11u
-%global revision	jdk-11.0.9-ga
+%global revision	jdk-11.0.10-ga
 %global full_revision %{project}-%{repo}-%{revision}
 # priority must be 7 digits in total
 # setting to 1, so debug ones can have 0
 %global priority        00000%{minorver}1
+%if %{patchver}
+%global newjavaver     %{majorver}.%{minorver}.%{securityver}.%{patchver}
+%else
 %global newjavaver     %{majorver}.%{minorver}.%{securityver}
+%endif
 
 %global javaver         %{majorver}
 
@@ -735,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 10
+Release: 6
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -823,7 +828,6 @@ Patch37: fix-compile-error-without-disable-precompiled-headers.patch
 Patch38: fast-serializer-jdk11.patch
 Patch39: fix-jck-failure-on-FastSerializer.patch
 Patch40: 8223667-ASAN-build-broken.patch
-Patch41: 8229495-SIGILL-in-C2-generated-OSR-compilation.patch
 Patch42: 8229496-SIGFPE-division-by-zero-in-C2-OSR-compiled-method.patch
 Patch43: 8243670-Unexpected-test-result-caused-by-C2-MergeMem.patch
 Patch45: leaf-optimize-in-ParallelScanvageGC.patch
@@ -834,15 +838,22 @@ Patch49: 8237483-AArch64-C1-OopMap-inserted-twice-fatal-error.patch
 Patch50: 8248336-AArch64-C2-offset-overflow-in-BoxLockNode-em.patch
 
 # 11.0.9
-Patch51: 8255781-Bump-patch-update-version-for-OpenJDK-jdk-11.0.9.1.patch
-Patch52: 8250861-Crash-in-MinINode-Ideal.patch
-Patch53: 8236512-PKCS11-Connection-closed-after-Cipher-doFinal-and-NoPadding.patch
 Patch54: 8207160-ClassReader-adjustMethodParams-can-potentially-return-null-if-the-args-list-is-empty.patch
 Patch55: 8215047-Task-terminators-do-not-complete-termination-in-consistent-state.patch
 Patch56: 8247766-aarch64-guarantee-val-1U--nbits-failed-Field-too-big-for-insn.patch
 Patch57: add-zgc-parameter-adaptation-feature.patch
 Patch58: add-integerCache-feature.patch
 Patch59: add-SVE-backend-feature.patch
+
+#11.0.10
+Patch60: 8240353.patch
+Patch61: downgrade-the-symver-of-log2f-posix-spawn.patch
+Patch62: 8254078-DataOutputStream-is-very-slow-post-disabling.patch
+Patch63: 8217918-C2-XX-AggressiveUnboxing-is-broken.patch
+Patch64: Fix-the-memcpy-symbol-issue-during-JDK11-x64-build.patch
+Patch65: add-LazyBox-feature.patch
+Patch66: add-G1-Full-GC-optimization.patch
+Patch67: 8214535-support-Jmap-parallel.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -856,6 +867,7 @@ BuildRequires: freetype-devel
 BuildRequires: giflib-devel
 BuildRequires: gcc-c++
 BuildRequires: gdb
+BuildRequires: harfbuzz-devel
 BuildRequires: lcms2-devel
 BuildRequires: libjpeg-devel
 BuildRequires: libpng-devel
@@ -1097,7 +1109,6 @@ pushd %{top_level_dir_name}
 %patch38 -p1
 %patch39 -p1
 %patch40 -p1
-%patch41 -p1
 %patch42 -p1
 %patch43 -p1
 %patch45 -p1
@@ -1106,15 +1117,20 @@ pushd %{top_level_dir_name}
 %patch48 -p1
 %patch49 -p1
 %patch50 -p1
-%patch51 -p1
-%patch52 -p1
-%patch53 -p1
 %patch54 -p1
 %patch55 -p1
 %patch56 -p1
 %patch57 -p1
 %patch58 -p1
 %patch59 -p1
+%patch60 -p1
+%patch61 -p1
+%patch62 -p1
+%patch63 -p1
+%patch64 -p1
+%patch65 -p1
+%patch66 -p1
+%patch67 -p1
 popd # openjdk
 
 %patch1000
@@ -1219,6 +1235,7 @@ bash ../configure \
     --with-giflib=system \
     --with-libpng=system \
     --with-lcms=system \
+    --with-harfbuzz=system \
     --with-stdc++lib=dynamic \
     --with-extra-cxxflags="$EXTRA_CPP_FLAGS" \
     --with-extra-cflags="$EXTRA_CFLAGS" \
@@ -1408,7 +1425,7 @@ if ! echo $suffix | grep -q "debug" ; then
   # Install Javadoc documentation
   install -d -m 755 $RPM_BUILD_ROOT%{_javadocdir}
   cp -a %{buildoutputdir -- $suffix}/images/docs $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}
-  cp -a %{buildoutputdir -- $suffix}/bundles/jdk-%{newjavaver}.1+%{buildver}-docs.zip $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}.zip
+  cp -a %{buildoutputdir -- $suffix}/bundles/jdk-%{newjavaver}+%{buildver}-docs.zip $RPM_BUILD_ROOT%{_javadocdir}/%{uniquejavadocdir -- $suffix}.zip
 fi
 
 # Install icons and menu entries
@@ -1617,6 +1634,31 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Fri Mar 19 2021 aijm <aijiaming1@huawei.com> - 1:11.0.10.9-6
+- add 8214535-support-Jmap-parallel.patch
+
+* Fri Mar 19 2021 aijm <aijiaming1@huawei.com> - 1:11.0.10.9-5
+- add add-G1-Full-GC-optimization.patch
+
+* Fri Mar 19 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.10.9-4
+- add add-LazyBox-feature.patch
+
+* Fri Mar 19 2021 aijm <aijiaming1@huawei.com> - 1:11.0.10.9-3
+- add downgrade-the-symver-of-log2f-posix-spawn.patch
+- add 8254078-DataOutputStream-is-very-slow-post-disabling.patch
+- add 8217918-C2-XX-AggressiveUnboxing-is-broken.patch
+- add Fix-the-memcpy-symbol-issue-during-JDK11-x64-build.patch
+
+* Sun Feb 7 2021 jdkboy <ge.guo@huawei.com> - 1:11.0.10.9-2
+- remove redundant file info
+
+* Thu Feb 5 2021 eapen <zhangyipeng7@huawei.com> - 1:11.0.10.9-1
+- add 8240353.patch
+
+* Thu Feb 5 2021 eapen <zhangyipeng7@huawei.com> - 1:11.0.10.9-0
+- update to 11.0.10+9(GA)
+- use system harfbuzz now this is supported
+
 * Thu Dec 24 2020 kuenking <wangkun49@huawei.com> - 1:11.0.9.11-10
 - add add-SVE-backend-feature.patch
 
