@@ -1,0 +1,752 @@
+From 54bd3b89d00c7eba9119e3dfa3d49b7c9ec79d30 Mon Sep 17 00:00:00 2001
+Date: Tue, 16 Mar 2021 07:09:02 +0000
+Subject: [PATCH 3/4] add G1 Full GC optimization
+
+---
+ src/hotspot/share/gc/g1/g1CollectedHeap.cpp   | 15 +++-
+ src/hotspot/share/gc/g1/g1CollectedHeap.hpp   |  2 +-
+ src/hotspot/share/gc/g1/g1FullCollector.cpp   |  5 ++
+ src/hotspot/share/gc/g1/g1FullCollector.hpp   |  3 +
+ .../share/gc/g1/g1FullGCCompactTask.cpp       | 14 +++
+ .../share/gc/g1/g1FullGCCompactTask.hpp       |  1 +
+ src/hotspot/share/gc/g1/g1FullGCMarkTask.cpp  |  2 +
+ .../share/gc/g1/g1FullGCMarker.inline.hpp     |  5 ++
+ .../share/gc/g1/g1FullGCPrepareTask.cpp       | 52 ++++++++---
+ .../share/gc/g1/g1FullGCPrepareTask.hpp       |  7 +-
+ src/hotspot/share/gc/g1/g1MarkLiveWords.cpp   | 37 ++++++++
+ src/hotspot/share/gc/g1/g1MarkLiveWords.hpp   | 34 +++++++
+ src/hotspot/share/gc/g1/g1MarkRegionCache.cpp | 49 +++++++++++
+ src/hotspot/share/gc/g1/g1MarkRegionCache.hpp | 40 +++++++++
+ src/hotspot/share/gc/g1/g1_globals.hpp        | 10 ++-
+ src/hotspot/share/gc/g1/heapRegion.cpp        |  3 +-
+ src/hotspot/share/gc/g1/heapRegion.hpp        |  9 +-
+ src/hotspot/share/gc/g1/heapRegionManager.hpp |  1 +
+ src/hotspot/share/gc/g1/heapRegionSet.cpp     | 15 ----
+ src/hotspot/share/gc/g1/heapRegionSet.hpp     |  2 -
+ test/hotspot/jtreg/gc/g1/TestG1NoMoving.java  | 88 +++++++++++++++++++
+ 21 files changed, 359 insertions(+), 35 deletions(-)
+ create mode 100644 src/hotspot/share/gc/g1/g1MarkLiveWords.cpp
+ create mode 100644 src/hotspot/share/gc/g1/g1MarkLiveWords.hpp
+ create mode 100644 src/hotspot/share/gc/g1/g1MarkRegionCache.cpp
+ create mode 100644 src/hotspot/share/gc/g1/g1MarkRegionCache.hpp
+ create mode 100644 test/hotspot/jtreg/gc/g1/TestG1NoMoving.java
+
+diff --git a/src/hotspot/share/gc/g1/g1CollectedHeap.cpp b/src/hotspot/share/gc/g1/g1CollectedHeap.cpp
+index 130f8ec0a..7e9c6254c 100644
+--- a/src/hotspot/share/gc/g1/g1CollectedHeap.cpp
++++ b/src/hotspot/share/gc/g1/g1CollectedHeap.cpp
+@@ -2571,6 +2571,17 @@ void G1CollectedHeap::gc_epilogue(bool full) {
+   _numa->print_statistics();
+ }
+ 
++void G1CollectedHeap::verify_numa_regions(const char* desc) {
++  LogTarget(Trace, gc, heap, verify) lt;
++
++  if (lt.is_enabled()) {
++    LogStream ls(lt);
++    // Iterate all heap regions to print matching between preferred numa id and actual numa id.
++    G1NodeIndexCheckClosure cl(desc, _numa, &ls);
++    heap_region_iterate(&cl);
++  }
++}
++
+ HeapWord* G1CollectedHeap::do_collection_pause(size_t word_size,
+                                                uint gc_count_before,
+                                                bool* succeeded,
+@@ -2975,7 +2986,7 @@ G1CollectedHeap::do_collection_pause_at_safepoint(double target_pause_time_ms) {
+       _verifier->verify_before_gc(verify_type);
+ 
+       _verifier->check_bitmaps("GC Start");
+-
++      verify_numa_regions("GC Start");
+ #if COMPILER2_OR_JVMCI
+       DerivedPointerTable::clear();
+ #endif
+@@ -3129,7 +3140,7 @@ G1CollectedHeap::do_collection_pause_at_safepoint(double target_pause_time_ms) {
+ 
+         _verifier->verify_after_gc(verify_type);
+         _verifier->check_bitmaps("GC End");
+-
++        verify_numa_regions("GC End");
+         assert(!_ref_processor_stw->discovery_enabled(), "Postcondition");
+         _ref_processor_stw->verify_no_references_recorded();
+ 
+diff --git a/src/hotspot/share/gc/g1/g1CollectedHeap.hpp b/src/hotspot/share/gc/g1/g1CollectedHeap.hpp
+index aafaf6a08..bb46cae83 100644
+--- a/src/hotspot/share/gc/g1/g1CollectedHeap.hpp
++++ b/src/hotspot/share/gc/g1/g1CollectedHeap.hpp
+@@ -722,7 +722,7 @@ private:
+   void print_taskqueue_stats() const;
+   void reset_taskqueue_stats();
+   #endif // TASKQUEUE_STATS
+-
++  void verify_numa_regions(const char* desc);
+   // Schedule the VM operation that will do an evacuation pause to
+   // satisfy an allocation request of word_size. *succeeded will
+   // return whether the VM operation was successful (it did do an
+diff --git a/src/hotspot/share/gc/g1/g1FullCollector.cpp b/src/hotspot/share/gc/g1/g1FullCollector.cpp
+index 4362ee87e..661a3dd9f 100644
+--- a/src/hotspot/share/gc/g1/g1FullCollector.cpp
++++ b/src/hotspot/share/gc/g1/g1FullCollector.cpp
+@@ -37,6 +37,7 @@
+ #include "gc/g1/g1OopClosures.hpp"
+ #include "gc/g1/g1Policy.hpp"
+ #include "gc/g1/g1StringDedup.hpp"
++#include "gc/g1/g1MarkRegionCache.hpp"
+ #include "gc/shared/adaptiveSizePolicy.hpp"
+ #include "gc/shared/gcTraceTime.inline.hpp"
+ #include "gc/shared/preservedMarks.hpp"
+@@ -120,9 +121,11 @@ G1FullCollector::G1FullCollector(G1CollectedHeap* heap, GCMemoryManager* memory_
+   _preserved_marks_set.init(_num_workers);
+   _markers = NEW_C_HEAP_ARRAY(G1FullGCMarker*, _num_workers, mtGC);
+   _compaction_points = NEW_C_HEAP_ARRAY(G1FullGCCompactionPoint*, _num_workers, mtGC);
++  _no_moving_region_compaction_points = NEW_C_HEAP_ARRAY(G1FullGCCompactionPoint*, _num_workers, mtGC);
+   for (uint i = 0; i < _num_workers; i++) {
+     _markers[i] = new G1FullGCMarker(i, _preserved_marks_set.get(i), mark_bitmap());
+     _compaction_points[i] = new G1FullGCCompactionPoint();
++    _no_moving_region_compaction_points[i] = new G1FullGCCompactionPoint();
+     _oop_queue_set.register_queue(i, marker(i)->oop_stack());
+     _array_queue_set.register_queue(i, marker(i)->objarray_stack());
+   }
+@@ -132,9 +135,11 @@ G1FullCollector::~G1FullCollector() {
+   for (uint i = 0; i < _num_workers; i++) {
+     delete _markers[i];
+     delete _compaction_points[i];
++    delete _no_moving_region_compaction_points[i];
+   }
+   FREE_C_HEAP_ARRAY(G1FullGCMarker*, _markers);
+   FREE_C_HEAP_ARRAY(G1FullGCCompactionPoint*, _compaction_points);
++  FREE_C_HEAP_ARRAY(G1FullGCCompactionPoint*, _no_moving_region_compaction_points);
+ }
+ 
+ void G1FullCollector::prepare_collection() {
+diff --git a/src/hotspot/share/gc/g1/g1FullCollector.hpp b/src/hotspot/share/gc/g1/g1FullCollector.hpp
+index 0b97abeea..f81fe1059 100644
+--- a/src/hotspot/share/gc/g1/g1FullCollector.hpp
++++ b/src/hotspot/share/gc/g1/g1FullCollector.hpp
+@@ -66,6 +66,8 @@ class G1FullCollector : StackObj {
+   G1IsAliveClosure          _is_alive;
+   ReferenceProcessorIsAliveMutator _is_alive_mutator;
+ 
++  G1FullGCCompactionPoint**   _no_moving_region_compaction_points;
++
+   static uint calc_active_workers();
+ 
+   G1FullGCSubjectToDiscoveryClosure _always_subject_to_discovery;
+@@ -83,6 +85,7 @@ public:
+   uint                     workers() { return _num_workers; }
+   G1FullGCMarker*          marker(uint id) { return _markers[id]; }
+   G1FullGCCompactionPoint* compaction_point(uint id) { return _compaction_points[id]; }
++  G1FullGCCompactionPoint* no_moving_region_compaction_point(uint id) { return _no_moving_region_compaction_points[id]; }
+   OopQueueSet*             oop_queue_set() { return &_oop_queue_set; }
+   ObjArrayTaskQueueSet*    array_queue_set() { return &_array_queue_set; }
+   PreservedMarksSet*       preserved_mark_set() { return &_preserved_marks_set; }
+diff --git a/src/hotspot/share/gc/g1/g1FullGCCompactTask.cpp b/src/hotspot/share/gc/g1/g1FullGCCompactTask.cpp
+index 0c2fc088f..eab1b2121 100644
+--- a/src/hotspot/share/gc/g1/g1FullGCCompactTask.cpp
++++ b/src/hotspot/share/gc/g1/g1FullGCCompactTask.cpp
+@@ -87,6 +87,11 @@ void G1FullGCCompactTask::compact_region(HeapRegion* hr) {
+   hr->complete_compaction();
+ }
+ 
++void G1FullGCCompactTask::process_no_moving_region(HeapRegion* hr) {
++  collector()->mark_bitmap()->clear_region(hr);
++  hr->reset_no_compaction_region_during_compaction();
++}
++
+ void G1FullGCCompactTask::work(uint worker_id) {
+   Ticks start = Ticks::now();
+   GrowableArray<HeapRegion*>* compaction_queue = collector()->compaction_point(worker_id)->regions();
+@@ -96,6 +101,15 @@ void G1FullGCCompactTask::work(uint worker_id) {
+     compact_region(*it);
+   }
+ 
++  if (G1FullGCNoMoving) {
++    GrowableArray<HeapRegion*>* no_move_region_queue = collector()->no_moving_region_compaction_point(worker_id)->regions();
++    for (GrowableArrayIterator<HeapRegion*> it = no_move_region_queue->begin();
++         it != no_move_region_queue->end();
++         ++it) {
++      process_no_moving_region(*it);
++    }
++  }
++
+   G1ResetHumongousClosure hc(collector()->mark_bitmap());
+   G1CollectedHeap::heap()->heap_region_par_iterate_from_worker_offset(&hc, &_claimer, worker_id);
+   log_task("Compaction task", worker_id, start);
+diff --git a/src/hotspot/share/gc/g1/g1FullGCCompactTask.hpp b/src/hotspot/share/gc/g1/g1FullGCCompactTask.hpp
+index 6c8eaf596..25221599a 100644
+--- a/src/hotspot/share/gc/g1/g1FullGCCompactTask.hpp
++++ b/src/hotspot/share/gc/g1/g1FullGCCompactTask.hpp
+@@ -41,6 +41,7 @@ protected:
+ 
+ private:
+   void compact_region(HeapRegion* hr);
++  void process_no_moving_region(HeapRegion* hr);
+ 
+ public:
+   G1FullGCCompactTask(G1FullCollector* collector) :
+diff --git a/src/hotspot/share/gc/g1/g1FullGCMarkTask.cpp b/src/hotspot/share/gc/g1/g1FullGCMarkTask.cpp
+index d2c4b8d60..d982ef94a 100644
+--- a/src/hotspot/share/gc/g1/g1FullGCMarkTask.cpp
++++ b/src/hotspot/share/gc/g1/g1FullGCMarkTask.cpp
+@@ -29,6 +29,7 @@
+ #include "gc/g1/g1FullGCMarkTask.hpp"
+ #include "gc/g1/g1FullGCOopClosures.inline.hpp"
+ #include "gc/g1/g1FullGCReferenceProcessorExecutor.hpp"
++#include "gc/g1/g1MarkLiveWords.hpp"
+ #include "gc/shared/gcTraceTime.inline.hpp"
+ #include "gc/shared/referenceProcessor.hpp"
+ #include "memory/iterator.inline.hpp"
+@@ -42,6 +43,7 @@ G1FullGCMarkTask::G1FullGCMarkTask(G1FullCollector* collector) :
+ }
+ 
+ void G1FullGCMarkTask::work(uint worker_id) {
++  G1MarkLiveWords g1_mark_live_words;
+   Ticks start = Ticks::now();
+   ResourceMark rm;
+   G1FullGCMarker* marker = collector()->marker(worker_id);
+diff --git a/src/hotspot/share/gc/g1/g1FullGCMarker.inline.hpp b/src/hotspot/share/gc/g1/g1FullGCMarker.inline.hpp
+index 98a2fe7f1..78555b30f 100644
+--- a/src/hotspot/share/gc/g1/g1FullGCMarker.inline.hpp
++++ b/src/hotspot/share/gc/g1/g1FullGCMarker.inline.hpp
+@@ -31,6 +31,7 @@
+ #include "gc/g1/g1FullGCOopClosures.inline.hpp"
+ #include "gc/g1/g1StringDedup.hpp"
+ #include "gc/g1/g1StringDedupQueue.hpp"
++#include "gc/g1/g1MarkLiveWords.hpp"
+ #include "gc/shared/preservedMarks.inline.hpp"
+ #include "oops/access.inline.hpp"
+ #include "oops/compressedOops.inline.hpp"
+@@ -68,6 +69,10 @@ template <class T> inline void G1FullGCMarker::mark_and_push(T* p) {
+   if (!CompressedOops::is_null(heap_oop)) {
+     oop obj = CompressedOops::decode_not_null(heap_oop);
+     if (mark_object(obj)) {
++      uint hr_index = G1CollectedHeap::heap()->addr_to_region((HeapWord*)obj);
++      if (_tl_live_words_cache != NULL) {
++        _tl_live_words_cache->inc_live(hr_index, (size_t)obj->size());
++      }
+       _oop_stack.push(obj);
+       assert(_bitmap->is_marked(obj), "Must be marked now - map self");
+     } else {
+diff --git a/src/hotspot/share/gc/g1/g1FullGCPrepareTask.cpp b/src/hotspot/share/gc/g1/g1FullGCPrepareTask.cpp
+index 3f0e18fc8..2cc9c87d0 100644
+--- a/src/hotspot/share/gc/g1/g1FullGCPrepareTask.cpp
++++ b/src/hotspot/share/gc/g1/g1FullGCPrepareTask.cpp
+@@ -78,7 +78,8 @@ bool G1FullGCPrepareTask::has_freed_regions() {
+ void G1FullGCPrepareTask::work(uint worker_id) {
+   Ticks start = Ticks::now();
+   G1FullGCCompactionPoint* compaction_point = collector()->compaction_point(worker_id);
+-  G1CalculatePointersClosure closure(collector()->mark_bitmap(), compaction_point);
++  G1FullGCCompactionPoint* no_moving_regions_compaction_point = collector()->no_moving_region_compaction_point(worker_id);
++  G1CalculatePointersClosure closure(collector()->mark_bitmap(), compaction_point, no_moving_regions_compaction_point);
+   G1CollectedHeap::heap()->heap_region_par_iterate_from_start(&closure, &_hrclaimer);
+ 
+   // Update humongous region sets
+@@ -93,11 +94,14 @@ void G1FullGCPrepareTask::work(uint worker_id) {
+ }
+ 
+ G1FullGCPrepareTask::G1CalculatePointersClosure::G1CalculatePointersClosure(G1CMBitMap* bitmap,
+-                                                                            G1FullGCCompactionPoint* cp) :
++                                                                            G1FullGCCompactionPoint* cp,
++                                                                            G1FullGCCompactionPoint* no_moving_regions_cp) :
+     _g1h(G1CollectedHeap::heap()),
+     _bitmap(bitmap),
+     _cp(cp),
+-    _humongous_regions_removed(0) { }
++    _no_moving_regions_cp(no_moving_regions_cp),
++    _humongous_regions_removed(0),
++    _hr_live_bytes_threshold((size_t)HeapRegion::GrainBytes * G1NoMovingRegionLiveBytesLowerThreshold / 100) { }
+ 
+ void G1FullGCPrepareTask::G1CalculatePointersClosure::free_humongous_region(HeapRegion* hr) {
+   FreeRegionList dummy_free_list("Dummy Free List for G1MarkSweep");
+@@ -113,7 +117,7 @@ void G1FullGCPrepareTask::G1CalculatePointersClosure::free_humongous_region(Heap
+ void G1FullGCPrepareTask::G1CalculatePointersClosure::reset_region_metadata(HeapRegion* hr) {
+   hr->rem_set()->clear();
+   hr->clear_cardtable();
+-
++  hr->set_live_words_after_mark((size_t)0);
+   if (_g1h->g1_hot_card_cache()->use_cache()) {
+     _g1h->g1_hot_card_cache()->reset_card_counts(hr);
+   }
+@@ -151,13 +155,41 @@ void G1FullGCPrepareTask::G1CalculatePointersClosure::prepare_for_compaction_wor
+ }
+ 
+ void G1FullGCPrepareTask::G1CalculatePointersClosure::prepare_for_compaction(HeapRegion* hr) {
+-  if (!_cp->is_initialized()) {
+-    hr->set_compaction_top(hr->bottom());
+-    _cp->initialize(hr, true);
++  size_t live_bytes_after_mark = hr->live_bytes_after_mark();
++  if(!G1FullGCNoMoving || live_bytes_after_mark < _hr_live_bytes_threshold || hr->is_humongous()) {
++    if (!_cp->is_initialized()) {
++      hr->set_compaction_top(hr->bottom());
++      _cp->initialize(hr, true);
++    }
++    // Add region to the compaction queue and prepare it.
++    _cp->add(hr);
++    prepare_for_compaction_work(_cp, hr);
++  } else {
++    prepare_no_moving_region(hr);
++    _no_moving_regions_cp->add(hr);
++    log_debug(gc, phases)("no moving region index: %u, live bytes: "SIZE_FORMAT, hr->hrm_index(), live_bytes_after_mark);
++  }
++}
++
++void G1FullGCPrepareTask::G1CalculatePointersClosure::prepare_no_moving_region(const HeapRegion* hr) {
++  const HeapRegion* current = hr;
++  assert(!current->is_humongous(), "Should be no humongous regions");
++  HeapWord* limit = current->top();
++  HeapWord* next_addr = current->bottom();
++  while (next_addr < limit) {
++    Prefetch::write(next_addr, PrefetchScanIntervalInBytes);
++    oop obj = oop(next_addr);
++    size_t obj_size = obj->size();
++    if (_bitmap->is_marked(next_addr)) {
++      if (obj->forwardee() != NULL) {
++        obj->init_mark_raw();
++      }
++    } else {
++      // Fill dummy object to replace dead object
++      Universe::heap()->fill_with_dummy_object(next_addr, next_addr + obj_size, true);
++    }
++    next_addr += obj_size;
+   }
+-  // Add region to the compaction queue and prepare it.
+-  _cp->add(hr);
+-  prepare_for_compaction_work(_cp, hr);
+ }
+ 
+ void G1FullGCPrepareTask::prepare_serial_compaction() {
+diff --git a/src/hotspot/share/gc/g1/g1FullGCPrepareTask.hpp b/src/hotspot/share/gc/g1/g1FullGCPrepareTask.hpp
+index fcaf797a1..57b53c9dd 100644
+--- a/src/hotspot/share/gc/g1/g1FullGCPrepareTask.hpp
++++ b/src/hotspot/share/gc/g1/g1FullGCPrepareTask.hpp
+@@ -39,7 +39,6 @@ class G1FullGCPrepareTask : public G1FullGCTask {
+ protected:
+   volatile bool     _freed_regions;
+   HeapRegionClaimer _hrclaimer;
+-
+   void set_freed_regions();
+ 
+ public:
+@@ -54,16 +53,20 @@ protected:
+     G1CollectedHeap* _g1h;
+     G1CMBitMap* _bitmap;
+     G1FullGCCompactionPoint* _cp;
++    G1FullGCCompactionPoint* _no_moving_regions_cp;
+     uint _humongous_regions_removed;
++    size_t _hr_live_bytes_threshold;
+ 
+     virtual void prepare_for_compaction(HeapRegion* hr);
+     void prepare_for_compaction_work(G1FullGCCompactionPoint* cp, HeapRegion* hr);
+     void free_humongous_region(HeapRegion* hr);
+     void reset_region_metadata(HeapRegion* hr);
++    void prepare_no_moving_region(const HeapRegion* hr);
+ 
+   public:
+     G1CalculatePointersClosure(G1CMBitMap* bitmap,
+-                               G1FullGCCompactionPoint* cp);
++                               G1FullGCCompactionPoint* cp,
++                               G1FullGCCompactionPoint* no_moving_regions_cp);
+ 
+     void update_sets();
+     bool do_heap_region(HeapRegion* hr);
+diff --git a/src/hotspot/share/gc/g1/g1MarkLiveWords.cpp b/src/hotspot/share/gc/g1/g1MarkLiveWords.cpp
+new file mode 100644
+index 000000000..32da3800a
+--- /dev/null
++++ b/src/hotspot/share/gc/g1/g1MarkLiveWords.cpp
+@@ -0,0 +1,37 @@
++/*
++ * Copyright (c) 2021, Huawei Technologies Co. Ltd. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation. Alibaba designates this
++ * particular file as subject to the "Classpath" exception as provided
++ * by Oracle in the LICENSE file that accompanied this code.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ */
++
++#include "gc/g1/g1MarkLiveWords.hpp"
++
++__thread  G1MarkRegionCache* _tl_live_words_cache;
++
++G1MarkLiveWords::G1MarkLiveWords() {
++  if (G1FullGCNoMoving) {
++    _tl_live_words_cache = new G1MarkRegionCache();
++  }
++}
++
++G1MarkLiveWords::~G1MarkLiveWords() {
++  if (G1FullGCNoMoving) {
++    delete _tl_live_words_cache;
++    _tl_live_words_cache = NULL;
++  }
++}
+diff --git a/src/hotspot/share/gc/g1/g1MarkLiveWords.hpp b/src/hotspot/share/gc/g1/g1MarkLiveWords.hpp
+new file mode 100644
+index 000000000..a11a4ca52
+--- /dev/null
++++ b/src/hotspot/share/gc/g1/g1MarkLiveWords.hpp
+@@ -0,0 +1,34 @@
++/*
++ * Copyright (c) 2021, Huawei Technologies Co. Ltd. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation. Alibaba designates this
++ * particular file as subject to the "Classpath" exception as provided
++ * by Oracle in the LICENSE file that accompanied this code.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ */
++
++#ifndef SHARE_VM_GC_G1_G1MARKLIVEWORDS_HPP
++#define SHARE_VM_GC_G1_G1MARKLIVEWORDS_HPP
++
++#include "gc/g1/g1MarkRegionCache.hpp"
++
++extern __thread  G1MarkRegionCache* _tl_live_words_cache;
++class G1MarkLiveWords {
++public:
++  G1MarkLiveWords();
++  ~G1MarkLiveWords();
++};
++
++#endif
+diff --git a/src/hotspot/share/gc/g1/g1MarkRegionCache.cpp b/src/hotspot/share/gc/g1/g1MarkRegionCache.cpp
+new file mode 100644
+index 000000000..37922e8cf
+--- /dev/null
++++ b/src/hotspot/share/gc/g1/g1MarkRegionCache.cpp
+@@ -0,0 +1,49 @@
++/*
++ * Copyright (c) 2021, Huawei Technologies Co. Ltd. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation. Alibaba designates this
++ * particular file as subject to the "Classpath" exception as provided
++ * by Oracle in the LICENSE file that accompanied this code.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ */
++
++#include "gc/g1/g1MarkRegionCache.hpp"
++#include "gc/g1/heapRegion.inline.hpp"
++#include "runtime/atomic.hpp"
++
++G1MarkRegionCache::G1MarkRegionCache() {
++  _cache = NEW_C_HEAP_ARRAY(size_t, G1CollectedHeap::heap()->max_regions(), mtGC);
++  memset(_cache, 0 , sizeof(size_t)*G1CollectedHeap::heap()->max_regions());
++}
++void G1MarkRegionCache::inc_live(uint hr_index, size_t words) {
++  _cache[hr_index] += words;
++}
++
++void* G1MarkRegionCache::operator new(size_t size) {
++  return (address)AllocateHeap(size, mtGC, CURRENT_PC, AllocFailStrategy::RETURN_NULL);
++}
++
++void G1MarkRegionCache::operator delete(void* p) {
++  FreeHeap(p);
++}
++
++G1MarkRegionCache::~G1MarkRegionCache() {
++  for (uint i = 0; i < G1CollectedHeap::heap()->max_regions(); ++i) {
++    if (_cache[i]) {
++      Atomic::add(_cache[i], G1CollectedHeap::heap()->region_at(i)->live_words_addr());
++    }
++  }
++  FREE_C_HEAP_ARRAY(size_t, _cache);
++}
+diff --git a/src/hotspot/share/gc/g1/g1MarkRegionCache.hpp b/src/hotspot/share/gc/g1/g1MarkRegionCache.hpp
+new file mode 100644
+index 000000000..0615fcab6
+--- /dev/null
++++ b/src/hotspot/share/gc/g1/g1MarkRegionCache.hpp
+@@ -0,0 +1,40 @@
++/*
++ * Copyright (c) 2021, Huawei Technologies Co. Ltd. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation. Alibaba designates this
++ * particular file as subject to the "Classpath" exception as provided
++ * by Oracle in the LICENSE file that accompanied this code.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ */
++
++#ifndef SHARE_VM_GC_G1_G1MARKREGIONCACHE_HPP
++#define SHARE_VM_GC_G1_G1MARKREGIONCACHE_HPP
++
++#include "memory/allocation.hpp"
++
++class G1MarkRegionCache {
++private:
++  size_t* _cache;
++public:
++  G1MarkRegionCache();
++  void inc_live(uint hr_index, size_t words);
++
++  void* operator new(size_t size);
++  void  operator delete(void* p);
++
++  ~G1MarkRegionCache();
++};
++
++#endif
+diff --git a/src/hotspot/share/gc/g1/g1_globals.hpp b/src/hotspot/share/gc/g1/g1_globals.hpp
+index 8c7aec847..e035e0713 100644
+--- a/src/hotspot/share/gc/g1/g1_globals.hpp
++++ b/src/hotspot/share/gc/g1/g1_globals.hpp
+@@ -302,6 +302,14 @@
+           "Verify the code root lists attached to each heap region.")       \
+                                                                             \
+   develop(bool, G1VerifyBitmaps, false,                                     \
+-          "Verifies the consistency of the marking bitmaps")
++          "Verifies the consistency of the marking bitmaps")                \
++                                                                            \
++  product(double, G1NoMovingRegionLiveBytesLowerThreshold, 98.0,            \
++          "The Lower Threshold of Heap Region Live bytes percent"           \
++          "in G1 Mark Sweep phase")                                         \
++          range(50.0, 100.0)                                                \
++                                                                            \
++  product(bool, G1FullGCNoMoving, false,                                    \
++          "full gc support no moving region mode ")
+ 
+ #endif // SHARE_VM_GC_G1_G1_GLOBALS_HPP
+diff --git a/src/hotspot/share/gc/g1/heapRegion.cpp b/src/hotspot/share/gc/g1/heapRegion.cpp
+index 85840bc6f..c81695eae 100644
+--- a/src/hotspot/share/gc/g1/heapRegion.cpp
++++ b/src/hotspot/share/gc/g1/heapRegion.cpp
+@@ -243,7 +243,8 @@ HeapRegion::HeapRegion(uint hrm_index,
+     _surv_rate_group(NULL), _age_index(-1),
+     _prev_top_at_mark_start(NULL), _next_top_at_mark_start(NULL),
+     _recorded_rs_length(0), _predicted_elapsed_time_ms(0),
+-    _node_index(G1NUMA::UnknownNodeIndex)
++    _node_index(G1NUMA::UnknownNodeIndex),
++    _live_words(0)
+ {
+   _rem_set = new HeapRegionRemSet(bot, this);
+ 
+diff --git a/src/hotspot/share/gc/g1/heapRegion.hpp b/src/hotspot/share/gc/g1/heapRegion.hpp
+index 12a4eb8c3..023febbfc 100644
+--- a/src/hotspot/share/gc/g1/heapRegion.hpp
++++ b/src/hotspot/share/gc/g1/heapRegion.hpp
+@@ -246,7 +246,7 @@ class HeapRegion: public G1ContiguousSpace {
+   // in each heap region.
+   size_t _prev_marked_bytes;    // Bytes known to be live via last completed marking.
+   size_t _next_marked_bytes;    // Bytes known to be live via in-progress marking.
+-
++  size_t _live_words;
+   // The calculated GC efficiency of the region.
+   double _gc_efficiency;
+ 
+@@ -320,6 +320,10 @@ class HeapRegion: public G1ContiguousSpace {
+                                       ~((1 << (size_t) LogOfHRGrainBytes) - 1);
+   }
+ 
++  void reset_no_compaction_region_during_compaction() {
++    zero_marked_bytes();
++    init_top_at_mark_start();
++  }
+ 
+   // Returns whether a field is in the same region as the obj it points to.
+   template <typename T>
+@@ -369,6 +373,9 @@ class HeapRegion: public G1ContiguousSpace {
+ 
+   // The number of bytes marked live in the region in the last marking phase.
+   size_t marked_bytes()    { return _prev_marked_bytes; }
++  size_t* live_words_addr() { return &_live_words; }
++  size_t live_bytes_after_mark() { return _live_words * HeapWordSize; }
++  void set_live_words_after_mark(size_t live_words) { _live_words = live_words; }
+   size_t live_bytes() {
+     return (top() - prev_top_at_mark_start()) * HeapWordSize + marked_bytes();
+   }
+diff --git a/src/hotspot/share/gc/g1/heapRegionManager.hpp b/src/hotspot/share/gc/g1/heapRegionManager.hpp
+index 3edc1a9fb..85e6e024e 100644
+--- a/src/hotspot/share/gc/g1/heapRegionManager.hpp
++++ b/src/hotspot/share/gc/g1/heapRegionManager.hpp
+@@ -29,6 +29,7 @@
+ #include "gc/g1/g1NUMA.hpp"
+ #include "gc/g1/g1RegionToSpaceMapper.hpp"
+ #include "gc/g1/heapRegionSet.hpp"
++#include "gc/g1/g1RegionsOnNodes.hpp"
+ #include "services/memoryUsage.hpp"
+ 
+ class HeapRegion;
+diff --git a/src/hotspot/share/gc/g1/heapRegionSet.cpp b/src/hotspot/share/gc/g1/heapRegionSet.cpp
+index eb8430ff6..322f0e32a 100644
+--- a/src/hotspot/share/gc/g1/heapRegionSet.cpp
++++ b/src/hotspot/share/gc/g1/heapRegionSet.cpp
+@@ -244,21 +244,6 @@ void FreeRegionList::remove_starting_at(HeapRegion* first, uint num_regions) {
+   verify_optional();
+ }
+ 
+-uint FreeRegionList::num_of_regions_in_range(uint start, uint end) const {
+-  HeapRegion* cur = _head;
+-  uint num = 0;
+-  while (cur != NULL) {
+-    uint index = cur->hrm_index();
+-    if (index > end) {
+-      break;
+-    } else if (index >= start) {
+-      num++;
+-    }
+-    cur = cur->next();
+-  }
+-  return num;
+-}
+-
+ void FreeRegionList::verify() {
+   // See comment in HeapRegionSetBase::verify() about MT safety and
+   // verification.
+diff --git a/src/hotspot/share/gc/g1/heapRegionSet.hpp b/src/hotspot/share/gc/g1/heapRegionSet.hpp
+index 71b89668a..2ad10acf7 100644
+--- a/src/hotspot/share/gc/g1/heapRegionSet.hpp
++++ b/src/hotspot/share/gc/g1/heapRegionSet.hpp
+@@ -230,8 +230,6 @@ public:
+ 
+   virtual void verify();
+ 
+-  uint num_of_regions_in_range(uint start, uint end) const;
+-
+   using HeapRegionSetBase::length;
+   uint length(uint node_index) const;
+ };
+diff --git a/test/hotspot/jtreg/gc/g1/TestG1NoMoving.java b/test/hotspot/jtreg/gc/g1/TestG1NoMoving.java
+new file mode 100644
+index 000000000..2f892773b
+--- /dev/null
++++ b/test/hotspot/jtreg/gc/g1/TestG1NoMoving.java
+@@ -0,0 +1,88 @@
++/*
++ * Copyright (c) 2021, Huawei Technologies Co. Ltd. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation. Alibaba designates this
++ * particular file as subject to the "Classpath" exception as provided
++ * by Oracle in the LICENSE file that accompanied this code.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ */
++
++/*
++ * @test TestG1NoMoving
++ * @summary Test that a full gc with -XX:+G1FullGCNoMoving
++ * @key gc
++ * @requires vm.gc.G1
++ * @library /test/lib
++ * @modules java.base/jdk.internal.misc
++ *          java.management
++ * @run main/othervm TestG1NoMoving
++ */
++
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++import java.util.ArrayList;
++import java.util.List;
++
++import jdk.test.lib.Platform;
++import jdk.test.lib.process.OutputAnalyzer;
++import jdk.test.lib.process.ProcessTools;
++
++public class TestG1NoMoving {
++    public static void runTest() throws Exception {
++        final String[] arguments = {
++            "-XX:+UseG1GC",
++            "-XX:+G1FullGCNoMoving",
++            "-Xmx8m",
++            "-Xms8M",
++            "-Xlog:gc+phases=debug",
++            "-XX:G1HeapRegionSize=1m",
++            GCTest.class.getName()
++            };
++        ProcessBuilder pb = ProcessTools.createJavaProcessBuilder(arguments);
++        OutputAnalyzer output = new OutputAnalyzer(pb.start());
++        System.out.println(output.getStdout());
++
++        String pattern = ".*no moving region.*";
++        Pattern r = Pattern.compile(pattern);
++        Matcher m = r.matcher(output.getStdout());
++
++        if (!m.find()) {
++            throw new RuntimeException("Could not find any no moving region output");
++        }
++
++    }
++
++    public static void main(String[] args) throws Exception {
++        runTest();
++    }
++
++    static class GCTest {
++        public static List<char[]> memory;
++        public static void main(String[] args) throws Exception {
++            memory = new ArrayList<>();
++            try {
++                while (true) {
++                    memory.add(new char[1024]);
++                    System.gc();
++             }
++            } catch (OutOfMemoryError e) {
++                memory = null;
++                System.gc();
++            }
++        }
++     }
++}
++
+-- 
+2.19.0
+
