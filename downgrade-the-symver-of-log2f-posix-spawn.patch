@@ -1,0 +1,46 @@
+From f9a030a58fcae2352e1b4a629901b6047c2f6610 Mon Sep 17 00:00:00 2001
+Date: Thu, 18 Mar 2021 12:34:06 +0000
+Subject: [PATCH 1/4] downgrade the symver of log2f posix spawn
+
+---
+ src/hotspot/share/opto/parse2.cpp                  | 8 ++++++++
+ src/java.base/unix/native/libjava/ProcessImpl_md.c | 4 ++++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/src/hotspot/share/opto/parse2.cpp b/src/hotspot/share/opto/parse2.cpp
+index 4cbc57eb8..2b21881bc 100644
+--- a/src/hotspot/share/opto/parse2.cpp
++++ b/src/hotspot/share/opto/parse2.cpp
+@@ -45,6 +45,14 @@
+ #include "runtime/deoptimization.hpp"
+ #include "runtime/sharedRuntime.hpp"
+ 
++#ifdef AARCH64
++  __asm__(".symver log2f,log2f@GLIBC_2.17");
++#endif
++
++#ifdef AMD64
++  __asm__(".symver log2f,log2f@GLIBC_2.2.5");
++#endif
++
+ #ifndef PRODUCT
+ extern int explicit_null_checks_inserted,
+            explicit_null_checks_elided;
+diff --git a/src/java.base/unix/native/libjava/ProcessImpl_md.c b/src/java.base/unix/native/libjava/ProcessImpl_md.c
+index d0c2543ce..09d71b874 100644
+--- a/src/java.base/unix/native/libjava/ProcessImpl_md.c
++++ b/src/java.base/unix/native/libjava/ProcessImpl_md.c
+@@ -48,6 +48,10 @@
+ 
+ #include "childproc.h"
+ 
++#if defined(amd64)
++  __asm__(".symver posix_spawn,posix_spawn@GLIBC_2.2.5");
++#endif
++
+ /*
+  * There are 4 possible strategies we might use to "fork":
+  *
+-- 
+2.19.0
+

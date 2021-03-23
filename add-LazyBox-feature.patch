@@ -1,0 +1,1078 @@
+From 616dd14fb435476b0f9fb6696084fd71dd6ecc05 Mon Sep 17 00:00:00 2001
+Date: Tue, 16 Mar 2021 07:00:07 +0000
+Subject: [PATCH 2/4] add LazyBox feature
+
+---
+ src/hotspot/share/opto/c2_globals.hpp         |   6 +
+ src/hotspot/share/opto/callGenerator.cpp      |  33 ++-
+ src/hotspot/share/opto/callnode.cpp           |  18 ++
+ src/hotspot/share/opto/callnode.hpp           |  15 ++
+ src/hotspot/share/opto/compile.cpp            |   5 +
+ src/hotspot/share/opto/doCall.cpp             |  50 +++++
+ src/hotspot/share/opto/graphKit.cpp           | 189 +++++++++++++++-
+ src/hotspot/share/opto/graphKit.hpp           |   9 +
+ src/hotspot/share/opto/parse.hpp              |   3 +
+ src/hotspot/share/opto/parse1.cpp             |   2 +-
+ src/hotspot/share/opto/parse2.cpp             |  25 ++-
+ src/hotspot/share/opto/parse3.cpp             |   8 +
+ src/hotspot/share/opto/phase.hpp              |   1 +
+ src/hotspot/share/opto/phaseX.cpp             | 211 ++++++++++++++++++
+ src/hotspot/share/opto/phaseX.hpp             |  20 ++
+ src/hotspot/share/opto/phasetype.hpp          |   2 +
+ src/hotspot/share/runtime/arguments.cpp       |  13 ++
+ .../jvm/hotspot/opto/CompilerPhaseType.java   |   1 +
+ .../jtreg/compiler/lazybox/TestLazyBox.java   |  82 +++++++
+ 19 files changed, 679 insertions(+), 14 deletions(-)
+ create mode 100644 test/hotspot/jtreg/compiler/lazybox/TestLazyBox.java
+
+diff --git a/src/hotspot/share/opto/c2_globals.hpp b/src/hotspot/share/opto/c2_globals.hpp
+index 8111a63d4..84c2817e3 100644
+--- a/src/hotspot/share/opto/c2_globals.hpp
++++ b/src/hotspot/share/opto/c2_globals.hpp
+@@ -519,6 +519,12 @@
+   experimental(bool, AggressiveUnboxing, false,                             \
+           "Control optimizations for aggressive boxing elimination")        \
+                                                                             \
++  experimental(bool, LazyBox, false,                                        \
++          "Delay some box operator to speed up some hot path without box ") \
++                                                                            \
++  experimental(bool, PrintLazyBox, false,                                   \
++          "Print LazyBox")                                                  \
++                                                                            \
+   develop(bool, TracePostallocExpand, false, "Trace expanding nodes after"  \
+           " register allocation.")                                          \
+                                                                             \
+diff --git a/src/hotspot/share/opto/callGenerator.cpp b/src/hotspot/share/opto/callGenerator.cpp
+index ffe50ed86..a5846537d 100644
+--- a/src/hotspot/share/opto/callGenerator.cpp
++++ b/src/hotspot/share/opto/callGenerator.cpp
+@@ -150,12 +150,15 @@ JVMState* DirectCallGenerator::generate(JVMState* jvms) {
+   }
+ 
+   CallStaticJavaNode *call = new CallStaticJavaNode(kit.C, tf(), target, method(), kit.bci());
+-  if (is_inlined_method_handle_intrinsic(jvms, method())) {
+-    // To be able to issue a direct call and skip a call to MH.linkTo*/invokeBasic adapter,
+-    // additional information about the method being invoked should be attached
+-    // to the call site to make resolution logic work
+-    // (see SharedRuntime::resolve_static_call_C).
+-    call->set_override_symbolic_info(true);
++  // LazyBox use DirectCallGenerator insert box node with unexpected bci
++  if (!(LazyBox && method()->is_boxing_method())) {
++    if (is_inlined_method_handle_intrinsic(jvms, method())) {
++      // To be able to issue a direct call and skip a call to MH.linkTo*/invokeBasic adapter,
++      // additional information about the method being invoked should be attached
++      // to the call site to make resolution logic work
++      // (see SharedRuntime::resolve_static_call_C).
++      call->set_override_symbolic_info(true);
++    }
+   }
+   _call_node = call;  // Save the call node in case we need it later
+   if (!is_static) {
+@@ -416,7 +419,15 @@ void LateInlineCallGenerator::do_late_inline() {
+ 
+   // Make enough space in the expression stack to transfer
+   // the incoming arguments and return value.
+-  map->ensure_stack(jvms, jvms->method()->max_stack());
++  uint ensure_stack_size = jvms->method()->max_stack();
++  if (LazyBox && call->_is_lazy_box) {
++    // Make enough space for the arg pushed in insert_box_node
++    int arg_size = jvms->method()->arg_size();
++    if (jvms->sp() + arg_size > ensure_stack_size) {
++      ensure_stack_size = jvms->sp() + arg_size;
++    }
++  }
++  map->ensure_stack(jvms, ensure_stack_size);
+   for (uint i1 = 0; i1 < nargs; i1++) {
+     map->set_argument(jvms, i1, call->in(TypeFunc::Parms + i1));
+   }
+@@ -442,6 +453,14 @@ void LateInlineCallGenerator::do_late_inline() {
+     C->set_default_node_notes(entry_nn);
+   }
+ 
++  if (LazyBox && call->_is_lazy_box) {
++    GraphKit kit(jvms);
++    Node* value = call->in(TypeFunc::Parms);
++    Node* result = kit.inline_lazy_box(call, value);
++    kit.replace_call(call, result, true);
++    return;
++  }
++
+   // Now perform the inlining using the synthesized JVMState
+   JVMState* new_jvms = _inline_cg->generate(jvms);
+   if (new_jvms == NULL)  return;  // no change
+diff --git a/src/hotspot/share/opto/callnode.cpp b/src/hotspot/share/opto/callnode.cpp
+index c4064dca0..f17eda879 100644
+--- a/src/hotspot/share/opto/callnode.cpp
++++ b/src/hotspot/share/opto/callnode.cpp
+@@ -972,6 +972,10 @@ bool CallJavaNode::validate_symbolic_info() const {
+   if (method() == NULL) {
+     return true; // call into runtime or uncommon trap
+   }
++  if (LazyBox && this->is_CallStaticJava() &&
++      this->as_CallStaticJava()->is_boxing_method()) {
++    return true;
++  }
+   ciMethod* symbolic_info = jvms()->method()->get_method_at_bci(_bci);
+   ciMethod* callee = method();
+   if (symbolic_info->is_method_handle_intrinsic() && !callee->is_method_handle_intrinsic()) {
+@@ -1232,6 +1236,20 @@ void SafePointNode::grow_stack(JVMState* jvms, uint grow_by) {
+   jvms->set_endoff(endoff + grow_by);
+ }
+ 
++void SafePointNode::desc_stack(JVMState* jvms, uint desc_by) {
++  assert((int)desc_by > 0, "sanity");
++  int monoff = jvms->monoff();
++  int scloff = jvms->scloff();
++  int endoff = jvms->endoff();
++  assert(endoff == (int)req(), "no other states or debug info after me");
++  for (uint i = 0; i < desc_by; i++) {
++    del_req_ordered(monoff - 1 - i);
++  }
++  jvms->set_monoff(monoff - desc_by);
++  jvms->set_scloff(scloff - desc_by);
++  jvms->set_endoff(endoff - desc_by);
++}
++
+ void SafePointNode::push_monitor(const FastLockNode *lock) {
+   // Add a LockNode, which points to both the original BoxLockNode (the
+   // stack space for the monitor) and the Object being locked.
+diff --git a/src/hotspot/share/opto/callnode.hpp b/src/hotspot/share/opto/callnode.hpp
+index cc65d9ef9..c7ea73946 100644
+--- a/src/hotspot/share/opto/callnode.hpp
++++ b/src/hotspot/share/opto/callnode.hpp
+@@ -331,6 +331,7 @@ public:
+     : MultiNode( edges ),
+       _jvms(jvms),
+       _oop_map(NULL),
++      _fake_exception_state(false),
+       _adr_type(adr_type)
+   {
+     init_class_id(Class_SafePoint);
+@@ -340,6 +341,7 @@ public:
+   JVMState* const _jvms;      // Pointer to list of JVM State objects
+   const TypePtr*  _adr_type;  // What type of memory does this node produce?
+   ReplacedNodes   _replaced_nodes; // During parsing: list of pair of nodes from calls to GraphKit::replace_in_map()
++  bool            _fake_exception_state; // lazy box may produce exception
+ 
+   // Many calls take *all* of memory as input,
+   // but some produce a limited subset of that memory as output.
+@@ -398,7 +400,13 @@ public:
+     int grow_by = (int)stk_size - (int)jvms->stk_size();
+     if (grow_by > 0)  grow_stack(jvms, grow_by);
+   }
++  void recover_stack(JVMState* jvms, uint stk_size) {
++    assert(verify_jvms(jvms), "jvms must match");
++    int desc_by = (int)jvms->stk_size() - (int)stk_size;
++    if (desc_by > 0) desc_stack(jvms, desc_by);
++  }
+   void grow_stack(JVMState* jvms, uint grow_by);
++  void desc_stack(JVMState* jvms, uint desc_by);
+   // Handle monitor stack
+   void push_monitor( const FastLockNode *lock );
+   void pop_monitor ();
+@@ -708,6 +716,8 @@ public:
+     }
+     _is_scalar_replaceable = false;
+     _is_non_escaping = false;
++    _copy_box = NULL;
++    _is_lazy_box = false;
+   }
+   CallStaticJavaNode(const TypeFunc* tf, address addr, const char* name, int bci,
+                      const TypePtr* adr_type)
+@@ -718,8 +728,13 @@ public:
+     _is_scalar_replaceable = false;
+     _is_non_escaping = false;
+     _name = name;
++    _copy_box = NULL;
++    _is_lazy_box = false;
+   }
+ 
++  Node_List* _copy_box;
++  bool _is_lazy_box;
++
+   // Result of Escape Analysis
+   bool _is_scalar_replaceable;
+   bool _is_non_escaping;
+diff --git a/src/hotspot/share/opto/compile.cpp b/src/hotspot/share/opto/compile.cpp
+index f350f9d68..838147f53 100644
+--- a/src/hotspot/share/opto/compile.cpp
++++ b/src/hotspot/share/opto/compile.cpp
+@@ -2235,6 +2235,11 @@ void Compile::Optimize() {
+ 
+   print_method(PHASE_AFTER_PARSING);
+ 
++  if (LazyBox) {
++    PhaseLazyBoxOpt plb(initial_gvn());
++    print_method(PHASE_LAZYBOXOPT);
++  }
++
+  {
+   // Iterative Global Value Numbering, including ideal transforms
+   // Initialize IterGVN with types and values from parse-time GVN
+diff --git a/src/hotspot/share/opto/doCall.cpp b/src/hotspot/share/opto/doCall.cpp
+index c9d06a833..343e9d00d 100644
+--- a/src/hotspot/share/opto/doCall.cpp
++++ b/src/hotspot/share/opto/doCall.cpp
+@@ -416,6 +416,49 @@ static bool check_call_consistency(JVMState* jvms, CallGenerator* cg) {
+ }
+ #endif // ASSERT
+ 
++void Parse::do_lazybox(ciMethod* callee) {
++  if (!LazyBox) return;
++
++  // unboxing method will eliminate
++  if (callee->is_unboxing_method()) return;
++
++  const bool is_virtual = bc() == Bytecodes::_invokevirtual;
++  const bool is_static = bc() == Bytecodes::_invokestatic;
++  const uint nargs = callee->arg_size();
++
++  // receiver maybe box node
++  if (is_virtual) {
++    Node* receiver_node = stack(sp() - nargs);
++    if (is_box_use_node(receiver_node)) {
++      Node* replace = insert_box_node(receiver_node);
++      set_stack(sp() - nargs, replace);
++      return;
++    }
++  }
++
++  // args maybe box node
++  if (is_virtual || is_static) {
++    Node* use = NULL;
++    uint use_idx = -1;
++    int count = 0;
++    for (uint i = nargs; i > 0; i--) {
++      Node* arg = stack(sp() - i);
++      if (is_box_use_node(arg)) {
++        use = arg;
++        use_idx = i;
++        count++;
++      }
++    }
++
++    // only delay one box node to use
++    if (use != NULL && count == 1) {
++      Node* replace = insert_box_node(use);
++      set_stack(sp() - use_idx, replace);
++      return;
++    }
++  }
++}
++
+ //------------------------------do_call----------------------------------------
+ // Handle your basic call.  Inline if we can & want to, else just setup call.
+ void Parse::do_call() {
+@@ -552,6 +595,13 @@ void Parse::do_call() {
+   // It decides whether inlining is desirable or not.
+   CallGenerator* cg = C->call_generator(callee, vtable_index, call_does_dispatch, jvms, try_inline, prof_factor(), speculative_receiver_type);
+ 
++  if (!cg->is_inline()) {
++    inc_sp(nargs);
++    do_lazybox(orig_callee);
++    dec_sp(nargs);
++    JVMState* jvms = sync_jvms();
++  }
++
+   // NOTE:  Don't use orig_callee and callee after this point!  Use cg->method() instead.
+   orig_callee = callee = NULL;
+ 
+diff --git a/src/hotspot/share/opto/graphKit.cpp b/src/hotspot/share/opto/graphKit.cpp
+index 219d272ff..356bd5ccc 100644
+--- a/src/hotspot/share/opto/graphKit.cpp
++++ b/src/hotspot/share/opto/graphKit.cpp
+@@ -31,6 +31,7 @@
+ #include "memory/resourceArea.hpp"
+ #include "opto/addnode.hpp"
+ #include "opto/castnode.hpp"
++#include "opto/callGenerator.hpp"
+ #include "opto/convertnode.hpp"
+ #include "opto/graphKit.hpp"
+ #include "opto/idealKit.hpp"
+@@ -317,6 +318,15 @@ JVMState* GraphKit::transfer_exceptions_into_jvms() {
+   return jvms;
+ }
+ 
++bool GraphKit::is_box_use_node(const Node* node) {
++  return node->is_Proj() && node->in(0)->is_CallStaticJava() &&
++          node->in(0)->as_CallStaticJava()->is_boxing_method();
++}
++
++Node* GraphKit::replace_box_use_node(Node* n, Node* replace) {
++  return is_box_use_node(n) ? replace : n;
++}
++
+ static inline void add_n_reqs(Node* dstphi, Node* srcphi) {
+   assert(is_hidden_merge(dstphi), "must be a special merge node");
+   assert(is_hidden_merge(srcphi), "must be a special merge node");
+@@ -840,6 +850,19 @@ static bool should_reexecute_implied_by_bytecode(JVMState *jvms, bool is_anewarr
+     return false;
+ }
+ 
++// Delay boxnode to uncommon trap
++void GraphKit::add_local(SafePointNode* call, uint idx, Node* local, GrowableArray<uint> *delay_boxes) {
++  if (LazyBox && local != NULL && local->is_Proj() &&
++      local->as_Proj()->_con == TypeFunc::Parms &&
++      local->in(0)->is_CallStaticJava() &&
++      local->in(0)->as_CallStaticJava()->is_boxing_method() &&
++      call->is_CallStaticJava() &&
++      call->as_CallStaticJava()->uncommon_trap_request() != 0) {
++    delay_boxes->append(idx);
++  }
++  call->set_req(idx, local);
++}
++
+ // Helper function for adding JVMState and debug information to node
+ void GraphKit::add_safepoint_edges(SafePointNode* call, bool must_throw) {
+   // Add the safepoint edges to the call (or other safepoint).
+@@ -847,7 +870,8 @@ void GraphKit::add_safepoint_edges(SafePointNode* call, bool must_throw) {
+   // Make sure dead locals are set to top.  This
+   // should help register allocation time and cut down on the size
+   // of the deoptimization information.
+-  assert(dead_locals_are_killed(), "garbage in debug info before safepoint");
++  // LazyBox may insert box in some bci, resulting in some dead locals not set to top
++  assert(LazyBox || dead_locals_are_killed(), "garbage in debug info before safepoint");
+ 
+   // Walk the inline list to fill in the correct set of JVMState's
+   // Also fill in the associated edges for each JVMState.
+@@ -910,6 +934,9 @@ void GraphKit::add_safepoint_edges(SafePointNode* call, bool must_throw) {
+   // Fill pointer walks backwards from "young:" to "root:" in the diagram above:
+   uint debug_ptr = call->req();
+ 
++  // used boxes in uncommon_trap
++  GrowableArray<uint> *delay_boxes = new GrowableArray<uint>();
++
+   // Loop over the map input edges associated with jvms, add them
+   // to the call node, & reset all offsets to match call node array.
+   for (JVMState* in_jvms = youngest_jvms; in_jvms != NULL; ) {
+@@ -938,7 +965,7 @@ void GraphKit::add_safepoint_edges(SafePointNode* call, bool must_throw) {
+     out_jvms->set_locoff(p);
+     if (!can_prune_locals) {
+       for (j = 0; j < l; j++)
+-        call->set_req(p++, in_map->in(k+j));
++        add_local(call, p++, in_map->in(k+j), delay_boxes);
+     } else {
+       p += l;  // already set to top above by add_req_batch
+     }
+@@ -949,7 +976,7 @@ void GraphKit::add_safepoint_edges(SafePointNode* call, bool must_throw) {
+     out_jvms->set_stkoff(p);
+     if (!can_prune_locals) {
+       for (j = 0; j < l; j++)
+-        call->set_req(p++, in_map->in(k+j));
++        add_local(call, p++, in_map->in(k+j), delay_boxes);
+     } else if (can_prune_locals && stack_slots_not_pruned != 0) {
+       // Divide stack into {S0,...,S1}, where S0 is set to top.
+       uint s1 = stack_slots_not_pruned;
+@@ -958,7 +985,8 @@ void GraphKit::add_safepoint_edges(SafePointNode* call, bool must_throw) {
+       uint s0 = l - s1;
+       p += s0;  // skip the tops preinstalled by add_req_batch
+       for (j = s0; j < l; j++)
+-        call->set_req(p++, in_map->in(k+j));
++        add_local(call, p++, in_map->in(k+j), delay_boxes);
++    } else if (can_prune_locals && stack_slots_not_pruned != 0) {
+     } else {
+       p += l;  // already set to top above by add_req_batch
+     }
+@@ -992,6 +1020,35 @@ void GraphKit::add_safepoint_edges(SafePointNode* call, bool must_throw) {
+     in_jvms  = in_jvms->caller();
+   }
+ 
++  // delay box node in uncommon_trap runtime, treat box as scalarized object
++  for (int index = 0; index < delay_boxes->length(); index++) {
++    assert(LazyBox, "delay boxnode to uncommon_trap need set LazyBox");
++    assert(call->is_CallStaticJava() &&
++      call->as_CallStaticJava()->uncommon_trap_request() != 0, "call node must be uncommon_trap call");
++    uint idx = delay_boxes->at(index);
++    Node* local = call->in(idx);
++
++    assert(local->in(0)->is_CallStaticJava(), "sanity");
++    assert(local->in(0)->as_CallStaticJava()->is_boxing_method(), "sanity");
++
++    CallStaticJavaNode* box = local->in(0)->as_CallStaticJava();
++    ciInstanceKlass* klass = box->method()->holder();
++    int n_fields = klass->nof_nonstatic_fields();
++    assert(n_fields == 1, "sanity");
++
++    uint first_ind = (call->req() - call->jvms()->scloff());
++    Node* sobj = new SafePointScalarObjectNode(_gvn.type(local)->isa_oopptr(),
++#ifdef ASSERT
++                NULL,
++#endif // ASSERT
++                                               first_ind, n_fields);
++    sobj->init_req(0, C->root());
++    call->add_req(local->in(0)->in(local->as_Proj()->_con));
++    sobj = _gvn.transform(sobj);
++    call->jvms()->set_endoff(call->req());
++    call->set_req(idx, sobj);
++  }
++
+   assert(debug_ptr == non_debug_edges, "debug info must fit exactly");
+ 
+   // Test the correctness of JVMState::debug_xxx accessors:
+@@ -4017,6 +4074,130 @@ void GraphKit::inflate_string_slow(Node* src, Node* dst, Node* start, Node* coun
+   set_memory(st, TypeAryPtr::BYTES);
+ }
+ 
++Node* GraphKit::insert_box_node(Node* use) {
++  assert(is_box_use_node(use), "use node must be box_use_node");
++  CallStaticJavaNode* box = use->in(0)->as_CallStaticJava();
++  // get method from node
++  ciMethod* method = box->method();
++  CallGenerator* parse_cg = CallGenerator::for_inline(method);
++  CallGenerator* cg = CallGenerator::for_boxing_late_inline(method, parse_cg);
++
++  Node* arg = box->in(TypeFunc::Parms);
++  Node* res = NULL;
++
++  { PreserveReexecuteState preexecs(this);
++
++    int arg_size = method->arg_size();
++    int stk_size = jvms()->stk_size();
++
++    assert(arg_size == 1 || arg_size == 2, "boxing method, arg size must 1 or 2!");
++
++    // add arg, ensure stack size
++    ensure_stack(sp() + arg_size);
++    if (arg_size == 1) {
++      push(arg);
++    } else if (arg_size == 2) {
++      push_pair(arg);
++    }
++
++    dec_sp(arg_size);
++    JVMState* old_jvms = sync_jvms();
++    JVMState* new_jvms = cg->generate(old_jvms);
++    assert(new_jvms != NULL, "insert box generate fail");
++
++    // add new box to late inline
++    CallStaticJavaNode* new_box = cg->call_node();
++    new_box->_is_lazy_box = true;
++
++    // Set the box objects and the reexecute bit for the interpreter to reexecute the bytecode if deoptimization happens
++    new_box->jvms()->set_should_reexecute(true);
++
++    ciInstanceKlass* klass = box->method()->holder();
++    int n_fields = klass->nof_nonstatic_fields();
++    assert(n_fields == 1, "sanity");
++
++    uint first_ind = new_box->req() - new_box->jvms()->scloff();
++    Node* sobj = new SafePointScalarObjectNode(_gvn.type(use)->isa_oopptr(),
++#ifdef ASSERT
++                NULL,
++#endif // ASSERT
++                                               first_ind, n_fields);
++    sobj->init_req(0, C->root());
++    new_box->add_req(arg);
++    sobj = _gvn.transform(sobj);
++    new_box->jvms()->set_endoff(new_box->req());
++    for (uint i = 0; i < new_box->req(); i++) {
++      if (new_box->in(i) == use) {
++        new_box->set_req(i, sobj);
++      }
++    }
++
++    if (box->_copy_box == NULL) {
++      box->_copy_box = new Node_List();
++    }
++    box->_copy_box->push(new_box);
++
++    // inserted Box node can't throw exception to handler
++    // convert exception to uncommon_trap in inline_lazy_box
++    SafePointNode* ex_map = new_jvms->map()->next_exception();
++    ex_map->_fake_exception_state = true;
++    add_exception_states_from(new_jvms);
++
++    assert(new_jvms->map()->control() != top(), "generate box call node fail");
++    assert(new_jvms->same_calls_as(old_jvms), "method/bci left unchanged");
++    set_jvms(new_jvms);
++    res = pop();
++    set_stack(sp(), top());
++    recover_stack(stk_size);
++  }
++  return res;
++}
++
++Node* GraphKit::inline_lazy_box(CallStaticJavaNode* box, Node* value) {
++  assert(box->method()->is_boxing_method(), "must be box method");
++  ciInstanceKlass* klass = box->method()->holder();
++
++  BasicType type = klass->box_klass_type();
++
++  if (type == T_BOOLEAN) {
++    // value ? TRUE : FALSE
++    ciSymbol* java_lang_Boolean = ciSymbol::make("Ljava/lang/Boolean;");
++    ciField* true_field = klass->get_field_by_name(ciSymbol::make("TRUE"), java_lang_Boolean, true);
++    ciField* false_field = klass->get_field_by_name(ciSymbol::make("FALSE"), java_lang_Boolean, true);
++    const TypeInstPtr* tip = TypeInstPtr::make(klass->java_mirror());
++    Node* java_mirror = _gvn.makecon(tip);
++    Node* true_node = make_constant_from_field(true_field, java_mirror);
++    Node* false_node = make_constant_from_field(false_field, java_mirror);
++
++    Node* tst = gvn().transform(Bool(CmpI(value, intcon(0)), BoolTest::ne));
++    IfNode* iff = create_and_map_if(control(), tst, PROB_FAIR, COUNT_UNKNOWN);
++    Node* true_proj = IfTrue(iff);
++    Node* false_proj = IfFalse(iff);
++    RegionNode* region = new RegionNode(3);
++    gvn().set_type(region, Type::CONTROL);
++    region->init_req(1, true_proj);
++    region->init_req(2, false_proj);
++    Node *obj = new PhiNode(region, TypeOopPtr::make_from_klass(klass));
++    gvn().set_type(obj, obj->bottom_type());
++    obj->init_req(1, true_node);
++    obj->init_req(2, false_node);
++    set_control(region);
++    return obj;
++  }
++
++  Node* kls = makecon(TypeKlassPtr::make(klass));
++  Node* obj = new_instance(kls, NULL, NULL, true);
++  const BasicType primitive_type = klass->box_klass_type();
++  int value_offset = java_lang_boxing_object::value_offset_in_bytes(primitive_type);
++  const TypeInstPtr* box_type = TypeInstPtr::make(TypePtr::NotNull, klass,
++                                                     false, NULL, 0);
++  const TypePtr* value_field_type = box_type->add_offset(value_offset);
++  const Type *value_type = Type::get_const_basic_type(primitive_type);
++  access_store_at(control(), obj,  basic_plus_adr(obj, value_offset), value_field_type,
++                  value, value_type, primitive_type, IN_HEAP);
++  return obj;
++}
++
+ Node* GraphKit::make_constant_from_field(ciField* field, Node* obj) {
+   if (!field->is_constant()) {
+     return NULL; // Field not marked as constant.
+diff --git a/src/hotspot/share/opto/graphKit.hpp b/src/hotspot/share/opto/graphKit.hpp
+index ef3f784d3..2d5aac53c 100644
+--- a/src/hotspot/share/opto/graphKit.hpp
++++ b/src/hotspot/share/opto/graphKit.hpp
+@@ -276,6 +276,8 @@ class GraphKit : public Phase {
+ #ifdef ASSERT
+   bool dead_locals_are_killed();
+ #endif
++  void add_local(SafePointNode* call, uint idx, Node* local, GrowableArray<uint> *delay_boxes);
++
+   // The call may deoptimize.  Supply required JVM state as debug info.
+   // If must_throw is true, the call is guaranteed not to return normally.
+   void add_safepoint_edges(SafePointNode* call,
+@@ -478,6 +480,7 @@ class GraphKit : public Phase {
+   void set_stack(uint idx, Node* c)   { map_not_null(); _map->set_stack(   _map->_jvms, idx, c); }
+   void set_argument(uint idx, Node* c){ map_not_null(); _map->set_argument(_map->_jvms, idx, c); }
+   void ensure_stack(uint stk_size)    { map_not_null(); _map->ensure_stack(_map->_jvms, stk_size); }
++  void recover_stack(uint stk_size)    { map_not_null(); _map->recover_stack(_map->_jvms, stk_size); }
+ 
+   // Access unaliased memory
+   Node* memory(uint alias_idx);
+@@ -863,6 +866,12 @@ class GraphKit : public Phase {
+   void inflate_string(Node* src, Node* dst, const TypeAryPtr* dst_type, Node* count);
+   void inflate_string_slow(Node* src, Node* dst, Node* start, Node* count);
+ 
++  // lazy box helpers
++  static bool is_box_use_node(const Node* node);
++  static Node* replace_box_use_node(Node* n, Node* replace);
++  Node* insert_box_node(Node* use);
++  Node* inline_lazy_box(CallStaticJavaNode* box, Node* value);
++
+   // Handy for making control flow
+   IfNode* create_and_map_if(Node* ctrl, Node* tst, float prob, float cnt) {
+     IfNode* iff = new IfNode(ctrl, tst, prob, cnt);// New IfNode's
+diff --git a/src/hotspot/share/opto/parse.hpp b/src/hotspot/share/opto/parse.hpp
+index aa13e8863..b16671ace 100644
+--- a/src/hotspot/share/opto/parse.hpp
++++ b/src/hotspot/share/opto/parse.hpp
+@@ -498,6 +498,9 @@ class Parse : public GraphKit {
+ 
+   // Note:  Intrinsic generation routines may be found in library_call.cpp.
+ 
++  // Helper function to do lazy box in do_call()
++  void do_lazybox(ciMethod* callee);
++
+   // Helper function to setup Ideal Call nodes
+   void do_call();
+ 
+diff --git a/src/hotspot/share/opto/parse1.cpp b/src/hotspot/share/opto/parse1.cpp
+index f94f028c6..48f111d76 100644
+--- a/src/hotspot/share/opto/parse1.cpp
++++ b/src/hotspot/share/opto/parse1.cpp
+@@ -918,7 +918,7 @@ void Parse::do_exceptions() {
+ 
+   SafePointNode* ex_map;
+   while ((ex_map = pop_exception_state()) != NULL) {
+-    if (!method()->has_exception_handlers()) {
++    if (!method()->has_exception_handlers() || ex_map->_fake_exception_state) {
+       // Common case:  Transfer control outward.
+       // Doing it this early allows the exceptions to common up
+       // even between adjacent method calls.
+diff --git a/src/hotspot/share/opto/parse2.cpp b/src/hotspot/share/opto/parse2.cpp
+index 2b21881bc..78e83afa5 100644
+--- a/src/hotspot/share/opto/parse2.cpp
++++ b/src/hotspot/share/opto/parse2.cpp
+@@ -2660,9 +2660,17 @@ void Parse::do_one_bytecode() {
+   case Bytecodes::_return:
+     return_current(NULL);
+     break;
+-
+-  case Bytecodes::_ireturn:
+   case Bytecodes::_areturn:
++    a = pop();
++    if (LazyBox && is_box_use_node(a)) {
++      push(a);
++      b = insert_box_node(a);
++      a = replace_box_use_node(a, b);
++      pop();
++    }
++    return_current(a);
++    break;
++  case Bytecodes::_ireturn:
+   case Bytecodes::_freturn:
+     return_current(pop());
+     break;
+@@ -2749,6 +2757,19 @@ void Parse::do_one_bytecode() {
+     maybe_add_safepoint(iter().get_dest());
+     a = pop();
+     b = pop();
++
++    //one of node is box use node, insert box node and replace
++    if (LazyBox && (is_box_use_node(a) ^ is_box_use_node(b))) {
++      push(b);
++      push(a);
++      Node* use = is_box_use_node(a) ? a : b;
++      Node* replace = insert_box_node(use);
++      a = replace_box_use_node(a, replace);
++      b = replace_box_use_node(b, replace);
++      pop();
++      pop();
++    }
++
+     c = _gvn.transform( new CmpPNode(b, a) );
+     c = optimize_cmp_with_klass(c);
+     do_if(btest, c);
+diff --git a/src/hotspot/share/opto/parse3.cpp b/src/hotspot/share/opto/parse3.cpp
+index bb4d13002..0b9b14966 100644
+--- a/src/hotspot/share/opto/parse3.cpp
++++ b/src/hotspot/share/opto/parse3.cpp
+@@ -244,6 +244,14 @@ void Parse::do_put_xxx(Node* obj, ciField* field, bool is_field) {
+   // Value to be stored
+   Node* val = type2size[bt] == 1 ? pop() : pop_pair();
+ 
++  if (LazyBox && is_box_use_node(val)) {
++    // oop size is 1
++    push(val);
++    Node* replace = insert_box_node(val);
++    val = replace_box_use_node(val, replace);
++    pop();
++  }
++
+   DecoratorSet decorators = IN_HEAP;
+   decorators |= is_vol ? MO_SEQ_CST : MO_UNORDERED;
+ 
+diff --git a/src/hotspot/share/opto/phase.hpp b/src/hotspot/share/opto/phase.hpp
+index 4b0c53ffc..38683f8a7 100644
+--- a/src/hotspot/share/opto/phase.hpp
++++ b/src/hotspot/share/opto/phase.hpp
+@@ -59,6 +59,7 @@ public:
+     Ideal_Loop,                       // Find idealized trip-counted loops
+     Macro_Expand,                     // Expand macro nodes
+     Peephole,                         // Apply peephole optimizations
++    LazyBoxOpt,                       // Apply LazyBox optimization
+     last_phase
+   };
+ 
+diff --git a/src/hotspot/share/opto/phaseX.cpp b/src/hotspot/share/opto/phaseX.cpp
+index f4a38cd28..c2060e445 100644
+--- a/src/hotspot/share/opto/phaseX.cpp
++++ b/src/hotspot/share/opto/phaseX.cpp
+@@ -407,6 +407,217 @@ void NodeHash::operator=(const NodeHash& nh) {
+ 
+ #endif
+ 
++//=============================================================================
++//------------------------------PhaseLazyBoxOpt------------------------------
++// Phase that first collecting all the box nodes, if use nodes of a box node are
++// all SafePointNode or it's subclass and the usage is not monitor, scalar and args, then eliminate the box node.
++// else, eliminate the related inserted box node.
++PhaseLazyBoxOpt::PhaseLazyBoxOpt(PhaseGVN *gvn, PhaseNumber phase_num)
++  : Phase(phase_num),
++    _gvn(gvn) {
++  if (PrintLazyBox) {
++    tty->print("LazyBoxOpt for method: %s.%s\n", C->method()->holder()->name()->as_utf8(), C->method()->name()->as_utf8());
++  }
++  Node_List box_nodes = collect_box_nodes();
++  for (uint i = 0; i < box_nodes.size(); i++) {
++    CallStaticJavaNode* box_node = (CallStaticJavaNode*)box_nodes[i];
++    if (is_eliminatable(box_node)) {
++      // delete origin box node
++      if (PrintLazyBox) {
++        tty->print("delete origin box node %d\n", box_node->_idx);
++      }
++
++      // if copy box not used, remove it
++      if (box_node->_copy_box != NULL) {
++        for (uint j = 0; j < box_node->_copy_box->size(); j++) {
++          CallStaticJavaNode* n = (CallStaticJavaNode*)box_node->_copy_box->at(j);
++          Node* resproj = n->proj_out_or_null(TypeFunc::Parms);
++          if (resproj == NULL) {
++            eliminate_call(n);
++          }
++        }
++      }
++
++      eliminate_call(box_node);
++    } else if (box_node->_copy_box != NULL) {
++      // delete copy box node
++      if (PrintLazyBox) {
++        tty->print("delete copy box node for box node %d \n", box_node->_idx);
++      }
++      Node* origin_resproj = box_node->proj_out_or_null(TypeFunc::Parms);
++
++      for (uint j = 0; j < box_node->_copy_box->size(); j++) {
++        CallStaticJavaNode* n = (CallStaticJavaNode*)box_node->_copy_box->at(j);
++        if (PrintLazyBox) {
++          tty->print("    delete copy box node %d\n", n->_idx);
++        }
++        // replace the copy box node resproj by original box node resproj
++        Node* copy_resproj = n->proj_out_or_null(TypeFunc::Parms);
++
++        if (copy_resproj != NULL) {
++          C->gvn_replace_by(copy_resproj, origin_resproj);
++        }
++        eliminate_call(n);
++      }
++    }
++  }
++
++  if (C->failing())  return;
++  {
++    ResourceMark rm;
++    PhaseRemoveUseless pru(C->initial_gvn(), C->for_igvn());
++  }
++}
++
++Node_List PhaseLazyBoxOpt::collect_box_nodes() {
++  Node_List box_nodes;
++
++  Node* start_node = C->start();
++  Node* framptr_node = start_node->raw_out(TypeFunc::FramePtr + 1);
++
++  for (DUIterator_Fast imax, i = framptr_node->fast_outs(imax); i < imax; i++) {
++    Node* m = framptr_node->fast_out(i);
++    if (m->is_CallStaticJava()) {
++      ciMethod* method = m->as_CallStaticJava()->method();
++      if (method != NULL && method->is_boxing_method() && m->as_CallStaticJava()->_is_lazy_box == false) {
++        box_nodes.push(m);
++      }
++    }
++  }
++  return box_nodes;
++}
++
++// determine if a box node is eliminatable
++bool PhaseLazyBoxOpt::is_eliminatable(CallStaticJavaNode* box_node) {
++  assert(!box_node->_is_lazy_box, "must orgin box node");
++
++  Node* resproj = box_node->proj_out_or_null(TypeFunc::Parms);
++  if (resproj == NULL) {
++    return true;
++  }
++
++  for (DUIterator_Fast imax, i = resproj->fast_outs(imax); i < imax; i++) {
++    Node* res = resproj;
++    Node* use_node = res->fast_out(i);
++    if (use_node->is_SafePoint()) {
++      int arg_end = 0;
++      JVMState* youngest_jvms = use_node->jvms();
++      for (JVMState* jvms = youngest_jvms; jvms != NULL; ) {
++        arg_end = jvms->locoff();
++
++        int k, l;
++        // if origin box node is used only in SafePoint's stack and local, so it's not used actually
++        // check local, just check
++        k = jvms->locoff();
++        l = jvms->loc_size();
++        for (int j = 0; j < l; j++){
++          if (use_node->in(k+j) == res) {
++#ifndef PRODUCT
++            if (PrintLazyBox) {
++              tty->print("use node is safepoint, check local!\n");
++              use_node->dump(0);
++            }
++#endif
++          }
++        }
++
++        // check stack, just check
++        k = jvms->stkoff();
++        l = jvms->sp();
++        for (int j = 0; j < l; j++) {
++          if (use_node->in(k+j) == res) {
++#ifndef PRODUCT
++            if (PrintLazyBox) {
++              tty->print("use node is safepoint, check stack!\n");
++              use_node->dump(0);
++            }
++#endif
++          }
++        }
++        // check monitor
++        k = jvms->monoff();
++        l = jvms->mon_size();
++        for (int j = 0; j < l; j++) {
++          if (use_node->in(k+j) == res) {
++#ifndef PRODUCT
++            if (PrintLazyBox) {
++              tty->print("use node is safepoint, check monitor false!\n");
++              use_node->dump(0);
++            }
++#endif
++            return false;
++          }
++        }
++        // check scalar
++        k = jvms->scloff();
++        l = jvms->scl_size();
++        for (int j = 0; j < l; j++) {
++          if (use_node->in(k+j) == res) {
++#ifndef PRODUCT
++            if (PrintLazyBox) {
++              tty->print("use node is safepoint, check scalar false!\n");
++              use_node->dump(0);
++            }
++#endif
++            return false;
++          }
++        }
++        jvms = jvms->caller();
++      }
++
++      if (use_node->is_CallJava()) {
++        for (int i = TypeFunc::Parms; i < arg_end; i++) {
++          if(use_node->in(i) == res) {
++#ifndef PRODUCT
++            if (PrintLazyBox) {
++              tty->print("use node is CallJava, check args false!\n");
++              use_node->dump(0);
++            }
++#endif
++            return false;
++          }
++        }
++      }
++
++    } else {
++#ifndef PRODUCT
++      if (PrintLazyBox) {
++        tty->print("use node %s can't do lazybox!\n", use_node->Name());
++        use_node->dump(0);
++      }
++#endif
++      return false;
++    }
++  }
++  return true;
++}
++
++void PhaseLazyBoxOpt::eliminate_call(CallNode* call) {
++  CallProjections projs;
++  call->extract_projections(&projs, false);
++  if (projs.fallthrough_catchproj != NULL) {
++    C->gvn_replace_by(projs.fallthrough_catchproj, call->in(TypeFunc::Control));
++  }
++  if (projs.fallthrough_memproj != NULL) {
++    C->gvn_replace_by(projs.fallthrough_memproj, call->in(TypeFunc::Memory));
++  }
++  if (projs.catchall_memproj != NULL) {
++    C->gvn_replace_by(projs.catchall_memproj, C->top());
++  }
++  if (projs.fallthrough_ioproj != NULL) {
++    C->gvn_replace_by(projs.fallthrough_ioproj, call->in(TypeFunc::I_O));
++  }
++  if (projs.catchall_ioproj != NULL) {
++    C->gvn_replace_by(projs.catchall_ioproj, C->top());
++  }
++  if (projs.catchall_catchproj != NULL) {
++    C->gvn_replace_by(projs.catchall_catchproj, C->top());
++  }
++  if (projs.resproj != NULL) {
++    C->gvn_replace_by(projs.resproj, C->top());
++  }
++  C->gvn_replace_by(call, C->top());
++}
+ 
+ //=============================================================================
+ //------------------------------PhaseRemoveUseless-----------------------------
+diff --git a/src/hotspot/share/opto/phaseX.hpp b/src/hotspot/share/opto/phaseX.hpp
+index ef5eb488e..915884b33 100644
+--- a/src/hotspot/share/opto/phaseX.hpp
++++ b/src/hotspot/share/opto/phaseX.hpp
+@@ -173,6 +173,26 @@ public:
+                     PhaseNumber phase_num = Remove_Useless_And_Renumber_Live);
+ };
+ 
++//------------------------------PhaseLazyBoxOpt------------------------------
++// Phase that first collecting all the box nodes, if use nodes of a box node are
++// all SafePointNode or it's subclass and the usage is not monitor, scalar and args, then eliminate the box node.
++// else, eliminate the related inserted box node.
++class PhaseLazyBoxOpt : public Phase {
++private:
++  PhaseGVN* _gvn;
++
++public:
++  PhaseLazyBoxOpt(PhaseGVN *gvn, PhaseNumber phase_num = LazyBoxOpt);
++
++  // collecting a list of box nodes
++  Node_List collect_box_nodes();
++
++  // determine if a box node is eliminatable
++  bool is_eliminatable(CallStaticJavaNode* box_node);
++
++  void eliminate_call(CallNode* call);
++};
++
+ 
+ //------------------------------PhaseTransform---------------------------------
+ // Phases that analyze, then transform.  Constructing the Phase object does any
+diff --git a/src/hotspot/share/opto/phasetype.hpp b/src/hotspot/share/opto/phasetype.hpp
+index 100db1773..7e57cfb07 100644
+--- a/src/hotspot/share/opto/phasetype.hpp
++++ b/src/hotspot/share/opto/phasetype.hpp
+@@ -30,6 +30,7 @@ enum CompilerPhaseType {
+   PHASE_AFTER_STRINGOPTS,
+   PHASE_BEFORE_REMOVEUSELESS,
+   PHASE_AFTER_PARSING,
++  PHASE_LAZYBOXOPT,
+   PHASE_ITER_GVN1,
+   PHASE_PHASEIDEAL_BEFORE_EA,
+   PHASE_ITER_GVN_AFTER_EA,
+@@ -73,6 +74,7 @@ class CompilerPhaseTypeHelper {
+       case PHASE_AFTER_STRINGOPTS:           return "After StringOpts";
+       case PHASE_BEFORE_REMOVEUSELESS:       return "Before RemoveUseless";
+       case PHASE_AFTER_PARSING:              return "After Parsing";
++      case PHASE_LAZYBOXOPT:                 return "After LazyBoxOpt";
+       case PHASE_ITER_GVN1:                  return "Iter GVN 1";
+       case PHASE_PHASEIDEAL_BEFORE_EA:       return "PhaseIdealLoop before EA";
+       case PHASE_ITER_GVN_AFTER_EA:          return "Iter GVN after EA";
+diff --git a/src/hotspot/share/runtime/arguments.cpp b/src/hotspot/share/runtime/arguments.cpp
+index 3e7d48ad5..baf221ec4 100644
+--- a/src/hotspot/share/runtime/arguments.cpp
++++ b/src/hotspot/share/runtime/arguments.cpp
+@@ -1969,6 +1969,19 @@ jint Arguments::set_aggressive_opts_flags() {
+       AggressiveUnboxing = false;
+     }
+   }
++
++  // LazyBox need set AggressiveUnboxing
++  if (LazyBox) {
++    if (!AggressiveUnboxing || UseAOT || EnableJVMCI) {
++      warning("LazyBox is disable because AggressiveUnboxing is disabled or UseAOT/EnableJVMCI is enable");
++      LazyBox = false;
++    }
++  }
++
++  if (PrintLazyBox) {
++    PrintLazyBox = LazyBox;
++  }
++
+   if (AggressiveOpts || !FLAG_IS_DEFAULT(AutoBoxCacheMax)) {
+     if (FLAG_IS_DEFAULT(EliminateAutoBox)) {
+       FLAG_SET_DEFAULT(EliminateAutoBox, true);
+diff --git a/src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/opto/CompilerPhaseType.java b/src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/opto/CompilerPhaseType.java
+index e0eb10942..0478c56d9 100644
+--- a/src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/opto/CompilerPhaseType.java
++++ b/src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/opto/CompilerPhaseType.java
+@@ -30,6 +30,7 @@ public enum CompilerPhaseType {
+   PHASE_BEFORE_STRINGOPTS ("Before StringOpts"),
+   PHASE_AFTER_STRINGOPTS ("After StringOpts"),
+   PHASE_BEFORE_REMOVEUSELESS ("Before RemoveUseless"),
++  PHASE_LAZYBOXOPT ("After LazyBoxOpt"),
+   PHASE_AFTER_PARSING ("After Parsing"),
+   PHASE_ITER_GVN1 ("Iter GVN 1"),
+   PHASE_PHASEIDEAL_BEFORE_EA ("PhaseIdealLoop before EA"),
+diff --git a/test/hotspot/jtreg/compiler/lazybox/TestLazyBox.java b/test/hotspot/jtreg/compiler/lazybox/TestLazyBox.java
+new file mode 100644
+index 000000000..4d9a72db2
+--- /dev/null
++++ b/test/hotspot/jtreg/compiler/lazybox/TestLazyBox.java
+@@ -0,0 +1,82 @@
++/*
++ * Copyright (c) 2021, Huawei Technologies Co. Ltd. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++/**
++ * @test
++ * @summary Test whether LazyBox works
++ * @run main/othervm -XX:+UnlockExperimentalVMOptions -XX:+LazyBox
++ *                   -XX:+AggressiveUnboxing
++ *                   -XX:CompileCommand=dontinline,compiler/lazybox/TestLazyBox.foo
++ *                   -XX:CompileCommand=dontinline,compiler/lazybox/TestLazyBox.black
++ *                   -Xcomp -XX:-TieredCompilation
++ *                   compiler.lazybox.TestLazyBox
++ */
++
++package compiler.lazybox;
++
++class Wrap {
++    public Object field;
++}
++
++public class TestLazyBox {
++    public static Integer base = null;
++
++    public static void main(String[] args) throws Exception{
++      for(int i = 0; i < 10; i++) {
++        Integer IntObj2 = Integer.valueOf(i);
++        foo(IntObj2);
++      }
++      System.out.println("Passed");
++    }
++
++    public static void foo(Integer IntObj2) throws Exception {
++
++      Integer IntObj = Integer.valueOf(299);
++      base = IntObj;
++      try{
++        black(IntObj);
++
++        if (IntObj == IntObj2) {
++            black(IntObj);
++        }
++
++        if (IntObj.equals(IntObj2)) {
++            black(IntObj);
++        }
++
++        Wrap wrap = new Wrap();
++        wrap.field = IntObj;
++
++        black(wrap.field);
++      } catch(Exception e) {
++        e.printStackTrace();
++      }
++    }
++
++    public static void black(Object i) {
++      if (base == i) {
++        System.err.println("Failed tests.");
++        throw new InternalError();
++      }
++    }
++}
+-- 
+2.19.0
+

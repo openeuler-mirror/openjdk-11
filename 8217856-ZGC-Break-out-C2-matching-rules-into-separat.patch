@@ -3,8 +3,8 @@ index 6878962..bb9721c 100644
 --- a/make/hotspot/gensrc/GensrcAdlc.gmk
 +++ b/make/hotspot/gensrc/GensrcAdlc.gmk
 @@ -146,6 +146,12 @@ ifeq ($(call check-jvm-feature, compiler2), true)
-       )))
-   endif
+       $d/os_cpu/$(HOTSPOT_TARGET_OS)_$(HOTSPOT_TARGET_CPU_ARCH)/$(HOTSPOT_TARGET_OS)_$(HOTSPOT_TARGET_CPU_ARCH).ad \
+     )))
  
 +  ifeq ($(call check-jvm-feature, zgc), true)
 +    AD_SRC_FILES += $(call uniq, $(wildcard $(foreach d, $(AD_SRC_ROOTS), \
@@ -12,9 +12,9 @@ index 6878962..bb9721c 100644
 +      )))
 +  endif
 +
-   SINGLE_AD_SRCFILE := $(ADLC_SUPPORT_DIR)/all-ad-src.ad
- 
-   INSERT_FILENAME_AWK_SCRIPT := \
+   ifeq ($(call check-jvm-feature, shenandoahgc), true)
+     AD_SRC_FILES += $(call uniq, $(wildcard $(foreach d, $(AD_SRC_ROOTS), \
+         $d/cpu/$(HOTSPOT_TARGET_CPU_ARCH)/gc/shenandoah/shenandoah_$(HOTSPOT_TARGET_CPU).ad \
 diff --git a/src/hotspot/cpu/aarch64/aarch64.ad b/src/hotspot/cpu/aarch64/aarch64.ad
 index 05b36e2..18e774f 100644
 --- a/src/hotspot/cpu/aarch64/aarch64.ad
