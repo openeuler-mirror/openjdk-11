@@ -1,0 +1,263 @@
+From 8da2787209da1906e3a92fff95dc46abe793b433 Mon Sep 17 00:00:00 2001
+Date: Thu, 18 Mar 2021 12:36:13 +0000
+Subject: [PATCH 3/4] 8217918: C2 -XX:+AggressiveUnboxing is broken
+
+---
+ src/hotspot/share/opto/cfgnode.hpp |  4 +-
+ src/hotspot/share/opto/phaseX.cpp  | 96 ++++++++++++++++++++++++------
+ src/hotspot/share/opto/phaseX.hpp  | 10 ++++
+ src/hotspot/share/opto/type.cpp    | 16 +++++
+ src/hotspot/share/opto/type.hpp    |  4 ++
+ 5 files changed, 111 insertions(+), 19 deletions(-)
+
+diff --git a/src/hotspot/share/opto/cfgnode.hpp b/src/hotspot/share/opto/cfgnode.hpp
+index 0d8c9b33b..04029ca91 100644
+--- a/src/hotspot/share/opto/cfgnode.hpp
++++ b/src/hotspot/share/opto/cfgnode.hpp
+@@ -118,11 +118,13 @@ class JProjNode : public ProjNode {
+ // can turn PhiNodes into copys in-place by NULL'ing out their RegionNode
+ // input in slot 0.
+ class PhiNode : public TypeNode {
++  friend class PhaseRenumberLive;
++
+   const TypePtr* const _adr_type; // non-null only for Type::MEMORY nodes.
+   // The following fields are only used for data PhiNodes to indicate
+   // that the PhiNode represents the value of a known instance field.
+         int _inst_mem_id; // Instance memory id (node index of the memory Phi)
+-  const int _inst_id;     // Instance id of the memory slice.
++        int _inst_id;     // Instance id of the memory slice.
+   const int _inst_index;  // Alias index of the instance memory slice.
+   // Array elements references have the same alias_idx but different offset.
+   const int _inst_offset; // Offset of the instance memory slice.
+diff --git a/src/hotspot/share/opto/phaseX.cpp b/src/hotspot/share/opto/phaseX.cpp
+index 9d5d4deed..f4a38cd28 100644
+--- a/src/hotspot/share/opto/phaseX.cpp
++++ b/src/hotspot/share/opto/phaseX.cpp
+@@ -463,55 +463,115 @@ PhaseRemoveUseless::PhaseRemoveUseless(PhaseGVN *gvn, Unique_Node_List *worklist
+ PhaseRenumberLive::PhaseRenumberLive(PhaseGVN* gvn,
+                                      Unique_Node_List* worklist, Unique_Node_List* new_worklist,
+                                      PhaseNumber phase_num) :
+-  PhaseRemoveUseless(gvn, worklist, Remove_Useless_And_Renumber_Live) {
+-
++  PhaseRemoveUseless(gvn, worklist, Remove_Useless_And_Renumber_Live),
++  _new_type_array(C->comp_arena()),
++  _old2new_map(C->unique(), C->unique(), -1),
++  _delayed(Thread::current()->resource_area()),
++  _is_pass_finished(false),
++  _live_node_count(C->live_nodes())
++{
+   assert(RenumberLiveNodes, "RenumberLiveNodes must be set to true for node renumbering to take place");
+   assert(C->live_nodes() == _useful.size(), "the number of live nodes must match the number of useful nodes");
+   assert(gvn->nodes_size() == 0, "GVN must not contain any nodes at this point");
++  assert(_delayed.size() == 0, "should be empty");
+ 
+-  uint old_unique_count = C->unique();
+-  uint live_node_count = C->live_nodes();
+   uint worklist_size = worklist->size();
+ 
+-  // Storage for the updated type information.
+-  Type_Array new_type_array(C->comp_arena());
+-
+   // Iterate over the set of live nodes.
+-  uint current_idx = 0; // The current new node ID. Incremented after every assignment.
+-  for (uint i = 0; i < _useful.size(); i++) {
+-    Node* n = _useful.at(i);
+-    // Sanity check that fails if we ever decide to execute this phase after EA
+-    assert(!n->is_Phi() || n->as_Phi()->inst_mem_id() == -1, "should not be linked to data Phi");
+-    const Type* type = gvn->type_or_null(n);
+-    new_type_array.map(current_idx, type);
++  for (uint current_idx = 0; current_idx < _useful.size(); current_idx++) {
++    Node* n = _useful.at(current_idx);
+ 
+     bool in_worklist = false;
+     if (worklist->member(n)) {
+       in_worklist = true;
+     }
+ 
++    const Type* type = gvn->type_or_null(n);
++    _new_type_array.map(current_idx, type);
++
++    assert(_old2new_map.at(n->_idx) == -1, "already seen");
++    _old2new_map.at_put(n->_idx, current_idx);
++
+     n->set_idx(current_idx); // Update node ID.
+ 
+     if (in_worklist) {
+       new_worklist->push(n);
+     }
+ 
+-    current_idx++;
++    if (update_embedded_ids(n) < 0) {
++      _delayed.push(n); // has embedded IDs; handle later
++    }
+   }
+ 
+   assert(worklist_size == new_worklist->size(), "the new worklist must have the same size as the original worklist");
+-  assert(live_node_count == current_idx, "all live nodes must be processed");
++  assert(_live_node_count == _useful.size(), "all live nodes must be processed");
++
++  _is_pass_finished = true; // pass finished; safe to process delayed updates
++
++  while (_delayed.size() > 0) {
++    Node* n = _delayed.pop();
++    int no_of_updates = update_embedded_ids(n);
++    assert(no_of_updates > 0, "should be updated");
++  }
+ 
+   // Replace the compiler's type information with the updated type information.
+-  gvn->replace_types(new_type_array);
++  gvn->replace_types(_new_type_array);
+ 
+   // Update the unique node count of the compilation to the number of currently live nodes.
+-  C->set_unique(live_node_count);
++  C->set_unique(_live_node_count);
+ 
+   // Set the dead node count to 0 and reset dead node list.
+   C->reset_dead_node_list();
+ }
+ 
++int PhaseRenumberLive::new_index(int old_idx) {
++  assert(_is_pass_finished, "not finished");
++  if (_old2new_map.at(old_idx) == -1) { // absent
++    // Allocate a placeholder to preserve uniqueness
++    _old2new_map.at_put(old_idx, _live_node_count);
++    _live_node_count++;
++  }
++  return _old2new_map.at(old_idx);
++}
++
++int PhaseRenumberLive::update_embedded_ids(Node* n) {
++  int no_of_updates = 0;
++  if (n->is_Phi()) {
++    PhiNode* phi = n->as_Phi();
++    if (phi->_inst_id != -1) {
++      if (!_is_pass_finished) {
++        return -1; // delay
++      }
++      int new_idx = new_index(phi->_inst_id);
++      assert(new_idx != -1, "");
++      phi->_inst_id = new_idx;
++      no_of_updates++;
++    }
++    if (phi->_inst_mem_id != -1) {
++      if (!_is_pass_finished) {
++        return -1; // delay
++      }
++      int new_idx = new_index(phi->_inst_mem_id);
++      assert(new_idx != -1, "");
++      phi->_inst_mem_id = new_idx;
++      no_of_updates++;
++    }
++  }
++
++  const Type* type = _new_type_array.fast_lookup(n->_idx);
++  if (type != NULL && type->isa_oopptr() && type->is_oopptr()->is_known_instance()) {
++    if (!_is_pass_finished) {
++        return -1; // delay
++    }
++    int old_idx = type->is_oopptr()->instance_id();
++    int new_idx = new_index(old_idx);
++    const Type* new_type = type->is_oopptr()->with_instance_id(new_idx);
++    _new_type_array.map(n->_idx, new_type);
++    no_of_updates++;
++  }
++
++  return no_of_updates;
++}
+ 
+ //=============================================================================
+ //------------------------------PhaseTransform---------------------------------
+diff --git a/src/hotspot/share/opto/phaseX.hpp b/src/hotspot/share/opto/phaseX.hpp
+index 3b33a8cb2..ef5eb488e 100644
+--- a/src/hotspot/share/opto/phaseX.hpp
++++ b/src/hotspot/share/opto/phaseX.hpp
+@@ -157,6 +157,16 @@ public:
+ // Phase that first performs a PhaseRemoveUseless, then it renumbers compiler
+ // structures accordingly.
+ class PhaseRenumberLive : public PhaseRemoveUseless {
++protected:
++  Type_Array _new_type_array; // Storage for the updated type information.
++  GrowableArray<int> _old2new_map;
++  Node_List _delayed;
++  bool _is_pass_finished;
++  uint _live_node_count;
++
++  int update_embedded_ids(Node* n);
++  int new_index(int old_idx);
++
+ public:
+   PhaseRenumberLive(PhaseGVN* gvn,
+                     Unique_Node_List* worklist, Unique_Node_List* new_worklist,
+diff --git a/src/hotspot/share/opto/type.cpp b/src/hotspot/share/opto/type.cpp
+index 0078b8773..964f9d247 100644
+--- a/src/hotspot/share/opto/type.cpp
++++ b/src/hotspot/share/opto/type.cpp
+@@ -3456,6 +3456,12 @@ const TypePtr* TypeOopPtr::with_inline_depth(int depth) const {
+   return make(_ptr, _offset, _instance_id, _speculative, depth);
+ }
+ 
++//------------------------------with_instance_id--------------------------------
++const TypePtr* TypeOopPtr::with_instance_id(int instance_id) const {
++  assert(_instance_id != -1, "should be known");
++  return make(_ptr, _offset, instance_id, _speculative, _inline_depth);
++}
++
+ //------------------------------meet_instance_id--------------------------------
+ int TypeOopPtr::meet_instance_id( int instance_id ) const {
+   // Either is 'TOP' instance?  Return the other instance!
+@@ -4059,6 +4065,11 @@ const TypePtr *TypeInstPtr::with_inline_depth(int depth) const {
+   return make(_ptr, klass(), klass_is_exact(), const_oop(), _offset, _instance_id, _speculative, depth);
+ }
+ 
++const TypePtr *TypeInstPtr::with_instance_id(int instance_id) const {
++  assert(is_known_instance(), "should be known");
++  return make(_ptr, klass(), klass_is_exact(), const_oop(), _offset, instance_id, _speculative, _inline_depth);
++}
++
+ //=============================================================================
+ // Convenience common pre-built types.
+ const TypeAryPtr *TypeAryPtr::RANGE;
+@@ -4529,6 +4540,11 @@ const TypePtr *TypeAryPtr::with_inline_depth(int depth) const {
+   return make(_ptr, _const_oop, _ary->remove_speculative()->is_ary(), _klass, _klass_is_exact, _offset, _instance_id, _speculative, depth);
+ }
+ 
++const TypePtr *TypeAryPtr::with_instance_id(int instance_id) const {
++  assert(is_known_instance(), "should be known");
++  return make(_ptr, _const_oop, _ary->remove_speculative()->is_ary(), _klass, _klass_is_exact, _offset, instance_id, _speculative, _inline_depth);
++}
++
+ //=============================================================================
+ 
+ //------------------------------hash-------------------------------------------
+diff --git a/src/hotspot/share/opto/type.hpp b/src/hotspot/share/opto/type.hpp
+index ca92fe3ab..e9ed7ce40 100644
+--- a/src/hotspot/share/opto/type.hpp
++++ b/src/hotspot/share/opto/type.hpp
+@@ -1048,6 +1048,8 @@ public:
+   virtual bool would_improve_type(ciKlass* exact_kls, int inline_depth) const;
+   virtual const TypePtr* with_inline_depth(int depth) const;
+ 
++  virtual const TypePtr* with_instance_id(int instance_id) const;
++
+   virtual const Type *xdual() const;    // Compute dual right now.
+   // the core of the computation of the meet for TypeOopPtr and for its subclasses
+   virtual const Type *xmeet_helper(const Type *t) const;
+@@ -1124,6 +1126,7 @@ class TypeInstPtr : public TypeOopPtr {
+   // Speculative type helper methods.
+   virtual const Type* remove_speculative() const;
+   virtual const TypePtr* with_inline_depth(int depth) const;
++  virtual const TypePtr* with_instance_id(int instance_id) const;
+ 
+   // the core of the computation of the meet of 2 types
+   virtual const Type *xmeet_helper(const Type *t) const;
+@@ -1211,6 +1214,7 @@ public:
+   // Speculative type helper methods.
+   virtual const Type* remove_speculative() const;
+   virtual const TypePtr* with_inline_depth(int depth) const;
++  virtual const TypePtr* with_instance_id(int instance_id) const;
+ 
+   // the core of the computation of the meet of 2 types
+   virtual const Type *xmeet_helper(const Type *t) const;
+-- 
+2.19.0
+
