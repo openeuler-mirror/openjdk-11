@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 6
+Release: 7
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -854,6 +854,7 @@ Patch64: Fix-the-memcpy-symbol-issue-during-JDK11-x64-build.patch
 Patch65: add-LazyBox-feature.patch
 Patch66: add-G1-Full-GC-optimization.patch
 Patch67: 8214535-support-Jmap-parallel.patch
+Patch68: src-openeuler-openjdk-11-resolve-code-inconsistencies.patch 
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1131,9 +1132,10 @@ pushd %{top_level_dir_name}
 %patch65 -p1
 %patch66 -p1
 %patch67 -p1
+%patch68 -p1
 popd # openjdk
 
-%patch1000
+# %patch1000
 
 # Extract systemtap tapsets
 %if %{with_systemtap}
@@ -1634,6 +1636,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Tue Apr 13 2021  kuenking <wangkun49@huawei.com> - 1:11.0.10.9-7
+- add src-openeuler-openjdk-11-resolve-code-inconsistencies.patch
+
 * Fri Mar 19 2021 aijm <aijiaming1@huawei.com> - 1:11.0.10.9-6
 - add 8214535-support-Jmap-parallel.patch
 
