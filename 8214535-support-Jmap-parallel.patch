@@ -61,8 +61,8 @@ index 7e9c6254c..fd2da14a3 100644
 +  heap_region_par_iterate_from_worker_offset(&blk, claimer, worker_id);
 +}
 +
- void G1CollectedHeap::heap_region_iterate(HeapRegionClosure* cl) const {
-   _hrm.iterate(cl);
+ void G1CollectedHeap::keep_alive(oop obj) {
+   G1BarrierSet::enqueue(obj);
  }
 diff --git a/src/hotspot/share/gc/g1/g1CollectedHeap.hpp b/src/hotspot/share/gc/g1/g1CollectedHeap.hpp
 index bb46cae83..82f59d69b 100644

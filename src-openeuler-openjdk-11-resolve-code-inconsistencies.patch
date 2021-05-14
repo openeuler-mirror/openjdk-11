@@ -1002,8 +1002,8 @@ index 540f353e6..727b9b948 100644
              + File.separator + "security" + File.separator + "cacerts";
  
      // The numbers of certs now.
--    private static final int COUNT = 95;
-+    private static final int COUNT = 87;
+-    private static final int COUNT = 97;
++    private static final int COUNT = 89;
  
      // SHA-256 of cacerts, can be generated with
      // shasum -a 256 cacerts | sed -e 's/../&:/g' | tr '[:lower:]' '[:upper:]' | cut -c1-95
