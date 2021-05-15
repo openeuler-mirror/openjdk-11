@@ -114,7 +114,7 @@
 
 # New Version-String scheme-style defines
 %global majorver 11
-%global securityver 10
+%global securityver 11
 # buildjdkver is usually same as %%{majorver},
 # but in time of bootstrap of next jdk, it is majorver-1,
 # and this it is better to change it here, on single place
@@ -135,7 +135,7 @@
 
 %global project		jdk-updates
 %global repo		jdk11u
-%global revision	jdk-11.0.10-ga
+%global revision	jdk-11.0.11-ga
 %global full_revision %{project}-%{repo}-%{revision}
 # priority must be 7 digits in total
 # setting to 1, so debug ones can have 0
@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 8
+Release: 0
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -816,7 +816,6 @@ Patch22: 8233506-ZGC-the-load-for-Reference.get-can-be-conver.patch
 Patch23: add-missing-inline.patch
 Patch26: ZGC-aarch64-fix-system-call-number-of-memfd_create.patch
 Patch27: ZGC-aarch64-fix-not-using-load-store-Pre-index.patch
-Patch28: address-s-offset-may-exceed-the-limit-of-ldrw-instru.patch
 Patch29: ZGC-reuse-entries-of-ResolvedMethodTable.patch
 
 # 11.0.8
@@ -829,24 +828,19 @@ Patch38: fast-serializer-jdk11.patch
 Patch39: fix-jck-failure-on-FastSerializer.patch
 Patch40: 8223667-ASAN-build-broken.patch
 Patch42: 8229496-SIGFPE-division-by-zero-in-C2-OSR-compiled-method.patch
-Patch43: 8243670-Unexpected-test-result-caused-by-C2-MergeMem.patch
 Patch45: leaf-optimize-in-ParallelScanvageGC.patch
 Patch46: ZGC-correct-free-heap-size-excluding-waste-in-rule_allocation_rate.patch
 Patch47: 8204947-Port-ShenandoahTaskTerminator-to-mainline-and-make-it-default.patch
 Patch48: 8205921-Optimizing-best_of_2-work-stealing-queue-selection.patch
-Patch49: 8237483-AArch64-C1-OopMap-inserted-twice-fatal-error.patch
-Patch50: 8248336-AArch64-C2-offset-overflow-in-BoxLockNode-em.patch
 
 # 11.0.9
 Patch54: 8207160-ClassReader-adjustMethodParams-can-potentially-return-null-if-the-args-list-is-empty.patch
 Patch55: 8215047-Task-terminators-do-not-complete-termination-in-consistent-state.patch
-Patch56: 8247766-aarch64-guarantee-val-1U--nbits-failed-Field-too-big-for-insn.patch
 Patch57: add-zgc-parameter-adaptation-feature.patch
 Patch58: add-integerCache-feature.patch
 Patch59: add-SVE-backend-feature.patch
 
 #11.0.10
-Patch60: 8240353.patch
 Patch61: downgrade-the-symver-of-log2f-posix-spawn.patch
 Patch62: 8254078-DataOutputStream-is-very-slow-post-disabling.patch
 Patch63: 8217918-C2-XX-AggressiveUnboxing-is-broken.patch
@@ -1101,7 +1095,6 @@ pushd %{top_level_dir_name}
 %patch23 -p1
 %patch26 -p1
 %patch27 -p1
-%patch28 -p1
 %patch29 -p1
 %patch33 -p1
 %patch34 -p1
@@ -1112,20 +1105,15 @@ pushd %{top_level_dir_name}
 %patch39 -p1
 %patch40 -p1
 %patch42 -p1
-%patch43 -p1
 %patch45 -p1
 %patch46 -p1
 %patch47 -p1
 %patch48 -p1
-%patch49 -p1
-%patch50 -p1
 %patch54 -p1
 %patch55 -p1
-%patch56 -p1
 %patch57 -p1
 %patch58 -p1
 %patch59 -p1
-%patch60 -p1
 %patch61 -p1
 %patch62 -p1
 %patch63 -p1
@@ -1638,6 +1626,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Fri May 14 2021 hu_bo_dao <hubodao@huawei.com> - 1:11.0.11.9-0
+- Update to 11.0.11+9 (GA)
+
 * Sat Apr 17 2021 aijm <aijiaming1@huawei.com> - 1:11.0.10.9-8
 - add G1-iterate-region-by-bitmap-rather-than-obj-size-in.patch
 
