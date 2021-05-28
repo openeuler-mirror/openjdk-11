@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 0
+Release: 1
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -850,6 +850,9 @@ Patch66: add-G1-Full-GC-optimization.patch
 Patch67: 8214535-support-Jmap-parallel.patch
 Patch68: src-openeuler-openjdk-11-resolve-code-inconsistencies.patch 
 Patch69: G1-iterate-region-by-bitmap-rather-than-obj-size-in.patch
+
+#11.0.11
+Patch70: 8264640.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1123,6 +1126,7 @@ pushd %{top_level_dir_name}
 %patch67 -p1
 %patch68 -p1
 %patch69 -p1
+%patch70 -p1
 popd # openjdk
 
 # %patch1000
@@ -1626,6 +1630,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Fri May 28 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.11.9-1
+- add 8264640.patch
+
 * Fri May 14 2021 hu_bo_dao <hubodao@huawei.com> - 1:11.0.11.9-0
 - Update to 11.0.11+9 (GA)
 
