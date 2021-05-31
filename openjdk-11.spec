@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 1
+Release: 2
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -853,6 +853,7 @@ Patch69: G1-iterate-region-by-bitmap-rather-than-obj-size-in.patch
 
 #11.0.11
 Patch70: 8264640.patch
+Patch71: numa_mem_leak.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1127,6 +1128,7 @@ pushd %{top_level_dir_name}
 %patch68 -p1
 %patch69 -p1
 %patch70 -p1
+%patch71 -p1
 popd # openjdk
 
 # %patch1000
@@ -1630,6 +1632,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Mon May 31 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.11.9-2
+- add numa_mem_leak.patch
+
 * Fri May 28 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.11.9-1
 - add 8264640.patch
 
