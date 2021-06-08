@@ -5558,11 +5558,11 @@ index 80ddb9b31..f554b5e15 100644
 +
    unsigned get(int msb = 31, int lsb = 0) {
      int nbits = msb - lsb + 1;
-     unsigned mask = ((1U << nbits) - 1) << lsb;
+     unsigned mask = checked_cast<unsigned>(right_n_bits(nbits)) << lsb;
 @@ -554,6 +565,18 @@ class Address {
    void lea(MacroAssembler *, Register) const;
  
-   static bool offset_ok_for_immed(long offset, uint shift);
+   static bool offset_ok_for_immed(int64_t offset, uint shift = 0);
 +
 +  static bool offset_ok_for_sve_immed(long offset, int shift, int vl /* sve vector length */) {
 +    if (offset % vl == 0) {

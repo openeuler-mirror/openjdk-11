@@ -1,0 +1,370 @@
+commit 84035ec6aea36f1e58f8aab9a2e07e6985529434
+Date:   Tue Apr 20 14:45:13 2021 +0800
+
+    G1: iterate region by bitmap rather than obj size in prepare_no_moving_region
+
+diff --git a/src/hotspot/share/gc/g1/g1FullGCPrepareTask.cpp b/src/hotspot/share/gc/g1/g1FullGCPrepareTask.cpp
+index 2cc9c87d0..a86046616 100644
+--- a/src/hotspot/share/gc/g1/g1FullGCPrepareTask.cpp
++++ b/src/hotspot/share/gc/g1/g1FullGCPrepareTask.cpp
+@@ -171,25 +171,47 @@ void G1FullGCPrepareTask::G1CalculatePointersClosure::prepare_for_compaction(Hea
+   }
+ }
+ 
+-void G1FullGCPrepareTask::G1CalculatePointersClosure::prepare_no_moving_region(const HeapRegion* hr) {
+-  const HeapRegion* current = hr;
++void G1FullGCPrepareTask::G1CalculatePointersClosure::prepare_no_moving_region(HeapRegion* hr) {
++  HeapRegion* current = hr;
+   assert(!current->is_humongous(), "Should be no humongous regions");
+   HeapWord* limit = current->top();
+   HeapWord* next_addr = current->bottom();
++  HeapWord* live_end = current->bottom();
++  HeapWord* threshold = current->initialize_threshold();
++  HeapWord* pre_addr;
++
+   while (next_addr < limit) {
+     Prefetch::write(next_addr, PrefetchScanIntervalInBytes);
+-    oop obj = oop(next_addr);
+-    size_t obj_size = obj->size();
++    pre_addr = next_addr;
++
+     if (_bitmap->is_marked(next_addr)) {
++      oop obj = oop(next_addr);
++      size_t obj_size = obj->size();
++      // Object should not move but mark-word is used so it looks like the
++      // object is forwarded. Need to clear the mark and it's no problem
++      // since it will be restored by preserved marks. There is an exception
++      // with BiasedLocking, in this case forwardee() will return NULL
++      // even if the mark-word is used. This is no problem since
++      // forwardee() will return NULL in the compaction phase as well.
+       if (obj->forwardee() != NULL) {
+-        obj->init_mark_raw();
++        obj->init_mark();
+       }
++      next_addr += obj_size;
++      // update live byte range end
++      live_end = next_addr;
+     } else {
+-      // Fill dummy object to replace dead object
+-      Universe::heap()->fill_with_dummy_object(next_addr, next_addr + obj_size, true);
++      next_addr = _bitmap->get_next_marked_addr(next_addr, limit);
++      assert(next_addr > live_end, "next_addr must be bigger than live_end");
++      assert(next_addr == limit || _bitmap->is_marked(next_addr), "next_addr is the limit or is marked");
++      // fill dummy object to replace dead range
++      Universe::heap()->fill_with_dummy_object(live_end, next_addr, true);
++    }
++
++    if (next_addr > threshold) {
++      threshold = current->cross_threshold(pre_addr, next_addr);
+     }
+-    next_addr += obj_size;
+   }
++  assert(next_addr == limit, "Should stop the scan at the limit.");
+ }
+ 
+ void G1FullGCPrepareTask::prepare_serial_compaction() {
+diff --git a/src/hotspot/share/gc/g1/g1FullGCPrepareTask.hpp b/src/hotspot/share/gc/g1/g1FullGCPrepareTask.hpp
+index 57b53c9dd..7f4a69e80 100644
+--- a/src/hotspot/share/gc/g1/g1FullGCPrepareTask.hpp
++++ b/src/hotspot/share/gc/g1/g1FullGCPrepareTask.hpp
+@@ -61,7 +61,7 @@ protected:
+     void prepare_for_compaction_work(G1FullGCCompactionPoint* cp, HeapRegion* hr);
+     void free_humongous_region(HeapRegion* hr);
+     void reset_region_metadata(HeapRegion* hr);
+-    void prepare_no_moving_region(const HeapRegion* hr);
++    void prepare_no_moving_region(HeapRegion* hr);
+ 
+   public:
+     G1CalculatePointersClosure(G1CMBitMap* bitmap,
+diff --git a/src/hotspot/share/gc/g1/g1MarkLiveWords.cpp b/src/hotspot/share/gc/g1/g1MarkLiveWords.cpp
+index 32da3800a..aec32f9e4 100644
+--- a/src/hotspot/share/gc/g1/g1MarkLiveWords.cpp
++++ b/src/hotspot/share/gc/g1/g1MarkLiveWords.cpp
+@@ -1,22 +1,25 @@
+ /*
+- * Copyright (c) 2021, Huawei Technologies Co. Ltd. All rights reserved.
++ * Copyright (c) 2021, Huawei Technologies Co., Ltd. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+  * under the terms of the GNU General Public License version 2 only, as
+- * published by the Free Software Foundation. Alibaba designates this
+- * particular file as subject to the "Classpath" exception as provided
+- * by Oracle in the LICENSE file that accompanied this code.
++ * published by the Free Software Foundation.
+  *
+  * This code is distributed in the hope that it will be useful, but WITHOUT
+  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+  * version 2 for more details (a copy is included in the LICENSE file that
+  * accompanied this code).
+  *
+  * You should have received a copy of the GNU General Public License version
+  * 2 along with this work; if not, write to the Free Software Foundation,
+  * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ *
+  */
+ 
+ #include "gc/g1/g1MarkLiveWords.hpp"
+diff --git a/src/hotspot/share/gc/g1/g1MarkLiveWords.hpp b/src/hotspot/share/gc/g1/g1MarkLiveWords.hpp
+index a11a4ca52..e8632fe5d 100644
+--- a/src/hotspot/share/gc/g1/g1MarkLiveWords.hpp
++++ b/src/hotspot/share/gc/g1/g1MarkLiveWords.hpp
+@@ -1,22 +1,25 @@
+ /*
+- * Copyright (c) 2021, Huawei Technologies Co. Ltd. All rights reserved.
++ * Copyright (c) 2021, Huawei Technologies Co., Ltd. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+  * under the terms of the GNU General Public License version 2 only, as
+- * published by the Free Software Foundation. Alibaba designates this
+- * particular file as subject to the "Classpath" exception as provided
+- * by Oracle in the LICENSE file that accompanied this code.
++ * published by the Free Software Foundation.
+  *
+  * This code is distributed in the hope that it will be useful, but WITHOUT
+  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+  * version 2 for more details (a copy is included in the LICENSE file that
+  * accompanied this code).
+  *
+  * You should have received a copy of the GNU General Public License version
+  * 2 along with this work; if not, write to the Free Software Foundation,
+  * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ *
+  */
+ 
+ #ifndef SHARE_VM_GC_G1_G1MARKLIVEWORDS_HPP
+diff --git a/src/hotspot/share/gc/g1/g1MarkRegionCache.cpp b/src/hotspot/share/gc/g1/g1MarkRegionCache.cpp
+index 37922e8cf..1fb6d9929 100644
+--- a/src/hotspot/share/gc/g1/g1MarkRegionCache.cpp
++++ b/src/hotspot/share/gc/g1/g1MarkRegionCache.cpp
+@@ -1,22 +1,25 @@
+ /*
+- * Copyright (c) 2021, Huawei Technologies Co. Ltd. All rights reserved.
++ * Copyright (c) 2021, Huawei Technologies Co., Ltd. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+  * under the terms of the GNU General Public License version 2 only, as
+- * published by the Free Software Foundation. Alibaba designates this
+- * particular file as subject to the "Classpath" exception as provided
+- * by Oracle in the LICENSE file that accompanied this code.
++ * published by the Free Software Foundation.
+  *
+  * This code is distributed in the hope that it will be useful, but WITHOUT
+  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+  * version 2 for more details (a copy is included in the LICENSE file that
+  * accompanied this code).
+  *
+  * You should have received a copy of the GNU General Public License version
+  * 2 along with this work; if not, write to the Free Software Foundation,
+  * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ *
+  */
+ 
+ #include "gc/g1/g1MarkRegionCache.hpp"
+diff --git a/src/hotspot/share/gc/g1/g1MarkRegionCache.hpp b/src/hotspot/share/gc/g1/g1MarkRegionCache.hpp
+index 0615fcab6..00d2931a6 100644
+--- a/src/hotspot/share/gc/g1/g1MarkRegionCache.hpp
++++ b/src/hotspot/share/gc/g1/g1MarkRegionCache.hpp
+@@ -1,22 +1,25 @@
+ /*
+- * Copyright (c) 2021, Huawei Technologies Co. Ltd. All rights reserved.
++ * Copyright (c) 2021, Huawei Technologies Co., Ltd. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+  * under the terms of the GNU General Public License version 2 only, as
+- * published by the Free Software Foundation. Alibaba designates this
+- * particular file as subject to the "Classpath" exception as provided
+- * by Oracle in the LICENSE file that accompanied this code.
++ * published by the Free Software Foundation.
+  *
+  * This code is distributed in the hope that it will be useful, but WITHOUT
+  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+  * version 2 for more details (a copy is included in the LICENSE file that
+  * accompanied this code).
+  *
+  * You should have received a copy of the GNU General Public License version
+  * 2 along with this work; if not, write to the Free Software Foundation,
+  * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ *
+  */
+ 
+ #ifndef SHARE_VM_GC_G1_G1MARKREGIONCACHE_HPP
+diff --git a/test/hotspot/jtreg/compiler/c2/Test8217359.java b/test/hotspot/jtreg/compiler/c2/Test8217359.java
+index ca0d2cc75..533bdce4b 100644
+--- a/test/hotspot/jtreg/compiler/c2/Test8217359.java
++++ b/test/hotspot/jtreg/compiler/c2/Test8217359.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2019, Huawei Technologies Co. Ltd. All rights reserved.
++ * Copyright (c) 2019, Huawei Technologies Co., Ltd. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+diff --git a/test/hotspot/jtreg/compiler/c2/TestFoldCompares.java b/test/hotspot/jtreg/compiler/c2/TestFoldCompares.java
+index 735ecf76b..6b7aa5053 100644
+--- a/test/hotspot/jtreg/compiler/c2/TestFoldCompares.java
++++ b/test/hotspot/jtreg/compiler/c2/TestFoldCompares.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2020, Huawei Technologies Co. Ltd. All rights reserved.
++ * Copyright (c) 2020, Huawei Technologies Co., Ltd. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+diff --git a/test/hotspot/jtreg/compiler/c2/TestReplaceEquivPhis.java b/test/hotspot/jtreg/compiler/c2/TestReplaceEquivPhis.java
+index d4c93b390..229df93e5 100644
+--- a/test/hotspot/jtreg/compiler/c2/TestReplaceEquivPhis.java
++++ b/test/hotspot/jtreg/compiler/c2/TestReplaceEquivPhis.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2020, Huawei Technologies Co. Ltd. All rights reserved.
++ * Copyright (c) 2020, Huawei Technologies Co., Ltd. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+diff --git a/test/hotspot/jtreg/compiler/lazybox/TestLazyBox.java b/test/hotspot/jtreg/compiler/lazybox/TestLazyBox.java
+index 4d9a72db2..f22dad6af 100644
+--- a/test/hotspot/jtreg/compiler/lazybox/TestLazyBox.java
++++ b/test/hotspot/jtreg/compiler/lazybox/TestLazyBox.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2021, Huawei Technologies Co. Ltd. All rights reserved.
++ * Copyright (c) 2021, Huawei Technologies Co., Ltd. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+diff --git a/test/hotspot/jtreg/compiler/loopopts/TestBeautifyLoops.java b/test/hotspot/jtreg/compiler/loopopts/TestBeautifyLoops.java
+index c831430ed..8fcafc59b 100644
+--- a/test/hotspot/jtreg/compiler/loopopts/TestBeautifyLoops.java
++++ b/test/hotspot/jtreg/compiler/loopopts/TestBeautifyLoops.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2020, Huawei Technologies Co. Ltd. All rights reserved.
++ * Copyright (c) 2020, Huawei Technologies Co., Ltd. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+diff --git a/test/hotspot/jtreg/compiler/loopopts/TestBeautifyLoops_2.java b/test/hotspot/jtreg/compiler/loopopts/TestBeautifyLoops_2.java
+index c53f33ff2..90fb2242f 100644
+--- a/test/hotspot/jtreg/compiler/loopopts/TestBeautifyLoops_2.java
++++ b/test/hotspot/jtreg/compiler/loopopts/TestBeautifyLoops_2.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2020, Huawei Technologies Co. Ltd. All rights reserved.
++ * Copyright (c) 2020, Huawei Technologies Co., Ltd. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+diff --git a/test/hotspot/jtreg/compiler/loopopts/TestRemoveEmptyLoop.java b/test/hotspot/jtreg/compiler/loopopts/TestRemoveEmptyLoop.java
+index 94c79c9c2..780c09211 100644
+--- a/test/hotspot/jtreg/compiler/loopopts/TestRemoveEmptyLoop.java
++++ b/test/hotspot/jtreg/compiler/loopopts/TestRemoveEmptyLoop.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2019, Huawei Technologies Co. Ltd. All rights reserved.
++ * Copyright (c) 2019, Huawei Technologies Co., Ltd. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+diff --git a/test/hotspot/jtreg/compiler/loopopts/superword/TestSearchAlignment.java b/test/hotspot/jtreg/compiler/loopopts/superword/TestSearchAlignment.java
+index 37be01524..5242adb43 100644
+--- a/test/hotspot/jtreg/compiler/loopopts/superword/TestSearchAlignment.java
++++ b/test/hotspot/jtreg/compiler/loopopts/superword/TestSearchAlignment.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2020, Huawei Technologies Co. Ltd. All rights reserved.
++ * Copyright (c) 2020, Huawei Technologies Co., Ltd. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+diff --git a/test/hotspot/jtreg/gc/g1/TestG1NoMoving.java b/test/hotspot/jtreg/gc/g1/TestG1NoMoving.java
+index 2f892773b..2383c3a94 100644
+--- a/test/hotspot/jtreg/gc/g1/TestG1NoMoving.java
++++ b/test/hotspot/jtreg/gc/g1/TestG1NoMoving.java
+@@ -1,22 +1,25 @@
+ /*
+- * Copyright (c) 2021, Huawei Technologies Co. Ltd. All rights reserved.
++ * Copyright (c) 2021, Huawei Technologies Co., Ltd. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+  * under the terms of the GNU General Public License version 2 only, as
+- * published by the Free Software Foundation. Alibaba designates this
+- * particular file as subject to the "Classpath" exception as provided
+- * by Oracle in the LICENSE file that accompanied this code.
++ * published by the Free Software Foundation.
+  *
+  * This code is distributed in the hope that it will be useful, but WITHOUT
+  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+  * version 2 for more details (a copy is included in the LICENSE file that
+  * accompanied this code).
+  *
+  * You should have received a copy of the GNU General Public License version
+  * 2 along with this work; if not, write to the Free Software Foundation,
+  * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ *
+  */
+ 
+ /*
+diff --git a/test/hotspot/jtreg/runtime/invokedynamic/DynamicConstantHelper.jasm b/test/hotspot/jtreg/runtime/invokedynamic/DynamicConstantHelper.jasm
+index 01ab0c9f1..4fa919e94 100644
+--- a/test/hotspot/jtreg/runtime/invokedynamic/DynamicConstantHelper.jasm
++++ b/test/hotspot/jtreg/runtime/invokedynamic/DynamicConstantHelper.jasm
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2020, Huawei Technologies Co. Ltd. All rights reserved.
++ * Copyright (c) 2020, Huawei Technologies Co., Ltd. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+diff --git a/test/hotspot/jtreg/runtime/invokedynamic/TestDynamicConstant.java b/test/hotspot/jtreg/runtime/invokedynamic/TestDynamicConstant.java
+index 1d8d3c669..24498ece4 100644
+--- a/test/hotspot/jtreg/runtime/invokedynamic/TestDynamicConstant.java
++++ b/test/hotspot/jtreg/runtime/invokedynamic/TestDynamicConstant.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2020, Huawei Technologies Co. Ltd. All rights reserved.
++ * Copyright (c) 2020, Huawei Technologies Co., Ltd. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+diff --git a/version.txt b/version.txt
+new file mode 100644
+index 000000000..85b49171c
+--- /dev/null
++++ b/version.txt
+@@ -0,0 +1 @@
++11.0.10.0.13
