@@ -73,13 +73,6 @@ diff --git a/src/hotspot/share/gc/z/zWorkers.hpp b/src/hotspot/share/gc/z/zWorke
 index 36a3c61fd..6ce09c447 100644
 --- a/src/hotspot/share/gc/z/zWorkers.hpp
 +++ b/src/hotspot/share/gc/z/zWorkers.hpp
-@@ -1,5 +1,5 @@
- /*
-- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
-+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
-  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
-  *
-  * This code is free software; you can redistribute it and/or modify it
 @@ -34,8 +34,6 @@ private:
    bool     _boost;
    WorkGang _workers;
