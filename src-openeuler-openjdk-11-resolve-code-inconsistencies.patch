@@ -1,0 +1,1305 @@
+commit c2748cd0d7b5a92b275aff0cd1d1fa0b113ba64f
+Author: aijiaming <aijiaming1@huawei.com>
+Date:   Mon Apr 12 10:53:53 2021 +0800
+
+    fix patch
+
+diff --git a/make/launcher/Launcher-java.base.gmk b/make/launcher/Launcher-java.base.gmk
+index f6d4aa28f..d511c0be5 100644
+--- a/make/launcher/Launcher-java.base.gmk
++++ b/make/launcher/Launcher-java.base.gmk
+@@ -30,6 +30,11 @@ $(eval $(call IncludeCustomExtension, launcher/Launcher-java.base.gmk))
+ JAVA_RC_FLAGS += -I$(TOPDIR)/src/java.base/windows/native/common
+ JAVA_RC_FLAGS += -I$(TOPDIR)/src/java.base/windows/native/launcher/icons
+ 
++LIBMEMCPY_FILES += \
++        $(addprefix $(TOPDIR)/src/hotspot/share/runtime/, \
++                memcpy.cpp \
++        )
++
+ ################################################################################
+ 
+ $(eval $(call SetupBuildLauncher, java, \
+@@ -79,6 +84,7 @@ ifneq ($(findstring $(OPENJDK_TARGET_OS), macosx solaris aix linux), )
+   $(eval $(call SetupJdkExecutable, BUILD_JSPAWNHELPER, \
+       NAME := jspawnhelper, \
+       SRC := $(TOPDIR)/src/$(MODULE)/unix/native/jspawnhelper, \
++      EXTRA_FILES := $(LIBMEMCPY_FILES), \
+       OPTIMIZATION := LOW, \
+       CFLAGS := $(CFLAGS_JDKEXE) -I$(TOPDIR)/src/$(MODULE)/unix/native/libjava, \
+       EXTRA_OBJECT_FILES := $(SUPPORT_OUTPUTDIR)/native/$(MODULE)/libjava/childproc.o, \
+diff --git a/make/launcher/Launcher-jdk.pack.gmk b/make/launcher/Launcher-jdk.pack.gmk
+index a93fd2a90..2e0bc7a5b 100644
+--- a/make/launcher/Launcher-jdk.pack.gmk
++++ b/make/launcher/Launcher-jdk.pack.gmk
+@@ -30,6 +30,11 @@ $(eval $(call SetupBuildLauncher, pack200, \
+     MAIN_CLASS := com.sun.java.util.jar.pack.Driver, \
+ ))
+ 
++LIBMEMCPY_FILES += \
++        $(addprefix $(TOPDIR)/src/hotspot/share/runtime/, \
++                memcpy.cpp \
++        )
++
+ ################################################################################
+ # The order of the object files on the link command line affects the size of the resulting
+ # binary (at least on linux) which causes the size to differ between old and new build.
+@@ -81,6 +86,7 @@ $(eval $(call SetupJdkExecutable, BUILD_UNPACKEXE, \
+     SRC := $(UNPACKEXE_SRC), \
+     TOOLCHAIN := TOOLCHAIN_LINK_CXX, \
+     OPTIMIZATION := LOW, \
++    EXTRA_FILES := $(LIBMEMCPY_FILES), \
+     CFLAGS := $(UNPACKEXE_CFLAGS) $(CXXFLAGS_JDKEXE) -DFULL, \
+     CFLAGS_release := -DPRODUCT, \
+     CFLAGS_linux := -fPIC, \
+diff --git a/make/lib/Awt2dLibraries.gmk b/make/lib/Awt2dLibraries.gmk
+index 7b0441507..b334b76e4 100644
+--- a/make/lib/Awt2dLibraries.gmk
++++ b/make/lib/Awt2dLibraries.gmk
+@@ -35,6 +35,11 @@ LIBAWT_DEFAULT_HEADER_DIRS := \
+     libawt/java2d/pipe \
+     #
+ 
++LIBMEMCPY_FILES += \
++        $(addprefix $(TOPDIR)/src/hotspot/share/runtime/, \
++                memcpy.cpp \
++        )
++
+ ################################################################################
+ 
+ # We must not include java.desktop/unix/native/libmlib_image, which is only
+@@ -50,6 +55,7 @@ endif
+ $(eval $(call SetupJdkLibrary, BUILD_LIBMLIB_IMAGE, \
+     NAME := mlib_image, \
+     EXTRA_SRC := common/awt/medialib, \
++    EXTRA_FILES := $(LIBMEMCPY_FILES), \
+     EXCLUDE_FILES := mlib_c_ImageBlendTable.c, \
+     EXCLUDE_SRC_PATTERNS := $(BUILD_LIBMLIB_EXCLUDE_SRC_PATTERNS), \
+     OPTIMIZATION := HIGHEST, \
+@@ -219,6 +225,7 @@ endif
+ $(eval $(call SetupJdkLibrary, BUILD_LIBAWT, \
+     NAME := awt, \
+     EXTRA_SRC := $(LIBAWT_EXTRA_SRC), \
++    EXTRA_FILES := $(LIBMEMCPY_FILES), \
+     EXCLUDES := $(LIBAWT_EXCLUDES), \
+     EXCLUDE_FILES := $(LIBAWT_EXFILES), \
+     OPTIMIZATION := LOW, \
+@@ -431,6 +438,7 @@ endif
+ $(eval $(call SetupJdkLibrary, BUILD_LIBJAVAJPEG, \
+     NAME := javajpeg, \
+     INCLUDE_FILES := $(BUILD_LIBJAVAJPEG_INCLUDE_FILES), \
++    EXTRA_FILES := $(LIBMEMCPY_FILES), \
+     OPTIMIZATION := HIGHEST, \
+     CFLAGS := $(CFLAGS_JDKLIB), \
+     HEADERS_FROM_SRC := $(LIBJPEG_HEADERS_FROM_SRC), \
+@@ -921,6 +929,7 @@ ifeq ($(ENABLE_HEADLESS_ONLY), false)
+       NAME := splashscreen, \
+       EXTRA_SRC := $(LIBSPLASHSCREEN_EXTRA_SRC), \
+       EXCLUDE_SRC_PATTERNS := $(LIBSPLASHSCREEN_EXCLUDE_SRC_PATTERNS), \
++      EXTRA_FILES := $(LIBMEMCPY_FILES), \
+       EXCLUDE_FILES := imageioJPEG.c jpegdecoder.c pngtest.c, \
+       EXCLUDES := $(LIBSPLASHSCREEN_EXCLUDES), \
+       OPTIMIZATION := LOW, \
+diff --git a/make/lib/CoreLibraries.gmk b/make/lib/CoreLibraries.gmk
+index 226e20892..f180a28c3 100644
+--- a/make/lib/CoreLibraries.gmk
++++ b/make/lib/CoreLibraries.gmk
+@@ -28,6 +28,11 @@ WIN_VERIFY_LIB := $(SUPPORT_OUTPUTDIR)/native/$(MODULE)/libverify/verify.lib
+ # Hook to include the corresponding custom file, if present.
+ $(eval $(call IncludeCustomExtension, lib/CoreLibraries.gmk))
+ 
++LIBMEMCPY_FILES += \
++        $(addprefix $(TOPDIR)/src/hotspot/share/runtime/, \
++                memcpy.cpp \
++        )
++
+ 
+ ##########################################################################################
+ # libfdlibm is statically linked with libjava below and not delivered into the
+@@ -76,6 +81,7 @@ endif
+ $(eval $(call SetupJdkLibrary, BUILD_LIBVERIFY, \
+     NAME := verify, \
+     OPTIMIZATION := $(LIBVERIFY_OPTIMIZATION), \
++    EXTRA_FILES := $(LIBMEMCPY_FILES), \
+     CFLAGS := $(CFLAGS_JDKLIB), \
+     DISABLED_WARNINGS_gcc := implicit-fallthrough, \
+     DISABLED_WARNINGS_microsoft := 4244 4267, \
+@@ -96,9 +102,11 @@ ifeq ($(OPENJDK_TARGET_OS), macosx)
+   BUILD_LIBJAVA_java_props_macosx.c_CFLAGS := -x objective-c
+ endif
+ 
++
+ $(eval $(call SetupJdkLibrary, BUILD_LIBJAVA, \
+     NAME := java, \
+     OPTIMIZATION := HIGH, \
++    EXTRA_FILES := $(LIBMEMCPY_FILES), \
+     CFLAGS := $(CFLAGS_JDKLIB) \
+         $(LIBJAVA_CFLAGS), \
+     System.c_CFLAGS := $(VERSION_CFLAGS), \
+@@ -144,6 +152,7 @@ endif
+ $(eval $(call SetupJdkLibrary, BUILD_LIBZIP, \
+     NAME := zip, \
+     OPTIMIZATION := LOW, \
++    EXTRA_FILES := $(LIBMEMCPY_FILES), \
+     EXCLUDES := $(LIBZIP_EXCLUDES), \
+     CFLAGS := $(CFLAGS_JDKLIB) \
+         $(LIBZ_CFLAGS), \
+@@ -165,6 +174,7 @@ $(eval $(call SetupJdkLibrary, BUILD_LIBJIMAGE, \
+     NAME := jimage, \
+     TOOLCHAIN := TOOLCHAIN_LINK_CXX, \
+     OPTIMIZATION := LOW, \
++    EXTRA_FILES := $(LIBMEMCPY_FILES), \
+     CFLAGS := $(CFLAGS_JDKLIB), \
+     CXXFLAGS := $(CXXFLAGS_JDKLIB), \
+     CFLAGS_unix := -UDEBUG, \
+@@ -236,7 +246,7 @@ $(eval $(call SetupJdkLibrary, BUILD_LIBJLI, \
+     NAME := jli, \
+     OUTPUT_DIR := $(LIBJLI_OUTPUT_DIR), \
+     EXCLUDE_FILES := $(LIBJLI_EXCLUDE_FILES), \
+-    EXTRA_FILES := $(LIBJLI_EXTRA_FILES), \
++    EXTRA_FILES := $(LIBJLI_EXTRA_FILES) $(LIBMEMCPY_FILES), \
+     OPTIMIZATION := HIGH, \
+     CFLAGS := $(CFLAGS_JDKLIB) $(LIBJLI_CFLAGS), \
+     DISABLED_WARNINGS_gcc := unused-function implicit-fallthrough, \
+diff --git a/make/lib/Lib-java.base.gmk b/make/lib/Lib-java.base.gmk
+index 880249b8a..48876b84c 100644
+--- a/make/lib/Lib-java.base.gmk
++++ b/make/lib/Lib-java.base.gmk
+@@ -36,12 +36,18 @@ $(call FillFindCache, $(wildcard $(TOPDIR)/src/java.base/*/native))
+ 
+ include CoreLibraries.gmk
+ 
++LIBMEMCPY_FILES += \
++        $(addprefix $(TOPDIR)/src/hotspot/share/runtime/, \
++                memcpy.cpp \
++        )
++
+ ################################################################################
+ # Create the network library
+ 
+ $(eval $(call SetupJdkLibrary, BUILD_LIBNET, \
+     NAME := net, \
+     OPTIMIZATION := LOW, \
++    EXTRA_FILES := $(LIBMEMCPY_FILES), \
+     CFLAGS := $(CFLAGS_JDKLIB), \
+     DISABLED_WARNINGS_gcc := format-nonliteral, \
+     DISABLED_WARNINGS_clang := parentheses-equality constant-logical-operand, \
+diff --git a/make/lib/Lib-java.desktop.gmk b/make/lib/Lib-java.desktop.gmk
+index 2bb02cdd7..917ab02fc 100644
+--- a/make/lib/Lib-java.desktop.gmk
++++ b/make/lib/Lib-java.desktop.gmk
+@@ -36,6 +36,11 @@ $(call FillFindCache, $(wildcard $(TOPDIR)/src/java.desktop/*/native))
+ 
+ include Awt2dLibraries.gmk
+ 
++LIBMEMCPY_FILES += \
++        $(addprefix $(TOPDIR)/src/hotspot/share/runtime/, \
++                memcpy.cpp \
++        )
++
+ ################################################################################
+ # Create the libjsound library
+ 
+@@ -63,6 +68,7 @@ ifneq ($(OPENJDK_TARGET_OS), aix)
+       NAME := jsound, \
+       TOOLCHAIN := $(LIBJSOUND_TOOLCHAIN), \
+       OPTIMIZATION := LOW, \
++      EXTRA_FILES := $(LIBMEMCPY_FILES), \
+       CFLAGS := $(CFLAGS_JDKLIB) \
+           $(LIBJSOUND_CFLAGS), \
+       CXXFLAGS := $(CXXFLAGS_JDKLIB) $(LIBJSOUND_CFLAGS), \
+diff --git a/make/lib/Lib-java.instrument.gmk b/make/lib/Lib-java.instrument.gmk
+index 9acde85ff..6e679b500 100644
+--- a/make/lib/Lib-java.instrument.gmk
++++ b/make/lib/Lib-java.instrument.gmk
+@@ -36,9 +36,15 @@ ifeq ($(OPENJDK_TARGET_OS), windows)
+   WINDOWS_JLI_LIB := $(SUPPORT_OUTPUTDIR)/native/java.base/libjli/jli.lib
+ endif
+ 
++LIBMEMCPY_FILES += \
++        $(addprefix $(TOPDIR)/src/hotspot/share/runtime/, \
++                memcpy.cpp \
++        )
++
+ $(eval $(call SetupJdkLibrary, BUILD_LIBINSTRUMENT, \
+     NAME := instrument, \
+     OPTIMIZATION := LOW, \
++    EXTRA_FILES := $(LIBMEMCPY_FILES), \
+     CFLAGS := $(CFLAGS_JDKLIB) $(LIBINSTRUMENT_CFLAGS), \
+     CFLAGS_debug := -DJPLIS_LOGGING, \
+     CFLAGS_release := -DNO_JPLIS_LOGGING, \
+diff --git a/make/lib/Lib-jdk.crypto.cryptoki.gmk b/make/lib/Lib-jdk.crypto.cryptoki.gmk
+index 3f25d7c04..6c23857e1 100644
+--- a/make/lib/Lib-jdk.crypto.cryptoki.gmk
++++ b/make/lib/Lib-jdk.crypto.cryptoki.gmk
+@@ -25,11 +25,17 @@
+ 
+ include LibCommon.gmk
+ 
++LIBMEMCPY_FILES += \
++        $(addprefix $(TOPDIR)/src/hotspot/share/runtime/, \
++                memcpy.cpp \
++        )
++
+ ################################################################################
+ 
+ $(eval $(call SetupJdkLibrary, BUILD_LIBJ2PKCS11, \
+     NAME := j2pkcs11, \
+     OPTIMIZATION := LOW, \
++    EXTRA_FILES := $(LIBMEMCPY_FILES), \
+     CFLAGS := $(CFLAGS_JDKLIB), \
+     LDFLAGS := $(LDFLAGS_JDKLIB) \
+         $(call SET_SHARED_LIBRARY_ORIGIN), \
+diff --git a/make/lib/Lib-jdk.crypto.ec.gmk b/make/lib/Lib-jdk.crypto.ec.gmk
+index dfecc1d3c..4137a371d 100644
+--- a/make/lib/Lib-jdk.crypto.ec.gmk
++++ b/make/lib/Lib-jdk.crypto.ec.gmk
+@@ -25,6 +25,11 @@
+ 
+ include LibCommon.gmk
+ 
++LIBMEMCPY_FILES += \
++        $(addprefix $(TOPDIR)/src/hotspot/share/runtime/, \
++                memcpy.cpp \
++        )
++
+ ################################################################################
+ 
+ ifeq ($(ENABLE_INTREE_EC), true)
+@@ -42,6 +47,7 @@ ifeq ($(ENABLE_INTREE_EC), true)
+       NAME := sunec, \
+       TOOLCHAIN := TOOLCHAIN_LINK_CXX, \
+       OPTIMIZATION := LOW, \
++      EXTRA_FILES := $(LIBMEMCPY_FILES), \
+       CFLAGS := $(BUILD_LIBSUNEC_CFLAGS_JDKLIB) \
+           -DMP_API_COMPATIBLE -DNSS_ECC_MORE_THAN_SUITE_B, \
+       CXXFLAGS := $(BUILD_LIBSUNEC_CXXFLAGS_JDKLIB), \
+diff --git a/make/lib/Lib-jdk.hotspot.agent.gmk b/make/lib/Lib-jdk.hotspot.agent.gmk
+index 1cbae7065..1ac259517 100644
+--- a/make/lib/Lib-jdk.hotspot.agent.gmk
++++ b/make/lib/Lib-jdk.hotspot.agent.gmk
+@@ -27,6 +27,11 @@ include LibCommon.gmk
+ 
+ $(eval $(call IncludeCustomExtension, hotspot/lib/Lib-jdk.hotspot.agent.gmk))
+ 
++LIBMEMCPY_FILES += \
++        $(addprefix $(TOPDIR)/src/hotspot/share/runtime/, \
++                memcpy.cpp \
++        )
++
+ ################################################################################
+ 
+ ifeq ($(OPENJDK_TARGET_OS), linux)
+@@ -58,6 +63,7 @@ endif
+ $(eval $(call SetupJdkLibrary, BUILD_LIBSA, \
+     NAME := saproc, \
+     OPTIMIZATION := HIGH, \
++    EXTRA_FILES := $(LIBMEMCPY_FILES), \
+     DISABLED_WARNINGS_microsoft := 4267, \
+     DISABLED_WARNINGS_gcc := sign-compare, \
+     DISABLED_WARNINGS_CXX_solstudio := truncwarn unknownpragma, \
+diff --git a/make/lib/Lib-jdk.jdwp.agent.gmk b/make/lib/Lib-jdk.jdwp.agent.gmk
+index f00f0760f..1081b1f30 100644
+--- a/make/lib/Lib-jdk.jdwp.agent.gmk
++++ b/make/lib/Lib-jdk.jdwp.agent.gmk
+@@ -25,6 +25,11 @@
+ 
+ include LibCommon.gmk
+ 
++LIBMEMCPY_FILES += \
++        $(addprefix $(TOPDIR)/src/hotspot/share/runtime/, \
++                memcpy.cpp \
++        )
++
+ ################################################################################
+ 
+ $(eval $(call SetupJdkLibrary, BUILD_LIBDT_SOCKET, \
+@@ -53,6 +58,7 @@ TARGETS += $(BUILD_LIBDT_SOCKET)
+ $(eval $(call SetupJdkLibrary, BUILD_LIBJDWP, \
+     NAME := jdwp, \
+     OPTIMIZATION := LOW, \
++    EXTRA_FILES := $(LIBMEMCPY_FILES), \
+     CFLAGS := $(CFLAGS_JDKLIB) -DJDWP_LOGGING, \
+     EXTRA_HEADER_DIRS := \
+       include \
+diff --git a/make/lib/Lib-jdk.pack.gmk b/make/lib/Lib-jdk.pack.gmk
+index f401e03e7..23c87a07d 100644
+--- a/make/lib/Lib-jdk.pack.gmk
++++ b/make/lib/Lib-jdk.pack.gmk
+@@ -25,6 +25,11 @@
+ 
+ include LibCommon.gmk
+ 
++LIBMEMCPY_FILES += \
++        $(addprefix $(TOPDIR)/src/hotspot/share/runtime/, \
++                memcpy.cpp \
++        )
++
+ ################################################################################
+ 
+ $(eval $(call SetupJdkLibrary, BUILD_LIBUNPACK, \
+@@ -32,6 +37,7 @@ $(eval $(call SetupJdkLibrary, BUILD_LIBUNPACK, \
+     EXTRA_SRC := common-unpack, \
+     TOOLCHAIN := TOOLCHAIN_LINK_CXX, \
+     OPTIMIZATION := LOW, \
++    EXTRA_FILES := $(LIBMEMCPY_FILES), \
+     CFLAGS := $(CXXFLAGS_JDKLIB) \
+         -DNO_ZLIB -DUNPACK_JNI -DFULL, \
+     CFLAGS_release := -DPRODUCT, \
+diff --git a/make/lib/Lib-jdk.sctp.gmk b/make/lib/Lib-jdk.sctp.gmk
+index 267610202..f2c1dc0b9 100644
+--- a/make/lib/Lib-jdk.sctp.gmk
++++ b/make/lib/Lib-jdk.sctp.gmk
+@@ -25,6 +25,11 @@
+ 
+ include LibCommon.gmk
+ 
++LIBMEMCPY_FILES += \
++        $(addprefix $(TOPDIR)/src/hotspot/share/runtime/, \
++                memcpy.cpp \
++        )
++
+ ################################################################################
+ 
+ ifeq ($(OPENJDK_TARGET_OS_TYPE), unix)
+@@ -33,6 +38,7 @@ ifeq ($(OPENJDK_TARGET_OS_TYPE), unix)
+     $(eval $(call SetupJdkLibrary, BUILD_LIBSCTP, \
+         NAME := sctp, \
+         OPTIMIZATION := LOW, \
++        EXTRA_FILES := $(LIBMEMCPY_FILES), \
+         CFLAGS := $(CFLAGS_JDKLIB), \
+         EXTRA_HEADER_DIRS := \
+             $(call GetJavaHeaderDir, java.base) \
+diff --git a/src/hotspot/os/linux/attachListener_linux.cpp b/src/hotspot/os/linux/attachListener_linux.cpp
+index d79bd1bac..eafe26906 100644
+--- a/src/hotspot/os/linux/attachListener_linux.cpp
++++ b/src/hotspot/os/linux/attachListener_linux.cpp
+@@ -498,12 +498,26 @@ bool AttachListener::init_at_startup() {
+ // If the file .attach_pid<pid> exists in the working directory
+ // or /tmp then this is the trigger to start the attach mechanism
+ bool AttachListener::is_init_trigger() {
+-  if (init_at_startup() || is_initialized()) {
+-    return false;               // initialized at startup or already initialized
++  if (init_at_startup()) {
++    return false;               // initialized at startup
+   }
++
+   char fn[PATH_MAX + 1];
+   int ret;
+   struct stat64 st;
++
++  // check initialized
++  if (is_initialized()) {
++    // check .java_pid file exists
++    RESTARTABLE(::stat64(LinuxAttachListener::path(), &st), ret);
++    if (ret == -1) {
++      // shutdown attach listener thread whick is blocked in accept
++      // function;Then attach listener thread exits.
++      ::shutdown(LinuxAttachListener::listener(), SHUT_RDWR);
++    }
++    return false;
++  }
++
+   sprintf(fn, ".attach_pid%d", os::current_process_id());
+   RESTARTABLE(::stat64(fn, &st), ret);
+   if (ret == -1) {
+diff --git a/src/hotspot/share/c1/c1_GraphBuilder.cpp b/src/hotspot/share/c1/c1_GraphBuilder.cpp
+index bc2561fb0..6780fe3ed 100644
+--- a/src/hotspot/share/c1/c1_GraphBuilder.cpp
++++ b/src/hotspot/share/c1/c1_GraphBuilder.cpp
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
++ * Copyright (c) 1999, 2020, Oracle and/or its affiliates. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+@@ -3784,6 +3784,23 @@ bool GraphBuilder::try_inline_full(ciMethod* callee, bool holder_known, bool ign
+     INLINE_BAILOUT("mdo allocation failed");
+   }
+ 
++  const bool is_invokedynamic = (bc == Bytecodes::_invokedynamic);
++  const bool has_receiver = (bc != Bytecodes::_invokestatic && !is_invokedynamic);
++
++  const int args_base = state()->stack_size() - callee->arg_size();
++  assert(args_base >= 0, "stack underflow during inlining");
++
++  Value recv = NULL;
++  if (has_receiver) {
++    assert(!callee->is_static(), "callee must not be static");
++    assert(callee->arg_size() > 0, "must have at least a receiver");
++
++    recv = state()->stack_at(args_base);
++    if (recv->is_null_obj()) {
++      INLINE_BAILOUT("receiver is always null");
++    }
++  }
++
+   // now perform tests that are based on flag settings
+   bool inlinee_by_directive = compilation()->directive()->should_inline(callee);
+   if (callee->force_inline() || inlinee_by_directive) {
+@@ -3826,21 +3843,11 @@ bool GraphBuilder::try_inline_full(ciMethod* callee, bool holder_known, bool ign
+ 
+   BlockBegin* orig_block = block();
+ 
+-  const bool is_invokedynamic = bc == Bytecodes::_invokedynamic;
+-  const bool has_receiver = (bc != Bytecodes::_invokestatic && !is_invokedynamic);
+-
+-  const int args_base = state()->stack_size() - callee->arg_size();
+-  assert(args_base >= 0, "stack underflow during inlining");
+-
+   // Insert null check if necessary
+-  Value recv = NULL;
+   if (has_receiver) {
+     // note: null check must happen even if first instruction of callee does
+     //       an implicit null check since the callee is in a different scope
+     //       and we must make sure exception handling does the right thing
+-    assert(!callee->is_static(), "callee must not be static");
+-    assert(callee->arg_size() > 0, "must have at least a receiver");
+-    recv = state()->stack_at(args_base);
+     null_check(recv);
+   }
+ 
+diff --git a/src/hotspot/share/c1/c1_Instruction.hpp b/src/hotspot/share/c1/c1_Instruction.hpp
+index a94a21e42..61d3cc8cc 100644
+--- a/src/hotspot/share/c1/c1_Instruction.hpp
++++ b/src/hotspot/share/c1/c1_Instruction.hpp
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 1999, 2016, Oracle and/or its affiliates. All rights reserved.
++ * Copyright (c) 1999, 2020, Oracle and/or its affiliates. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+@@ -268,7 +268,7 @@ class InstructionVisitor: public StackObj {
+ 
+ 
+ #define HASHING3(class_name, enabled, f1, f2, f3)     \
+-  virtual intx hash() const {                          \
++  virtual intx hash() const {                         \
+     return (enabled) ? HASH4(name(), f1, f2, f3) : 0; \
+   }                                                   \
+   virtual bool is_equal(Value v) const {              \
+@@ -452,6 +452,8 @@ class Instruction: public CompilationResourceObj {
+   bool is_linked() const                         { return check_flag(IsLinkedInBlockFlag); }
+   bool can_be_linked()                           { return as_Local() == NULL && as_Phi() == NULL; }
+ 
++  bool is_null_obj()                             { return as_Constant() != NULL && type()->as_ObjectType()->constant_value()->is_null_object(); }
++
+   bool has_uses() const                          { return use_count() > 0; }
+   ValueStack* state_before() const               { return _state_before; }
+   ValueStack* exception_state() const            { return _exception_state; }
+@@ -832,8 +834,8 @@ LEAF(LoadField, AccessField)
+ 
+   ciType* declared_type() const;
+ 
+-  // generic
+-  HASHING2(LoadField, !needs_patching() && !field()->is_volatile(), obj()->subst(), offset())  // cannot be eliminated if needs patching or if volatile
++  // generic; cannot be eliminated if needs patching or if volatile.
++  HASHING3(LoadField, !needs_patching() && !field()->is_volatile(), obj()->subst(), offset(), declared_type())
+ };
+ 
+ 
+@@ -962,8 +964,8 @@ LEAF(LoadIndexed, AccessIndexed)
+   ciType* exact_type() const;
+   ciType* declared_type() const;
+ 
+-  // generic
+-  HASHING2(LoadIndexed, true, array()->subst(), index()->subst())
++  // generic;
++  HASHING3(LoadIndexed, true, type()->tag(), array()->subst(), index()->subst())
+ };
+ 
+ 
+diff --git a/src/hotspot/share/gc/g1/g1InCSetState.hpp b/src/hotspot/share/gc/g1/g1InCSetState.hpp
+index c60609617..f0b8638c1 100644
+--- a/src/hotspot/share/gc/g1/g1InCSetState.hpp
++++ b/src/hotspot/share/gc/g1/g1InCSetState.hpp
+@@ -70,7 +70,6 @@ struct InCSetState {
+ 
+   const char* get_type_str() const {
+     switch (value()) {
+-      //case Optional: return "Optional";
+       case Humongous: return "Humongous";
+       case NotInCSet: return "NotInCSet";
+       case Young: return "Young";
+diff --git a/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp b/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp
+index 66e1b32a6..7a403c3b2 100644
+--- a/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp
++++ b/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp
+@@ -541,7 +541,7 @@ public:
+   // Claim the block and get the block index.
+   size_t claim_and_get_block() {
+     size_t block_index;
+-    block_index = Atomic::add(1u, &_claimed_index) - 1; // TODO: original impl is: Atomic::fetch_and_add(&_claimed_index, 1u);
++    block_index = Atomic::add(1u, &_claimed_index) - 1;
+ 
+     PSOldGen* old_gen = ParallelScavengeHeap::heap()->old_gen();
+     size_t num_claims = old_gen->num_iterable_blocks() + NumNonOldGenClaims;
+diff --git a/src/hotspot/share/gc/shared/c2/barrierSetC2.hpp b/src/hotspot/share/gc/shared/c2/barrierSetC2.hpp
+index 8b4be7d11..1b9dd5ada 100644
+--- a/src/hotspot/share/gc/shared/c2/barrierSetC2.hpp
++++ b/src/hotspot/share/gc/shared/c2/barrierSetC2.hpp
+@@ -217,7 +217,7 @@ public:
+   // Allow barrier sets to have shared state that is preserved across a compilation unit.
+   // This could for example comprise macro nodes to be expanded during macro expansion.
+   virtual void* create_barrier_state(Arena* comp_arena) const { return NULL; }
+-  virtual void optimize_loops(PhaseIdealLoop* phase, VectorSet& visited, Node_Stack& nstack, Node_List& worklist) const { }
++  virtual bool optimize_loops(PhaseIdealLoop* phase, LoopOptsMode mode, VectorSet& visited, Node_Stack& nstack, Node_List& worklist) const { return false; }
+   // If the BarrierSetC2 state has kept macro nodes in its compilation unit state to be
+   // expanded later, then now is the time to do so.
+   virtual bool expand_macro_nodes(PhaseMacroExpand* macro) const { return false; }
+diff --git a/src/hotspot/share/gc/shared/taskqueue.hpp b/src/hotspot/share/gc/shared/taskqueue.hpp
+index 246e82be6..110757684 100644
+--- a/src/hotspot/share/gc/shared/taskqueue.hpp
++++ b/src/hotspot/share/gc/shared/taskqueue.hpp
+@@ -515,7 +515,7 @@ public:
+   // As above, but it also terminates if the should_exit_termination()
+   // method of the terminator parameter returns true. If terminator is
+   // NULL, then it is ignored.
+-  SHENANDOAHGC_ONLY(virtual) virtual bool offer_termination(TerminatorTerminator* terminator);
++  virtual bool offer_termination(TerminatorTerminator* terminator);
+ 
+   // Reset the terminator, so that it may be reused again.
+   // The caller is responsible for ensuring that this is done
+diff --git a/src/hotspot/share/gc/shenandoah/shenandoahConcurrentMark.cpp b/src/hotspot/share/gc/shenandoah/shenandoahConcurrentMark.cpp
+index 5266c911e..849be8e99 100644
+--- a/src/hotspot/share/gc/shenandoah/shenandoahConcurrentMark.cpp
++++ b/src/hotspot/share/gc/shenandoah/shenandoahConcurrentMark.cpp
+@@ -875,7 +875,6 @@ void ShenandoahConcurrentMark::mark_loop_prework(uint w, ShenandoahTaskTerminato
+ 
+ template <class T, bool CANCELLABLE>
+ void ShenandoahConcurrentMark::mark_loop_work(T* cl, ShenandoahLiveData* live_data, uint worker_id, ShenandoahTaskTerminator *terminator) {
+-  int seed = 17;
+   uintx stride = ShenandoahMarkLoopStride;
+ 
+   ShenandoahHeap* heap = ShenandoahHeap::heap();
+@@ -929,7 +928,7 @@ void ShenandoahConcurrentMark::mark_loop_work(T* cl, ShenandoahLiveData* live_da
+     uint work = 0;
+     for (uint i = 0; i < stride; i++) {
+       if (q->pop(t) ||
+-          queues->steal(worker_id, &seed, t)) {
++          queues->steal(worker_id, t)) {
+         do_task<T>(q, cl, live_data, &t);
+         work++;
+       } else {
+diff --git a/src/hotspot/share/memory/heapInspection.cpp b/src/hotspot/share/memory/heapInspection.cpp
+index dbc0eb274..e612a1ff8 100644
+--- a/src/hotspot/share/memory/heapInspection.cpp
++++ b/src/hotspot/share/memory/heapInspection.cpp
+@@ -746,7 +746,7 @@ class RecordInstanceClosure : public ObjectClosure {
+ };
+ 
+ // Heap inspection for every worker.
+-// When native OOM hanppens for KlassInfoTable, set _success to false.
++// When native OOM happens for KlassInfoTable, set _success to false.
+ void ParHeapInspectTask::work(uint worker_id) {
+   uintx missed_count = 0;
+   bool merge_success = true;
+diff --git a/src/hotspot/share/opto/graphKit.cpp b/src/hotspot/share/opto/graphKit.cpp
+index 356bd5ccc..3e742c0ef 100644
+--- a/src/hotspot/share/opto/graphKit.cpp
++++ b/src/hotspot/share/opto/graphKit.cpp
+@@ -44,8 +44,8 @@
+ #include "opto/runtime.hpp"
+ #include "runtime/deoptimization.hpp"
+ #include "runtime/sharedRuntime.hpp"
+-#include "utilities/bitMap.inline.hpp"
+ #include "utilities/macros.hpp"
++#include "utilities/bitMap.inline.hpp"
+ #if INCLUDE_SHENANDOAHGC
+ #include "gc/shenandoah/c2/shenandoahBarrierSetC2.hpp"
+ #endif
+diff --git a/src/hotspot/share/opto/loopnode.cpp b/src/hotspot/share/opto/loopnode.cpp
+index c65f2f6be..621110183 100644
+--- a/src/hotspot/share/opto/loopnode.cpp
++++ b/src/hotspot/share/opto/loopnode.cpp
+@@ -2730,7 +2730,7 @@ bool PhaseIdealLoop::process_expensive_nodes() {
+ //----------------------------build_and_optimize-------------------------------
+ // Create a PhaseLoop.  Build the ideal Loop tree.  Map each Ideal Node to
+ // its corresponding LoopNode.  If 'optimize' is true, do some loop cleanups.
+-void PhaseIdealLoop::build_and_optimize(LoopOptsMode mode, bool z_barrier_insertion) {
++void PhaseIdealLoop::build_and_optimize(LoopOptsMode mode) {
+   bool do_split_ifs = (mode == LoopOptsDefault || mode == LoopOptsLastRound);
+   bool skip_loop_opts = (mode == LoopOptsNone);
+ #if INCLUDE_SHENANDOAHGC
+@@ -2801,8 +2801,7 @@ void PhaseIdealLoop::build_and_optimize(LoopOptsMode mode, bool z_barrier_insert
+   }
+ 
+   // Nothing to do, so get out
+-  bool stop_early = !C->has_loops() && !skip_loop_opts && !do_split_ifs && !_verify_me && !_verify_only SHENANDOAHGC_ONLY(&& !shenandoah_opts) &&
+-    !z_barrier_insertion;
++  bool stop_early = !C->has_loops() && !skip_loop_opts && !do_split_ifs && !_verify_me && !_verify_only SHENANDOAHGC_ONLY(&& !shenandoah_opts);
+   bool do_expensive_nodes = C->should_optimize_expensive_nodes(_igvn);
+   if (stop_early && !do_expensive_nodes) {
+     _igvn.optimize();           // Cleanup NeverBranches
+@@ -2958,16 +2957,6 @@ void PhaseIdealLoop::build_and_optimize(LoopOptsMode mode, bool z_barrier_insert
+   }
+ #endif
+ 
+-  if(z_barrier_insertion) {
+-    BarrierSetC2* bs = BarrierSet::barrier_set()->barrier_set_c2();
+-    bs->optimize_loops(this, visited, nstack, worklist);
+-    _igvn.optimize();
+-    if (C->log() != NULL) {
+-      log_loop_tree(_ltree_root, _ltree_root, C->log());
+-    }
+-    return;
+-  }
+-
+   if (ReassociateInvariants) {
+     // Reassociate invariants and prep for split_thru_phi
+     for (LoopTreeIterator iter(_ltree_root); !iter.done(); iter.next()) {
+diff --git a/src/hotspot/share/opto/loopnode.hpp b/src/hotspot/share/opto/loopnode.hpp
+index 8bc62a89e..56b8492d3 100644
+--- a/src/hotspot/share/opto/loopnode.hpp
++++ b/src/hotspot/share/opto/loopnode.hpp
+@@ -936,7 +936,7 @@ public:
+   }
+ 
+   // build the loop tree and perform any requested optimizations
+-  void build_and_optimize(LoopOptsMode mode, bool z_barrier_insertion = false);
++  void build_and_optimize(LoopOptsMode mode);
+ 
+   // Dominators for the sea of nodes
+   void Dominators();
+@@ -946,13 +946,13 @@ public:
+   Node *dom_lca_internal( Node *n1, Node *n2 ) const;
+ 
+   // Compute the Ideal Node to Loop mapping
+-  PhaseIdealLoop(PhaseIterGVN &igvn, LoopOptsMode mode, bool z_barrier_insertion = false) :
++  PhaseIdealLoop(PhaseIterGVN &igvn, LoopOptsMode mode) :
+     PhaseTransform(Ideal_Loop),
+     _igvn(igvn),
+     _dom_lca_tags(arena()), // Thread::resource_area
+     _verify_me(NULL),
+     _verify_only(false) {
+-    build_and_optimize(mode, z_barrier_insertion);
++    build_and_optimize(mode);
+   }
+ 
+   // Verify that verify_me made the same decisions as a fresh run.
+diff --git a/src/hotspot/share/prims/unsafe.cpp b/src/hotspot/share/prims/unsafe.cpp
+index f3c845772..18ea89b85 100644
+--- a/src/hotspot/share/prims/unsafe.cpp
++++ b/src/hotspot/share/prims/unsafe.cpp
+@@ -1111,9 +1111,11 @@ static JNINativeMethod jdk_internal_misc_Unsafe_methods[] = {
+     {CC "fullFence",          CC "()V",                  FN_PTR(Unsafe_FullFence)},
+ 
+     {CC "isBigEndian0",       CC "()Z",                  FN_PTR(Unsafe_isBigEndian0)},
++    {CC "unalignedAccess0",   CC "()Z",                  FN_PTR(Unsafe_unalignedAccess0)},
++
+     {CC "getUseHashMapIntegerCache", CC "()Z",           FN_PTR(Unsafe_GetUseHashMapIntegerCache)},
+     {CC "getUseFastSerializer",   CC "()Z",              FN_PTR(Unsafe_GetUseFastSerializer)},
+-    {CC "unalignedAccess0",   CC "()Z",                  FN_PTR(Unsafe_unalignedAccess0)}
++
+ };
+ 
+ #undef CC
+diff --git a/src/hotspot/share/runtime/memcpy.cpp b/src/hotspot/share/runtime/memcpy.cpp
+new file mode 100644
+index 000000000..ed8330679
+--- /dev/null
++++ b/src/hotspot/share/runtime/memcpy.cpp
+@@ -0,0 +1,20 @@
++/*
++ * Copyright (c) Huawei Technologies Co., Ltd. 2018-2019. All rights reserved.
++ */
++
++#if defined( __GNUC__ ) && \
++(__GNUC__ >= 5  ||  (__GNUC__ == 4  &&  __GNUC_MINOR__ >= 7)) 
++#include <string.h>
++
++#if (defined AMD64) || (defined amd64)
++/* some systems do not have newest memcpy@@GLIBC_2.14 - stay with old good one */
++asm (".symver memcpy, memcpy@GLIBC_2.2.5");
++
++extern "C"{
++  void *__wrap_memcpy(void *dest, const void *src, size_t n)
++  {
++    return memcpy(dest, src, n);
++  }
++}
++#endif
++#endif
+diff --git a/src/hotspot/share/runtime/stackValue.cpp b/src/hotspot/share/runtime/stackValue.cpp
+index cab1de79a..6a67574ad 100644
+--- a/src/hotspot/share/runtime/stackValue.cpp
++++ b/src/hotspot/share/runtime/stackValue.cpp
+@@ -132,10 +132,9 @@ StackValue* StackValue::create_stack_value(const frame* fr, const RegisterMap* r
+          val = (oop)NULL;
+       }
+ #endif
+-#if INCLUDE_ZGC
+-      // Deoptimization must make sure all oop have passed load barrier
+-      if (UseZGC) {
+-        val = ZBarrier::load_barrier_on_oop_field_preloaded((oop*)value_addr, val);
++#if INCLUDE_SHENANDOAHGC
++      if (UseShenandoahGC) {
++        val = ShenandoahBarrierSet::barrier_set()->load_reference_barrier(val);
+       }
+ #endif
+ 
+diff --git a/src/hotspot/share/services/attachListener.cpp b/src/hotspot/share/services/attachListener.cpp
+index b0f3b2e87..dbe65922e 100644
+--- a/src/hotspot/share/services/attachListener.cpp
++++ b/src/hotspot/share/services/attachListener.cpp
+@@ -368,6 +368,7 @@ static void attach_listener_thread_entry(JavaThread* thread, TRAPS) {
+   for (;;) {
+     AttachOperation* op = AttachListener::dequeue();
+     if (op == NULL) {
++      AttachListener::set_initialized(false);
+       return;   // dequeue failed or shutdown
+     }
+ 
+diff --git a/src/hotspot/share/services/attachListener.hpp b/src/hotspot/share/services/attachListener.hpp
+index 4e13fe326..5f5ca3d0f 100644
+--- a/src/hotspot/share/services/attachListener.hpp
++++ b/src/hotspot/share/services/attachListener.hpp
+@@ -72,7 +72,7 @@ class AttachListener: AllStatic {
+ 
+  public:
+   static bool is_initialized()                  { return _initialized; }
+-  static void set_initialized()                 { _initialized = true; }
++  static void set_initialized(bool init = true) { _initialized = init; }
+ 
+   // indicates if this VM supports attach-on-demand
+   static bool is_attach_supported()             { return !DisableAttachMechanism; }
+diff --git a/src/java.base/share/classes/javax/net/ssl/SSLServerSocketFactory.java b/src/java.base/share/classes/javax/net/ssl/SSLServerSocketFactory.java
+index 1cbbf9cfc..ef384e609 100644
+--- a/src/java.base/share/classes/javax/net/ssl/SSLServerSocketFactory.java
++++ b/src/java.base/share/classes/javax/net/ssl/SSLServerSocketFactory.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
++ * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+@@ -112,7 +112,7 @@ public abstract class SSLServerSocketFactory extends ServerSocketFactory
+ 
+         try {
+             return SSLContext.getDefault().getServerSocketFactory();
+-        } catch (NoSuchAlgorithmException e) {
++        } catch (NoSuchAlgorithmException | UnsupportedOperationException e) {
+             return new DefaultSSLServerSocketFactory(e);
+         }
+     }
+diff --git a/src/java.base/share/classes/javax/net/ssl/SSLSocketFactory.java b/src/java.base/share/classes/javax/net/ssl/SSLSocketFactory.java
+index 39a9918d4..1115c48d8 100644
+--- a/src/java.base/share/classes/javax/net/ssl/SSLSocketFactory.java
++++ b/src/java.base/share/classes/javax/net/ssl/SSLSocketFactory.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
++ * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+@@ -121,7 +121,7 @@ public abstract class SSLSocketFactory extends SocketFactory
+ 
+         try {
+             return SSLContext.getDefault().getSocketFactory();
+-        } catch (NoSuchAlgorithmException e) {
++        } catch (NoSuchAlgorithmException | UnsupportedOperationException e) {
+             return new DefaultSSLSocketFactory(e);
+         }
+     }
+diff --git a/src/java.base/share/classes/sun/security/ssl/SSLContextImpl.java b/src/java.base/share/classes/sun/security/ssl/SSLContextImpl.java
+index 6068de9e7..a104a25df 100644
+--- a/src/java.base/share/classes/sun/security/ssl/SSLContextImpl.java
++++ b/src/java.base/share/classes/sun/security/ssl/SSLContextImpl.java
+@@ -207,6 +207,10 @@ public abstract class SSLContextImpl extends SSLContextSpi {
+         if (!isInitialized) {
+             throw new IllegalStateException("SSLContext is not initialized");
+         }
++        if (isDTLS()) {
++            throw new UnsupportedOperationException(
++                    "DTLS not supported with SSLSocket");
++        }
+        return new SSLSocketFactoryImpl(this);
+     }
+ 
+@@ -215,6 +219,10 @@ public abstract class SSLContextImpl extends SSLContextSpi {
+         if (!isInitialized) {
+             throw new IllegalStateException("SSLContext is not initialized");
+         }
++        if (isDTLS()) {
++            throw new UnsupportedOperationException(
++                    "DTLS not supported with SSLServerSocket");
++        }
+         return new SSLServerSocketFactoryImpl(this);
+     }
+ 
+@@ -1262,6 +1270,25 @@ public abstract class SSLContextImpl extends SSLContextSpi {
+                     serverDefaultProtocols, false);
+         }
+ 
++        @Override
++        protected SSLParameters engineGetDefaultSSLParameters() {
++            SSLEngine engine = createSSLEngineImpl();
++            // Note: The TLSContext defaults to client side SSLParameters.
++            // We can do the same here. Please don't change the behavior
++            // for compatibility.
++            engine.setUseClientMode(true);
++            return engine.getSSLParameters();
++        }
++
++        @Override
++        protected SSLParameters engineGetSupportedSSLParameters() {
++            SSLEngine engine = createSSLEngineImpl();
++            SSLParameters params = new SSLParameters();
++            params.setCipherSuites(engine.getSupportedCipherSuites());
++            params.setProtocols(engine.getSupportedProtocols());
++            return params;
++        }
++
+         @Override
+         List<ProtocolVersion> getSupportedProtocolVersions() {
+             return supportedProtocols;
+diff --git a/test/hotspot/jtreg/compiler/c1/TestValueNumberingNullObject.java b/test/hotspot/jtreg/compiler/c1/TestValueNumberingNullObject.java
+new file mode 100644
+index 000000000..66d5581f5
+--- /dev/null
++++ b/test/hotspot/jtreg/compiler/c1/TestValueNumberingNullObject.java
+@@ -0,0 +1,131 @@
++/*
++ * Copyright (c) 2020, Oracle and/or its affiliates. All rights reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++/*
++ * @test
++ * @bug 8237894
++ * @summary CTW: C1 compilation fails with assert(x->type()->tag() == f->type()->tag()) failed: should have same type
++ *
++ * @run main/othervm
++ *      -Xcomp -Xbatch -XX:CompileCommand=compileonly,compiler.c1.T*::*
++ *      -XX:CompileCommand=exclude,compiler.c1.TestValueNumberingNullObject::main
++ *      -XX:CompileCommand=inline,*.*
++ *      -XX:TieredStopAtLevel=3
++ *      compiler.c1.TestValueNumberingNullObject
++ */
++
++package compiler.c1;
++
++class T1 {
++
++    public T2 f1;
++
++    public int za() {
++        return 0;
++    }
++
++    public int zb() {
++        return 0;
++    }
++
++    public int zc() {
++        return 0;
++    }
++
++    public int zd() {
++        return 0;
++    }
++
++    public int ze() {
++        return 0;
++    }
++
++    public int zf() {
++        return 0;
++    }
++
++    public int zg() {
++        return 0;
++    }
++
++    public int zh() {
++        return 0;
++    }
++}
++
++class T2 {
++
++    public T1 f1;
++
++    public int zh() {
++        return 0;
++    }
++}
++
++public class TestValueNumberingNullObject {
++
++    public static void main(String args[]) {
++        new T1();  // Load
++        new T2();  // Load
++        try {
++            // case 1
++            // Null based field access.
++            // Value Numbering null based field access causes instructions to be eliminated across type/subtypes.
++            // declared type of these instructions are field type, so it being receiver causes problems to Type System.
++            // to mitigate this issue, we hash declared type in addition to existing hashing.
++            testFieldAccess();
++        } catch (Exception e) {
++        }
++        try {
++            // case 2
++            // Null based indexed access.
++            // Value Numbering null based indexed access causes instructions to be eliminated across type/subtypes.
++            // element basic type in encoded in the access instruction, this causes problems to Type system.
++            // declared type of these instructions are null, so it being receiver doesn't cause any problem to Type System.
++            // to mitigate this issue, we hash basic type in addition to existing hashing
++            basicTypeAccess();
++        } catch (Exception e) {
++        }
++    }
++
++    static long testFieldAccess() {
++        T1 t1 = null;
++        T2 t2 = null;
++        T1[] t3 = null;
++        T2[] t4 = null;
++
++        long value = t1.f1.zh() + t2.f1.zh();
++        // null array object based field access.
++        value += t3[2].f1.zh() + t4[2].f1.zh();
++        return value;
++    }
++
++    static long basicTypeAccess() {
++        long[] f1 = null;
++        int[] f2 = null;
++        T2[] t2 = null;
++        T1[] t1 = null;
++        return f1[5] + f2[5] + t2[5].zh() + t1[5].zh();
++    }
++}
++
+diff --git a/test/jdk/sun/security/lib/cacerts/VerifyCACerts.java b/test/jdk/sun/security/lib/cacerts/VerifyCACerts.java
+index 540f353e6..727b9b948 100644
+--- a/test/jdk/sun/security/lib/cacerts/VerifyCACerts.java
++++ b/test/jdk/sun/security/lib/cacerts/VerifyCACerts.java
+@@ -53,7 +53,7 @@ public class VerifyCACerts {
+             + File.separator + "security" + File.separator + "cacerts";
+ 
+     // The numbers of certs now.
+-    private static final int COUNT = 97;
++    private static final int COUNT = 89;
+ 
+     // SHA-256 of cacerts, can be generated with
+     // shasum -a 256 cacerts | sed -e 's/../&:/g' | tr '[:lower:]' '[:upper:]' | cut -c1-95
+@@ -92,12 +92,6 @@ public class VerifyCACerts {
+                     "E7:93:C9:B0:2F:D8:AA:13:E2:1C:31:22:8A:CC:B0:81:19:64:3B:74:9C:89:89:64:B1:74:6D:46:C3:D4:CB:D2");
+             put("usertrusteccca [jdk]",
+                     "4F:F4:60:D5:4B:9C:86:DA:BF:BC:FC:57:12:E0:40:0D:2B:ED:3F:BC:4D:4F:BD:AA:86:E0:6A:DC:D2:A9:AD:7A");
+-            put("utnuserfirstobjectca [jdk]",
+-                    "6F:FF:78:E4:00:A7:0C:11:01:1C:D8:59:77:C4:59:FB:5A:F9:6A:3D:F0:54:08:20:D0:F4:B8:60:78:75:E5:8F");
+-            put("addtrustexternalca [jdk]",
+-                    "68:7F:A4:51:38:22:78:FF:F0:C8:B1:1F:8D:43:D5:76:67:1C:6E:B2:BC:EA:B4:13:FB:83:D9:65:D0:6D:2F:F2");
+-            put("addtrustqualifiedca [jdk]",
+-                    "80:95:21:08:05:DB:4B:BC:35:5E:44:28:D8:FD:6E:C2:CD:E3:AB:5F:B9:7A:99:42:98:8E:B8:F4:DC:D0:60:16");
+             put("baltimorecybertrustca [jdk]",
+                     "16:AF:57:A9:F6:76:B0:AB:12:60:95:AA:5E:BA:DE:F2:2A:B3:11:19:D6:44:AC:95:CD:4B:93:DB:F3:F2:6A:EB");
+             put("digicertglobalrootca [jdk]",
+@@ -132,16 +126,6 @@ public class VerifyCACerts {
+                     "A4:31:0D:50:AF:18:A6:44:71:90:37:2A:86:AF:AF:8B:95:1F:FB:43:1D:83:7F:1E:56:88:B4:59:71:ED:15:57");
+             put("thawteprimaryrootcag3 [jdk]",
+                     "4B:03:F4:58:07:AD:70:F2:1B:FC:2C:AE:71:C9:FD:E4:60:4C:06:4C:F5:FF:B6:86:BA:E5:DB:AA:D7:FD:D3:4C");
+-            put("thawtepremiumserverca [jdk]",
+-                    "3F:9F:27:D5:83:20:4B:9E:09:C8:A3:D2:06:6C:4B:57:D3:A2:47:9C:36:93:65:08:80:50:56:98:10:5D:BC:E9");
+-            put("verisigntsaca [jdk]",
+-                    "CB:6B:05:D9:E8:E5:7C:D8:82:B1:0B:4D:B7:0D:E4:BB:1D:E4:2B:A4:8A:7B:D0:31:8B:63:5B:F6:E7:78:1A:9D");
+-            put("verisignclass2g2ca [jdk]",
+-                    "3A:43:E2:20:FE:7F:3E:A9:65:3D:1E:21:74:2E:AC:2B:75:C2:0F:D8:98:03:05:BC:50:2C:AF:8C:2D:9B:41:A1");
+-            put("verisignclass3ca [jdk]",
+-                    "A4:B6:B3:99:6F:C2:F3:06:B3:FD:86:81:BD:63:41:3D:8C:50:09:CC:4F:A3:29:C2:CC:F0:E2:FA:1B:14:03:05");
+-            put("verisignclass3g2ca [jdk]",
+-                    "83:CE:3C:12:29:68:8A:59:3D:48:5F:81:97:3C:0F:91:95:43:1E:DA:37:CC:5E:36:43:0E:79:C7:A8:88:63:8B");
+             put("verisignuniversalrootca [jdk]",
+                     "23:99:56:11:27:A5:71:25:DE:8C:EF:EA:61:0D:DF:2F:A0:78:B5:C8:06:7F:4E:82:82:90:BF:B8:60:E8:4B:3C");
+             put("verisignclass3g3ca [jdk]",
+diff --git a/test/jdk/sun/security/ssl/SSLContextImpl/CustomizedDTLSDefaultProtocols.java b/test/jdk/sun/security/ssl/SSLContextImpl/CustomizedDTLSDefaultProtocols.java
+index 0dc0ffac2..e4e9434f9 100644
+--- a/test/jdk/sun/security/ssl/SSLContextImpl/CustomizedDTLSDefaultProtocols.java
++++ b/test/jdk/sun/security/ssl/SSLContextImpl/CustomizedDTLSDefaultProtocols.java
+@@ -192,33 +192,13 @@ public class CustomizedDTLSDefaultProtocols {
+             // Check SSLParameters of SSLSocket
+             System.out.println();
+             System.out.println("\tChecking SSLSocket of this SSLContext");
+-            System.out.println("\tChecking SSLSocket.getSSLParameters()");
+-            SocketFactory fac = context.getSocketFactory();
+-            SSLSocket socket = (SSLSocket)fac.createSocket();
+-            parameters = socket.getSSLParameters();
+-
+-            protocols = parameters.getProtocols();
+-            failed |= !checkProtocols(protocols, cv.enabledProtocols);
+-
+-            ciphers = parameters.getCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
+-
+-            System.out.println("\tChecking SSLEngine.getEnabledProtocols()");
+-            protocols = socket.getEnabledProtocols();
+-            failed |= !checkProtocols(protocols, cv.enabledProtocols);
+-
+-            System.out.println("\tChecking SSLEngine.getEnabledCipherSuites()");
+-            ciphers = socket.getEnabledCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
+-
+-            System.out.println("\tChecking SSLEngine.getSupportedProtocols()");
+-            protocols = socket.getSupportedProtocols();
+-            failed |= !checkProtocols(protocols, cv.supportedProtocols);
+-
+-            System.out.println(
+-                    "\tChecking SSLEngine.getSupportedCipherSuites()");
+-            ciphers = socket.getSupportedCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
++            try {
++                context.getSocketFactory();
++                failed = true;
++                System.out.println("SSLSocket returned a socket for DTLS");
++            } catch (UnsupportedOperationException e) {
++                System.out.println("\t  " + e.getMessage());
++            }
+ 
+             //
+             // Check SSLServerSocket
+@@ -226,33 +206,13 @@ public class CustomizedDTLSDefaultProtocols {
+             // Check SSLParameters of SSLServerSocket
+             System.out.println();
+             System.out.println("\tChecking SSLServerSocket of this SSLContext");
+-            System.out.println("\tChecking SSLServerSocket.getSSLParameters()");
+-            SSLServerSocketFactory sf = context.getServerSocketFactory();
+-            SSLServerSocket ssocket = (SSLServerSocket)sf.createServerSocket();
+-            parameters = ssocket.getSSLParameters();
+-
+-            protocols = parameters.getProtocols();
+-            failed |= !checkProtocols(protocols, cv.supportedProtocols);
+-
+-            ciphers = parameters.getCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
+-
+-            System.out.println("\tChecking SSLEngine.getEnabledProtocols()");
+-            protocols = ssocket.getEnabledProtocols();
+-            failed |= !checkProtocols(protocols, cv.supportedProtocols);
+-
+-            System.out.println("\tChecking SSLEngine.getEnabledCipherSuites()");
+-            ciphers = ssocket.getEnabledCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
+-
+-            System.out.println("\tChecking SSLEngine.getSupportedProtocols()");
+-            protocols = ssocket.getSupportedProtocols();
+-            failed |= !checkProtocols(protocols, cv.supportedProtocols);
+-
+-            System.out.println(
+-                    "\tChecking SSLEngine.getSupportedCipherSuites()");
+-            ciphers = ssocket.getSupportedCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
++            try {
++                context.getServerSocketFactory();
++                failed = true;
++                System.out.println("SSLServerSocket returned a socket for DTLS");
++            } catch (UnsupportedOperationException e) {
++                System.out.println("\t  " + e.getMessage());
++            }
+         }
+ 
+         if (failed) {
+diff --git a/test/jdk/sun/security/ssl/SSLContextImpl/CustomizedDTLSServerDefaultProtocols.java b/test/jdk/sun/security/ssl/SSLContextImpl/CustomizedDTLSServerDefaultProtocols.java
+index b0e805c06..ea0bd8ccf 100644
+--- a/test/jdk/sun/security/ssl/SSLContextImpl/CustomizedDTLSServerDefaultProtocols.java
++++ b/test/jdk/sun/security/ssl/SSLContextImpl/CustomizedDTLSServerDefaultProtocols.java
+@@ -32,6 +32,7 @@
+  *      CustomizedDTLSServerDefaultProtocols
+  */
+ 
++import java.lang.UnsupportedOperationException;
+ import java.security.NoSuchAlgorithmException;
+ import java.security.Security;
+ import java.util.Arrays;
+@@ -212,33 +213,13 @@ public class CustomizedDTLSServerDefaultProtocols {
+             // Check SSLParameters of SSLSocket
+             System.out.println();
+             System.out.println("\tChecking SSLSocket of this SSLContext");
+-            System.out.println("\tChecking SSLSocket.getSSLParameters()");
+-            SocketFactory fac = context.getSocketFactory();
+-            SSLSocket socket = (SSLSocket) fac.createSocket();
+-            parameters = socket.getSSLParameters();
+-
+-            protocols = parameters.getProtocols();
+-            failed |= !checkProtocols(protocols, cv.clientEnabledProtocols);
+-
+-            ciphers = parameters.getCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
+-
+-            System.out.println("\tChecking SSLSocket.getEnabledProtocols()");
+-            protocols = socket.getEnabledProtocols();
+-            failed |= !checkProtocols(protocols, cv.clientEnabledProtocols);
+-
+-            System.out.println("\tChecking SSLSocket.getEnabledCipherSuites()");
+-            ciphers = socket.getEnabledCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
+-
+-            System.out.println("\tChecking SSLSocket.getSupportedProtocols()");
+-            protocols = socket.getSupportedProtocols();
+-            failed |= !checkProtocols(protocols, supportedProtocols);
+-
+-            System.out.println(
+-                    "\tChecking SSLSocket.getSupportedCipherSuites()");
+-            ciphers = socket.getSupportedCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
++            try {
++                context.getSocketFactory();
++                failed = true;
++                System.out.println("SSLSocket returned a socket for DTLS");
++            } catch (UnsupportedOperationException e) {
++                System.out.println("\t  " + e.getMessage());
++            }
+ 
+             //
+             // Check SSLServerSocket
+@@ -246,33 +227,13 @@ public class CustomizedDTLSServerDefaultProtocols {
+             // Check SSLParameters of SSLServerSocket
+             System.out.println();
+             System.out.println("\tChecking SSLServerSocket of this SSLContext");
+-            System.out.println("\tChecking SSLServerSocket.getSSLParameters()");
+-            SSLServerSocketFactory sf = context.getServerSocketFactory();
+-            SSLServerSocket ssocket = (SSLServerSocket) sf.createServerSocket();
+-            parameters = ssocket.getSSLParameters();
+-
+-            protocols = parameters.getProtocols();
+-            failed |= !checkProtocols(protocols, cv.serverEnabledProtocols);
+-
+-            ciphers = parameters.getCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
+-
+-            System.out.println("\tChecking SSLEngine.getEnabledProtocols()");
+-            protocols = ssocket.getEnabledProtocols();
+-            failed |= !checkProtocols(protocols, cv.serverEnabledProtocols);
+-
+-            System.out.println("\tChecking SSLEngine.getEnabledCipherSuites()");
+-            ciphers = ssocket.getEnabledCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
+-
+-            System.out.println("\tChecking SSLEngine.getSupportedProtocols()");
+-            protocols = ssocket.getSupportedProtocols();
+-            failed |= !checkProtocols(protocols, supportedProtocols);
+-
+-            System.out.println(
+-                    "\tChecking SSLEngine.getSupportedCipherSuites()");
+-            ciphers = ssocket.getSupportedCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
++            try {
++                context.getServerSocketFactory();
++                failed = true;
++                System.out.println("SSLServerSocket returned a socket for DTLS");
++            } catch (UnsupportedOperationException e) {
++                System.out.println("\t  " + e.getMessage());
++            }
+ 
+             if (failed) {
+                 throw new Exception("Run into problems, see log for more details");
+diff --git a/test/jdk/sun/security/ssl/SSLContextImpl/DefaultDTLSEnabledProtocols.java b/test/jdk/sun/security/ssl/SSLContextImpl/DefaultDTLSEnabledProtocols.java
+index ccfff01b6..029771541 100644
+--- a/test/jdk/sun/security/ssl/SSLContextImpl/DefaultDTLSEnabledProtocols.java
++++ b/test/jdk/sun/security/ssl/SSLContextImpl/DefaultDTLSEnabledProtocols.java
+@@ -189,33 +189,13 @@ public class DefaultDTLSEnabledProtocols {
+             // Check SSLParameters of SSLSocket
+             System.out.println();
+             System.out.println("\tChecking SSLSocket of this SSLContext");
+-            System.out.println("\tChecking SSLSocket.getSSLParameters()");
+-            SocketFactory fac = context.getSocketFactory();
+-            SSLSocket socket = (SSLSocket)fac.createSocket();
+-            parameters = socket.getSSLParameters();
+-
+-            protocols = parameters.getProtocols();
+-            failed |= !checkProtocols(protocols, cv.enabledProtocols);
+-
+-            ciphers = parameters.getCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
+-
+-            System.out.println("\tChecking SSLEngine.getEnabledProtocols()");
+-            protocols = socket.getEnabledProtocols();
+-            failed |= !checkProtocols(protocols, cv.enabledProtocols);
+-
+-            System.out.println("\tChecking SSLEngine.getEnabledCipherSuites()");
+-            ciphers = socket.getEnabledCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
+-
+-            System.out.println("\tChecking SSLEngine.getSupportedProtocols()");
+-            protocols = socket.getSupportedProtocols();
+-            failed |= !checkProtocols(protocols, cv.supportedProtocols);
+-
+-            System.out.println(
+-                    "\tChecking SSLEngine.getSupportedCipherSuites()");
+-            ciphers = socket.getSupportedCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
++            try {
++                context.getSocketFactory();
++                failed = true;
++                System.out.println("SSLSocket returned a socket for DTLS");
++            } catch (UnsupportedOperationException e) {
++                System.out.println("\t  " + e.getMessage());
++            }
+ 
+             //
+             // Check SSLServerSocket
+@@ -223,33 +203,13 @@ public class DefaultDTLSEnabledProtocols {
+             // Check SSLParameters of SSLServerSocket
+             System.out.println();
+             System.out.println("\tChecking SSLServerSocket of this SSLContext");
+-            System.out.println("\tChecking SSLServerSocket.getSSLParameters()");
+-            SSLServerSocketFactory sf = context.getServerSocketFactory();
+-            SSLServerSocket ssocket = (SSLServerSocket)sf.createServerSocket();
+-            parameters = ssocket.getSSLParameters();
+-
+-            protocols = parameters.getProtocols();
+-            failed |= !checkProtocols(protocols, cv.supportedProtocols);
+-
+-            ciphers = parameters.getCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
+-
+-            System.out.println("\tChecking SSLEngine.getEnabledProtocols()");
+-            protocols = ssocket.getEnabledProtocols();
+-            failed |= !checkProtocols(protocols, cv.supportedProtocols);
+-
+-            System.out.println("\tChecking SSLEngine.getEnabledCipherSuites()");
+-            ciphers = ssocket.getEnabledCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
+-
+-            System.out.println("\tChecking SSLEngine.getSupportedProtocols()");
+-            protocols = ssocket.getSupportedProtocols();
+-            failed |= !checkProtocols(protocols, cv.supportedProtocols);
+-
+-            System.out.println(
+-                    "\tChecking SSLEngine.getSupportedCipherSuites()");
+-            ciphers = ssocket.getSupportedCipherSuites();
+-            failed |= !checkCipherSuites(ciphers);
++            try {
++                context.getServerSocketFactory();
++                failed = true;
++                System.out.println("SSLServerSocket returned a socket for DTLS");
++            } catch (UnsupportedOperationException e) {
++                System.out.println("\t  " + e.getMessage());
++            }
+         }
+ 
+         if (failed) {
