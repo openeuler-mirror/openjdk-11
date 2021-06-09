@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 3
+Release: 4
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -855,6 +855,7 @@ Patch69: G1-iterate-region-by-bitmap-rather-than-obj-size-in.patch
 Patch70: 8264640.patch
 Patch71: numa_mem_leak.patch
 Patch72: select_nearest_numa_node.patch
+Patch73: support_jmap_parallel_inspection_for_cms_gc.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1131,6 +1132,7 @@ pushd %{top_level_dir_name}
 %patch70 -p1
 %patch71 -p1
 %patch72 -p1
+%patch73 -p1
 popd # openjdk
 
 # %patch1000
@@ -1634,6 +1636,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Wed Jun 9 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.11.9-4
+- add support_jmap_parallel_inspection_for_cms_gc.patch
+
 * Wed Jun 9 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.11.9-3
 - add select_nearest_numa_node.patch
 
