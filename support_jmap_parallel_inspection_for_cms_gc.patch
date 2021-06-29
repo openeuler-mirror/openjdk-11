@@ -1,0 +1,198 @@
+diff --git a/src/hotspot/share/gc/cms/cmsHeap.cpp b/src/hotspot/share/gc/cms/cmsHeap.cpp
+index 2c70eb375..880c1db03 100644
+--- a/src/hotspot/share/gc/cms/cmsHeap.cpp
++++ b/src/hotspot/share/gc/cms/cmsHeap.cpp
+@@ -264,3 +264,66 @@ GrowableArray<MemoryPool*> CMSHeap::memory_pools() {
+   memory_pools.append(_old_pool);
+   return memory_pools;
+ }
++
++// The CMSHeapBlockClaimer is used during parallel iteration over the heap,
++// allowing workers to claim heap areas ("blocks"), gaining exclusive rights to these.
++// The eden and survivor spaces are treated as single blocks as it is hard to divide
++// these spaces.
++// The old space is divided into fixed-size blocks.
++class CMSHeapBlockClaimer : public StackObj {
++  size_t _claimed_index;
++
++public:
++  static const size_t InvalidIndex = SIZE_MAX;
++  static const size_t EdenIndex = 0;
++  static const size_t SurvivorIndex = 1;
++  static const size_t NumNonOldGenClaims = 2;
++
++  CMSHeapBlockClaimer() : _claimed_index(EdenIndex) { }
++  // Claim the block and get the block index.
++  size_t claim_and_get_block()
++  {
++    size_t block_index;
++    block_index = Atomic::add(1u, &_claimed_index) - 1;
++    size_t num_claims = CMSHeap::heap()->old_gen()->num_iterable_blocks() + NumNonOldGenClaims;
++    return block_index < num_claims ? block_index : InvalidIndex;
++  }
++};
++
++void CMSHeap::object_iterate_parallel(ObjectClosure *cl, CMSHeapBlockClaimer *claimer)
++{
++  size_t block_index = claimer->claim_and_get_block();
++  // Iterate until all blocks are claimed
++  if (block_index == CMSHeapBlockClaimer::EdenIndex) {
++    young_gen()->eden()->object_iterate(cl);
++    block_index = claimer->claim_and_get_block();
++  }
++  if (block_index == CMSHeapBlockClaimer::SurvivorIndex) {
++    young_gen()->from()->object_iterate(cl);
++    young_gen()->to()->object_iterate(cl);
++    block_index = claimer->claim_and_get_block();
++  }
++  while (block_index != CMSHeapBlockClaimer::InvalidIndex) {
++    old_gen()->object_iterate_block(cl, block_index - CMSHeapBlockClaimer::NumNonOldGenClaims);
++    block_index = claimer->claim_and_get_block();
++  }
++}
++
++class CMSParallelObjectIterator : public ParallelObjectIterator {
++private:
++  CMSHeap *_heap;
++  CMSHeapBlockClaimer _claimer;
++
++public:
++  CMSParallelObjectIterator(uint thread_num) : _heap(CMSHeap::heap()), _claimer(){}
++
++  virtual void object_iterate(ObjectClosure *cl, uint worker_id)
++  {
++    _heap->object_iterate_parallel(cl, &_claimer);
++  }
++};
++
++ParallelObjectIterator* CMSHeap::parallel_object_iterator(uint thread_num)
++{
++  return new CMSParallelObjectIterator(thread_num);
++}
+diff --git a/src/hotspot/share/gc/cms/cmsHeap.hpp b/src/hotspot/share/gc/cms/cmsHeap.hpp
+index 93f177aad..e02a10c59 100644
+--- a/src/hotspot/share/gc/cms/cmsHeap.hpp
++++ b/src/hotspot/share/gc/cms/cmsHeap.hpp
+@@ -34,6 +34,7 @@
+ #include "utilities/growableArray.hpp"
+ 
+ class CLDClosure;
++class CMSHeapBlockClaimer;
+ class GenCollectorPolicy;
+ class GCMemoryManager;
+ class MemoryPool;
+@@ -106,6 +107,14 @@ public:
+     return static_cast<ConcurrentMarkSweepGeneration*>(_old_gen);
+   }
+ 
++  virtual ParallelObjectIterator* parallel_object_iterator(uint thread_num);
++  // Iteration functions.
++  void object_iterate_parallel(ObjectClosure *cl, CMSHeapBlockClaimer *claimer);
++  virtual WorkGang* get_safepoint_workers()
++  {
++    return workers();
++  }
++
+   // Apply "cur->do_oop" or "older->do_oop" to all the oops in objects
+   // allocated since the last call to save_marks in the young generation.
+   // The "cur" closure is applied to references in the younger generation
+diff --git a/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.cpp b/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.cpp
+index 708e92c53..2ebbd638e 100644
+--- a/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.cpp
++++ b/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.cpp
+@@ -2733,6 +2733,46 @@ void ConcurrentMarkSweepGeneration::shrink_free_list_by(size_t bytes) {
+   return;
+ }
+ 
++size_t ConcurrentMarkSweepGeneration::num_iterable_blocks() const
++{
++  return (used_stable() + CMSIterateBlockSize - 1) / CMSIterateBlockSize;
++}
++
++void ConcurrentMarkSweepGeneration::object_iterate_block(ObjectClosure *cl, size_t block_index)
++{
++  size_t block_word_size = CMSIterateBlockSize / HeapWordSize;
++  MemRegion span = MemRegion(cmsSpace()->bottom() + block_index * block_word_size,
++                             cmsSpace()->bottom() + (block_index + 1) * block_word_size);
++  if (!span.is_empty()) {  // Non-null task
++    HeapWord *prev_obj;
++    if (block_index == 0) {
++        prev_obj = span.start();
++    } else {
++      prev_obj = cmsSpace()->block_start_careful(span.start());
++      while (prev_obj < span.start()) {
++        size_t sz = cmsSpace()->block_size_no_stall(prev_obj, _collector);
++        if (sz > 0) {
++          prev_obj += sz;
++        } else {
++          break;
++        }
++      }
++    }
++    if (prev_obj < span.end()) {
++      HeapWord *cur, *limit;
++      size_t curSize;
++      for (cur = prev_obj, limit =span.end(); cur < limit; cur += curSize) {
++        curSize = cmsSpace()->block_size_no_stall(cur, _collector);
++        if (curSize == 0) {
++          break;
++        }
++        if (cmsSpace()->block_is_obj(cur)) {
++          cl->do_object(oop(cur));
++        }
++      }
++    }
++  }
++}
+ 
+ // Simple ctor/dtor wrapper for accounting & timer chores around concurrent
+ // phases.
+diff --git a/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.hpp b/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.hpp
+index 4f272394b..9e93fefac 100644
+--- a/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.hpp
++++ b/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.hpp
+@@ -1010,6 +1010,9 @@ class ConcurrentMarkSweepGeneration: public CardGeneration {
+   // Words directly allocated, used by CMSStats.
+   size_t _direct_allocated_words;
+ 
++  //CMS Parallel iterate block size
++  static const size_t CMSIterateBlockSize = 1024 * 1024;
++
+   // Non-product stat counters
+   NOT_PRODUCT(
+     size_t _numObjectsPromoted;
+@@ -1091,6 +1094,9 @@ class ConcurrentMarkSweepGeneration: public CardGeneration {
+ 
+   void set_did_compact(bool v) { _did_compact = v; }
+ 
++  virtual size_t num_iterable_blocks() const;
++  virtual void object_iterate_block(ObjectClosure *cl, size_t block_index);
++
+   bool refs_discovery_is_atomic() const { return false; }
+   bool refs_discovery_is_mt()     const {
+     // Note: CMS does MT-discovery during the parallel-remark
+diff --git a/test/jdk/sun/tools/jmap/BasicJMapTest.java b/test/jdk/sun/tools/jmap/BasicJMapTest.java
+index 960705e24..f87774f93 100644
+--- a/test/jdk/sun/tools/jmap/BasicJMapTest.java
++++ b/test/jdk/sun/tools/jmap/BasicJMapTest.java
+@@ -74,6 +74,20 @@ import jdk.testlibrary.ProcessTools;
+  * @run main/othervm/timeout=240 -XX:+UseG1GC BasicJMapTest
+  */
+ 
++/*
++ * @test id=CMS
++ * @summary Unit test for jmap utility (CMS GC)
++ * @key intermittent
++ * @library /lib/testlibrary
++ * @library /test/lib
++ * @build jdk.testlibrary.*
++ * @build jdk.test.lib.hprof.*
++ * @build jdk.test.lib.hprof.model.*
++ * @build jdk.test.lib.hprof.parser.*
++ * @build jdk.test.lib.hprof.util.*
++ * @run main/othervm/timeout=240 -XX:+UseConcMarkSweepGC BasicJMapTest
++ */
++
+ public class BasicJMapTest {
+ 
+     private static ProcessBuilder processBuilder = new ProcessBuilder();

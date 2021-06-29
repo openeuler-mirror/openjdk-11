@@ -1,0 +1,262 @@
+diff --git a/src/hotspot/os/aix/os_aix.cpp b/src/hotspot/os/aix/os_aix.cpp
+index 107b89cfa..63c699641 100644
+--- a/src/hotspot/os/aix/os_aix.cpp
++++ b/src/hotspot/os/aix/os_aix.cpp
+@@ -286,6 +286,9 @@ bool os::have_special_privileges() {
+   return privileges;
+ }
+ 
++uint os::numa_distance(uint node_index, uint node_index_other) {
++  return 0;
++}
+ // Helper function, emulates disclaim64 using multiple 32bit disclaims
+ // because we cannot use disclaim64() on AS/400 and old AIX releases.
+ static bool my_disclaim64(char* addr, size_t size) {
+diff --git a/src/hotspot/os/bsd/os_bsd.cpp b/src/hotspot/os/bsd/os_bsd.cpp
+index 897dec293..9587380b4 100644
+--- a/src/hotspot/os/bsd/os_bsd.cpp
++++ b/src/hotspot/os/bsd/os_bsd.cpp
+@@ -216,7 +216,9 @@ bool os::have_special_privileges() {
+   return privileges;
+ }
+ 
+-
++uint os::numa_distance(uint node_index, uint node_index_other) {
++  return 0;
++}
+ 
+ // Cpu architecture string
+ #if   defined(ZERO)
+diff --git a/src/hotspot/os/linux/os_linux.cpp b/src/hotspot/os/linux/os_linux.cpp
+index 0e99218d5..d69454eb3 100644
+--- a/src/hotspot/os/linux/os_linux.cpp
++++ b/src/hotspot/os/linux/os_linux.cpp
+@@ -3101,6 +3101,9 @@ int os::numa_get_group_id_for_address(const void* address) {
+   return id;
+ }
+ 
++uint os::numa_distance(uint node_index, uint node_index_other) {
++  return Linux::numa_distance(node_index, node_index_other);
++}
+ int os::Linux::get_existing_num_nodes() {
+   int node;
+   int highest_node_number = Linux::numa_max_node();
+diff --git a/src/hotspot/os/solaris/os_solaris.cpp b/src/hotspot/os/solaris/os_solaris.cpp
+index 73d5d832f..e440aea91 100644
+--- a/src/hotspot/os/solaris/os_solaris.cpp
++++ b/src/hotspot/os/solaris/os_solaris.cpp
+@@ -2240,6 +2240,9 @@ static void warn_fail_commit_memory(char* addr, size_t bytes,
+           alignment_hint, exec, os::strerror(err), err);
+ }
+ 
++uint os::numa_distance(uint node_index, uint node_index_other) {
++  return 0;
++}
+ int os::Solaris::commit_memory_impl(char* addr, size_t bytes, bool exec) {
+   int prot = exec ? PROT_READ|PROT_WRITE|PROT_EXEC : PROT_READ|PROT_WRITE;
+   size_t size = bytes;
+diff --git a/src/hotspot/os/windows/os_windows.cpp b/src/hotspot/os/windows/os_windows.cpp
+index 0249a652e..e514817e9 100644
+--- a/src/hotspot/os/windows/os_windows.cpp
++++ b/src/hotspot/os/windows/os_windows.cpp
+@@ -179,6 +179,9 @@ void os::run_periodic_checks() {
+   return;
+ }
+ 
++uint os::numa_distance(uint node_index, uint node_index_other) {
++  return 0;
++}
+ // previous UnhandledExceptionFilter, if there is one
+ static LPTOP_LEVEL_EXCEPTION_FILTER prev_uef_handler = NULL;
+ 
+diff --git a/src/hotspot/share/gc/g1/g1NUMA.cpp b/src/hotspot/share/gc/g1/g1NUMA.cpp
+index fada40f13..66c3cbe42 100644
+--- a/src/hotspot/share/gc/g1/g1NUMA.cpp
++++ b/src/hotspot/share/gc/g1/g1NUMA.cpp
+@@ -63,6 +63,16 @@ const int* G1NUMA::node_ids() const {
+   return _node_ids;
+ }
+ 
++// Returns numa distance
++const uint G1NUMA::calc_numa_node_distance(uint node_index, uint other_node_index) const {
++  if (node_index >= _num_active_node_ids || other_node_index >= _num_active_node_ids) {
++    return UINT_MAX;
++  }
++  return _numa_node_distance[node_index][other_node_index];
++}
++bool G1NUMA::use_nearest_node() const {
++   return _use_nearest;
++}
+ uint G1NUMA::index_of_node_id(int node_id) const {
+   assert(node_id >= 0, "invalid node id %d", node_id);
+   assert(node_id < _len_node_id_to_index_map, "invalid node id %d", node_id);
+@@ -75,7 +85,7 @@ uint G1NUMA::index_of_node_id(int node_id) const {
+ G1NUMA::G1NUMA() :
+   _node_id_to_index_map(NULL), _len_node_id_to_index_map(0),
+   _node_ids(NULL), _num_active_node_ids(0),
+-  _region_size(0), _page_size(0), _stats(NULL) {
++  _region_size(0), _page_size(0), _stats(NULL), _use_nearest(false) {
+ }
+ 
+ void G1NUMA::initialize_without_numa() {
+@@ -106,10 +116,23 @@ void G1NUMA::initialize(bool use_numa) {
+   for (uint i = 0; i < _num_active_node_ids; i++) {
+     max_node_id = MAX2(max_node_id, _node_ids[i]);
+   }
+-
++  if (_num_active_node_ids > 2) {
++    _use_nearest = true;
++  }
+   // Create a mapping between node_id and index.
+   _len_node_id_to_index_map = max_node_id + 1;
+   _node_id_to_index_map = NEW_C_HEAP_ARRAY(uint, _len_node_id_to_index_map, mtGC);
++  _numa_node_distance =  NEW_C_HEAP_ARRAY(uint*, _num_active_node_ids * _num_active_node_ids, mtGC);
++   // Set node disctance
++  for (uint node_i = 0; node_i < _num_active_node_ids; node_i++) {
++      _numa_node_distance[node_i] = NEW_C_HEAP_ARRAY(uint, _num_active_node_ids*_num_active_node_ids, mtGC);
++  }
++  for (uint node_i = 0; node_i < _num_active_node_ids; node_i++) {
++    for (uint node_j = 0; node_j < _num_active_node_ids; node_j++) {
++      uint distance = os::numa_distance(node_i, node_j);
++      _numa_node_distance[node_i][node_j] = distance;
++    }
++  }
+ 
+   // Set all indices with unknown node id.
+   for (int i = 0; i < _len_node_id_to_index_map; i++) {
+@@ -128,6 +151,10 @@ G1NUMA::~G1NUMA() {
+   delete _stats;
+   FREE_C_HEAP_ARRAY(int, _node_id_to_index_map);
+   FREE_C_HEAP_ARRAY(int, _node_ids);
++  for (uint node_i = 0; node_i < _num_active_node_ids; node_i++) {
++      FREE_C_HEAP_ARRAY(uint, _numa_node_distance[node_i]);
++  }
++  FREE_C_HEAP_ARRAY(uint*, _numa_node_distance);
+ }
+ 
+ void G1NUMA::set_region_info(size_t region_size, size_t page_size) {
+diff --git a/src/hotspot/share/gc/g1/g1NUMA.hpp b/src/hotspot/share/gc/g1/g1NUMA.hpp
+index 56889057f..bde3332eb 100644
+--- a/src/hotspot/share/gc/g1/g1NUMA.hpp
++++ b/src/hotspot/share/gc/g1/g1NUMA.hpp
+@@ -45,11 +45,14 @@ class G1NUMA: public CHeapObj<mtGC> {
+   int* _node_ids;
+   // Total number of node ids.
+   uint _num_active_node_ids;
+-
++  // numa node distance
++  uint** _numa_node_distance;
+   // HeapRegion size
+   size_t _region_size;
+   // Necessary when touching memory.
+   size_t _page_size;
++  // Use nearest numa node
++  bool _use_nearest;
+ 
+   // Stores statistic data.
+   G1NUMAStats* _stats;
+@@ -73,7 +76,6 @@ class G1NUMA: public CHeapObj<mtGC> {
+ public:
+   static const uint UnknownNodeIndex = UINT_MAX;
+   static const uint AnyNodeIndex = UnknownNodeIndex - 1;
+-
+   static G1NUMA* numa() { return _inst; }
+ 
+   static G1NUMA* create();
+@@ -86,16 +88,17 @@ public:
+ 
+   // Returns active memory node count.
+   uint num_active_nodes() const;
++  bool use_nearest_node() const;
+ 
+   bool is_enabled() const;
+-
+   bool is_humongous_region_enabled() const;
+ 
+   int numa_id(int index) const;
+ 
+   // Returns memory node ids
+   const int* node_ids() const;
+-
++  // Returns numa distance
++  const uint calc_numa_node_distance(uint node_index, uint other_node_index) const;
+   // Returns node index of current calling thread.
+   uint index_of_current_thread() const;
+ 
+diff --git a/src/hotspot/share/gc/g1/heapRegionSet.inline.hpp b/src/hotspot/share/gc/g1/heapRegionSet.inline.hpp
+index fc5c03f76..e697a3c3b 100644
+--- a/src/hotspot/share/gc/g1/heapRegionSet.inline.hpp
++++ b/src/hotspot/share/gc/g1/heapRegionSet.inline.hpp
+@@ -153,8 +153,8 @@ inline HeapRegion* FreeRegionList::remove_region(bool from_head) {
+   return hr;
+ }
+ 
+-inline HeapRegion* FreeRegionList::remove_region_with_node_index(bool from_head,
+-                                                                 uint requested_node_index) {
++inline HeapRegion* FreeRegionList::remove_region_with_node_index(
++		bool from_head, uint requested_node_index) {
+   assert(UseNUMA, "Invariant");
+ 
+   const uint max_search_depth = G1NUMA::numa()->max_search_depth();
+@@ -162,26 +162,45 @@ inline HeapRegion* FreeRegionList::remove_region_with_node_index(bool from_head,
+ 
+   // Find the region to use, searching from _head or _tail as requested.
+   size_t cur_depth = 0;
++  bool exist_region = false;
++  uint numa_distance_min = UINT_MAX;
++  HeapRegion* remote_node_region = NULL;
+   if (from_head) {
+     for (cur = _head;
+          cur != NULL && cur_depth < max_search_depth;
+          cur = cur->next(), ++cur_depth) {
+       if (requested_node_index == cur->node_index()) {
++        exist_region = true;
+         break;
+       }
++      if (G1NUMA::numa()->use_nearest_node()) {
++          uint distance = G1NUMA::numa()->calc_numa_node_distance(requested_node_index, cur->node_index());
++          if (distance < numa_distance_min) {
++            remote_node_region = cur;
++            numa_distance_min = distance;
++          }
++      }
+     }
+   } else {
+     for (cur = _tail;
+          cur != NULL && cur_depth < max_search_depth;
+          cur = cur->prev(), ++cur_depth) {
+       if (requested_node_index == cur->node_index()) {
++        exist_region = true;
+         break;
+       }
++      if (G1NUMA::numa()->use_nearest_node()) {
++          uint distance = G1NUMA::numa()->calc_numa_node_distance(requested_node_index, cur->node_index());
++          if (distance < numa_distance_min) {
++            remote_node_region = cur;
++            numa_distance_min = distance;
++          }
++      }
+     }
+   }
+-
+-  // Didn't find a region to use.
+-  if (cur == NULL || cur_depth >= max_search_depth) {
++  if (G1NUMA::numa()->use_nearest_node() && !exist_region && remote_node_region != NULL) {
++    cur = remote_node_region;
++  } else if (cur == NULL || cur_depth >= max_search_depth) {
+     return NULL;
+   }
+ 
+diff --git a/src/hotspot/share/runtime/os.hpp b/src/hotspot/share/runtime/os.hpp
+index 86bf89ef4..c3ff246b9 100644
+--- a/src/hotspot/share/runtime/os.hpp
++++ b/src/hotspot/share/runtime/os.hpp
+@@ -390,7 +390,7 @@ class os: AllStatic {
+   static bool   numa_topology_changed();
+   static int    numa_get_group_id();
+   static int    numa_get_group_id_for_address(const void* address);
+-
++  static uint   numa_distance(uint node_index, uint node_index_other);
+   // Page manipulation
+   struct page_info {
+     size_t size;
