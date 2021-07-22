@@ -74,7 +74,7 @@
 # is expected in one single case at the end of the build
 %global rev_build_loop  %{build_loop2} %{build_loop1}
 
-%global bootstrap_build 1
+%global bootstrap_build 0
 
 %if %{bootstrap_build}
 %global release_targets bootcycle-images docs-zip
@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 2
+Release: 7
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -854,6 +854,9 @@ Patch69: G1-iterate-region-by-bitmap-rather-than-obj-size-in.patch
 #11.0.11
 Patch70: 8264640.patch
 Patch71: numa_mem_leak.patch
+Patch72: select_nearest_numa_node.patch
+Patch73: support_jmap_parallel_inspection_for_cms_gc.patch
+Patch74: delete_expired_certificates.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1129,6 +1132,9 @@ pushd %{top_level_dir_name}
 %patch69 -p1
 %patch70 -p1
 %patch71 -p1
+%patch72 -p1
+%patch73 -p1
+%patch74 -p1
 popd # openjdk
 
 # %patch1000
@@ -1251,7 +1257,6 @@ fi
 
 make \
     JAVAC_FLAGS=-g \
-    LOG=trace \
     WARNINGS_ARE_ERRORS="-Wno-error" \
     CFLAGS_WARNINGS_ARE_ERRORS="-Wno-error" \
     $maketargets || ( pwd; find $top_dir_abs_path -name "hs_err_pid*.log" | xargs cat && false )
@@ -1632,6 +1637,21 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Thu Jul 8 2021 noah <hedongbo@huawei.com> - 1:11.0.11.9-7
+- delete debug log to reduce build time
+
+* Thu Jun 17 2021 Benshuai5D <zhangyunbo7@huawei.com> - 1:11.0.11.9-6
+- add openjdk-11.yaml
+
+* Wed Jun 9 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.11.9-5
+- add delete_expired_certificates.patch
+
+* Wed Jun 9 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.11.9-4
+- add support_jmap_parallel_inspection_for_cms_gc.patch
+
+* Wed Jun 9 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.11.9-3
+- add select_nearest_numa_node.patch
+
 * Mon May 31 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.11.9-2
 - add numa_mem_leak.patch
 
