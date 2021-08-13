@@ -1,30 +1,3 @@
-From 616dd14fb435476b0f9fb6696084fd71dd6ecc05 Mon Sep 17 00:00:00 2001
-Date: Tue, 16 Mar 2021 07:00:07 +0000
-Subject: [PATCH 2/4] add LazyBox feature
-
----
- src/hotspot/share/opto/c2_globals.hpp         |   6 +
- src/hotspot/share/opto/callGenerator.cpp      |  33 ++-
- src/hotspot/share/opto/callnode.cpp           |  18 ++
- src/hotspot/share/opto/callnode.hpp           |  15 ++
- src/hotspot/share/opto/compile.cpp            |   5 +
- src/hotspot/share/opto/doCall.cpp             |  50 +++++
- src/hotspot/share/opto/graphKit.cpp           | 189 +++++++++++++++-
- src/hotspot/share/opto/graphKit.hpp           |   9 +
- src/hotspot/share/opto/parse.hpp              |   3 +
- src/hotspot/share/opto/parse1.cpp             |   2 +-
- src/hotspot/share/opto/parse2.cpp             |  25 ++-
- src/hotspot/share/opto/parse3.cpp             |   8 +
- src/hotspot/share/opto/phase.hpp              |   1 +
- src/hotspot/share/opto/phaseX.cpp             | 211 ++++++++++++++++++
- src/hotspot/share/opto/phaseX.hpp             |  20 ++
- src/hotspot/share/opto/phasetype.hpp          |   2 +
- src/hotspot/share/runtime/arguments.cpp       |  13 ++
- .../jvm/hotspot/opto/CompilerPhaseType.java   |   1 +
- .../jtreg/compiler/lazybox/TestLazyBox.java   |  82 +++++++
- 19 files changed, 679 insertions(+), 14 deletions(-)
- create mode 100644 test/hotspot/jtreg/compiler/lazybox/TestLazyBox.java
-
 diff --git a/src/hotspot/share/opto/c2_globals.hpp b/src/hotspot/share/opto/c2_globals.hpp
 index 8111a63d4..84c2817e3 100644
 --- a/src/hotspot/share/opto/c2_globals.hpp
@@ -43,7 +16,7 @@ index 8111a63d4..84c2817e3 100644
            " register allocation.")                                          \
                                                                              \
 diff --git a/src/hotspot/share/opto/callGenerator.cpp b/src/hotspot/share/opto/callGenerator.cpp
-index ffe50ed86..a5846537d 100644
+index 59a02fbb1..11df8b6f5 100644
 --- a/src/hotspot/share/opto/callGenerator.cpp
 +++ b/src/hotspot/share/opto/callGenerator.cpp
 @@ -150,12 +150,15 @@ JVMState* DirectCallGenerator::generate(JVMState* jvms) {
@@ -137,7 +110,7 @@ index c4064dca0..f17eda879 100644
    // Add a LockNode, which points to both the original BoxLockNode (the
    // stack space for the monitor) and the Object being locked.
 diff --git a/src/hotspot/share/opto/callnode.hpp b/src/hotspot/share/opto/callnode.hpp
-index cc65d9ef9..c7ea73946 100644
+index cde33ad8b..0e07bdd62 100644
 --- a/src/hotspot/share/opto/callnode.hpp
 +++ b/src/hotspot/share/opto/callnode.hpp
 @@ -331,6 +331,7 @@ public:
@@ -194,10 +167,10 @@ index cc65d9ef9..c7ea73946 100644
    bool _is_scalar_replaceable;
    bool _is_non_escaping;
 diff --git a/src/hotspot/share/opto/compile.cpp b/src/hotspot/share/opto/compile.cpp
-index f350f9d68..838147f53 100644
+index 9c8474f18..2f188ea53 100644
 --- a/src/hotspot/share/opto/compile.cpp
 +++ b/src/hotspot/share/opto/compile.cpp
-@@ -2235,6 +2235,11 @@ void Compile::Optimize() {
+@@ -2237,6 +2237,11 @@ void Compile::Optimize() {
  
    print_method(PHASE_AFTER_PARSING);
  
@@ -210,10 +183,10 @@ index f350f9d68..838147f53 100644
    // Iterative Global Value Numbering, including ideal transforms
    // Initialize IterGVN with types and values from parse-time GVN
 diff --git a/src/hotspot/share/opto/doCall.cpp b/src/hotspot/share/opto/doCall.cpp
-index c9d06a833..343e9d00d 100644
+index dfcc8c402..6db88965b 100644
 --- a/src/hotspot/share/opto/doCall.cpp
 +++ b/src/hotspot/share/opto/doCall.cpp
-@@ -416,6 +416,49 @@ static bool check_call_consistency(JVMState* jvms, CallGenerator* cg) {
+@@ -418,6 +418,49 @@ static bool check_call_consistency(JVMState* jvms, CallGenerator* cg) {
  }
  #endif // ASSERT
  
@@ -263,7 +236,7 @@ index c9d06a833..343e9d00d 100644
  //------------------------------do_call----------------------------------------
  // Handle your basic call.  Inline if we can & want to, else just setup call.
  void Parse::do_call() {
-@@ -552,6 +595,13 @@ void Parse::do_call() {
+@@ -554,6 +597,13 @@ void Parse::do_call() {
    // It decides whether inlining is desirable or not.
    CallGenerator* cg = C->call_generator(callee, vtable_index, call_does_dispatch, jvms, try_inline, prof_factor(), speculative_receiver_type);
  
@@ -278,7 +251,7 @@ index c9d06a833..343e9d00d 100644
    orig_callee = callee = NULL;
  
 diff --git a/src/hotspot/share/opto/graphKit.cpp b/src/hotspot/share/opto/graphKit.cpp
-index 219d272ff..356bd5ccc 100644
+index 6d4949de2..22222efbc 100644
 --- a/src/hotspot/share/opto/graphKit.cpp
 +++ b/src/hotspot/share/opto/graphKit.cpp
 @@ -31,6 +31,7 @@
@@ -306,7 +279,7 @@ index 219d272ff..356bd5ccc 100644
    assert(is_hidden_merge(dstphi), "must be a special merge node");
    assert(is_hidden_merge(srcphi), "must be a special merge node");
 @@ -840,6 +850,19 @@ static bool should_reexecute_implied_by_bytecode(JVMState *jvms, bool is_anewarr
-     return false;
+   }
  }
  
 +// Delay boxnode to uncommon trap
@@ -335,7 +308,7 @@ index 219d272ff..356bd5ccc 100644
  
    // Walk the inline list to fill in the correct set of JVMState's
    // Also fill in the associated edges for each JVMState.
-@@ -910,6 +934,9 @@ void GraphKit::add_safepoint_edges(SafePointNode* call, bool must_throw) {
+@@ -916,6 +940,9 @@ void GraphKit::add_safepoint_edges(SafePointNode* call, bool must_throw) {
    // Fill pointer walks backwards from "young:" to "root:" in the diagram above:
    uint debug_ptr = call->req();
  
@@ -345,7 +318,7 @@ index 219d272ff..356bd5ccc 100644
    // Loop over the map input edges associated with jvms, add them
    // to the call node, & reset all offsets to match call node array.
    for (JVMState* in_jvms = youngest_jvms; in_jvms != NULL; ) {
-@@ -938,7 +965,7 @@ void GraphKit::add_safepoint_edges(SafePointNode* call, bool must_throw) {
+@@ -944,7 +971,7 @@ void GraphKit::add_safepoint_edges(SafePointNode* call, bool must_throw) {
      out_jvms->set_locoff(p);
      if (!can_prune_locals) {
        for (j = 0; j < l; j++)
@@ -354,7 +327,7 @@ index 219d272ff..356bd5ccc 100644
      } else {
        p += l;  // already set to top above by add_req_batch
      }
-@@ -949,7 +976,7 @@ void GraphKit::add_safepoint_edges(SafePointNode* call, bool must_throw) {
+@@ -955,7 +982,7 @@ void GraphKit::add_safepoint_edges(SafePointNode* call, bool must_throw) {
      out_jvms->set_stkoff(p);
      if (!can_prune_locals) {
        for (j = 0; j < l; j++)
@@ -363,7 +336,7 @@ index 219d272ff..356bd5ccc 100644
      } else if (can_prune_locals && stack_slots_not_pruned != 0) {
        // Divide stack into {S0,...,S1}, where S0 is set to top.
        uint s1 = stack_slots_not_pruned;
-@@ -958,7 +985,8 @@ void GraphKit::add_safepoint_edges(SafePointNode* call, bool must_throw) {
+@@ -964,7 +991,8 @@ void GraphKit::add_safepoint_edges(SafePointNode* call, bool must_throw) {
        uint s0 = l - s1;
        p += s0;  // skip the tops preinstalled by add_req_batch
        for (j = s0; j < l; j++)
@@ -373,7 +346,7 @@ index 219d272ff..356bd5ccc 100644
      } else {
        p += l;  // already set to top above by add_req_batch
      }
-@@ -992,6 +1020,35 @@ void GraphKit::add_safepoint_edges(SafePointNode* call, bool must_throw) {
+@@ -998,6 +1026,35 @@ void GraphKit::add_safepoint_edges(SafePointNode* call, bool must_throw) {
      in_jvms  = in_jvms->caller();
    }
  
@@ -409,7 +382,7 @@ index 219d272ff..356bd5ccc 100644
    assert(debug_ptr == non_debug_edges, "debug info must fit exactly");
  
    // Test the correctness of JVMState::debug_xxx accessors:
-@@ -4017,6 +4074,130 @@ void GraphKit::inflate_string_slow(Node* src, Node* dst, Node* start, Node* coun
+@@ -4031,6 +4088,130 @@ void GraphKit::inflate_string_slow(Node* src, Node* dst, Node* start, Node* coun
    set_memory(st, TypeAryPtr::BYTES);
  }
  
@@ -589,10 +562,10 @@ index aa13e8863..b16671ace 100644
    void do_call();
  
 diff --git a/src/hotspot/share/opto/parse1.cpp b/src/hotspot/share/opto/parse1.cpp
-index f94f028c6..48f111d76 100644
+index e12d1e5d3..561fe0690 100644
 --- a/src/hotspot/share/opto/parse1.cpp
 +++ b/src/hotspot/share/opto/parse1.cpp
-@@ -918,7 +918,7 @@ void Parse::do_exceptions() {
+@@ -919,7 +919,7 @@ void Parse::do_exceptions() {
  
    SafePointNode* ex_map;
    while ((ex_map = pop_exception_state()) != NULL) {
@@ -602,10 +575,10 @@ index f94f028c6..48f111d76 100644
        // Doing it this early allows the exceptions to common up
        // even between adjacent method calls.
 diff --git a/src/hotspot/share/opto/parse2.cpp b/src/hotspot/share/opto/parse2.cpp
-index 2b21881bc..78e83afa5 100644
+index 85bba6a50..027e32cec 100644
 --- a/src/hotspot/share/opto/parse2.cpp
 +++ b/src/hotspot/share/opto/parse2.cpp
-@@ -2660,9 +2660,17 @@ void Parse::do_one_bytecode() {
+@@ -2672,9 +2672,17 @@ void Parse::do_one_bytecode() {
    case Bytecodes::_return:
      return_current(NULL);
      break;
@@ -625,7 +598,7 @@ index 2b21881bc..78e83afa5 100644
    case Bytecodes::_freturn:
      return_current(pop());
      break;
-@@ -2749,6 +2757,19 @@ void Parse::do_one_bytecode() {
+@@ -2761,6 +2769,19 @@ void Parse::do_one_bytecode() {
      maybe_add_safepoint(iter().get_dest());
      a = pop();
      b = pop();
@@ -677,10 +650,10 @@ index 4b0c53ffc..38683f8a7 100644
    };
  
 diff --git a/src/hotspot/share/opto/phaseX.cpp b/src/hotspot/share/opto/phaseX.cpp
-index f4a38cd28..c2060e445 100644
+index 0a285315d..b3e2fb9b9 100644
 --- a/src/hotspot/share/opto/phaseX.cpp
 +++ b/src/hotspot/share/opto/phaseX.cpp
-@@ -407,6 +407,217 @@ void NodeHash::operator=(const NodeHash& nh) {
+@@ -412,6 +412,217 @@ void NodeHash::operator=(const NodeHash& nh) {
  
  #endif
  
@@ -899,7 +872,7 @@ index f4a38cd28..c2060e445 100644
  //=============================================================================
  //------------------------------PhaseRemoveUseless-----------------------------
 diff --git a/src/hotspot/share/opto/phaseX.hpp b/src/hotspot/share/opto/phaseX.hpp
-index ef5eb488e..915884b33 100644
+index 0591e9807..5a55b75e2 100644
 --- a/src/hotspot/share/opto/phaseX.hpp
 +++ b/src/hotspot/share/opto/phaseX.hpp
 @@ -173,6 +173,26 @@ public:
