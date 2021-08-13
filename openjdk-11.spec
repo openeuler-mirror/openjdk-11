@@ -288,7 +288,9 @@ ext=.gz
 alternatives \\
   --install %{_bindir}/javac javac %{sdkbindir -- %{?1}}/javac $PRIORITY  --family %{name}.%{_arch} \\
   --slave %{_jvmdir}/java java_sdk %{_jvmdir}/%{sdkdir -- %{?1}} \\
+%ifarch %{aarch64}
   --slave %{_bindir}/jaotc jaotc %{sdkbindir -- %{?1}}/jaotc \\
+%endif
   --slave %{_bindir}/jlink jlink %{sdkbindir -- %{?1}}/jlink \\
   --slave %{_bindir}/jmod jmod %{sdkbindir -- %{?1}}/jmod \\
   --slave %{_bindir}/jhsdb jhsdb %{sdkbindir -- %{?1}}/jhsdb \\
@@ -559,7 +561,9 @@ exit 0
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/jstatd
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/rmic
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/serialver
+%ifarch %{aarch64}
 %{_jvmdir}/%{sdkdir -- %{?1}}/bin/jaotc
+%endif
 %{_jvmdir}/%{sdkdir -- %{?1}}/include
 %{_jvmdir}/%{sdkdir -- %{?1}}/lib/ct.sym
 %if %{with_systemtap}
