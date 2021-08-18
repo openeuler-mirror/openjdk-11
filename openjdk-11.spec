@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 0
+Release: 1
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -838,7 +838,7 @@ Patch57: add-zgc-parameter-adaptation-feature.patch
 Patch58: add-integerCache-feature.patch
 Patch59: add-SVE-backend-feature.patch
 
-#11.0.10
+# 11.0.10
 Patch61: downgrade-the-symver-of-log2f-posix-spawn.patch
 Patch62: 8254078-DataOutputStream-is-very-slow-post-disabling.patch
 Patch64: Fix-the-memcpy-symbol-issue-during-JDK11-x64-build.patch
@@ -848,11 +848,14 @@ Patch67: 8214535-support-Jmap-parallel.patch
 Patch68: src-openeuler-openjdk-11-resolve-code-inconsistencies.patch 
 Patch69: G1-iterate-region-by-bitmap-rather-than-obj-size-in.patch
 
-#11.0.11
+# 11.0.11
 Patch71: numa_mem_leak.patch
 Patch72: select_nearest_numa_node.patch
 Patch73: support_jmap_parallel_inspection_for_cms_gc.patch
 Patch74: delete_expired_certificates.patch
+
+# 11.0.12
+Patch75: 8247691-Incorrect-handling-of-VM-exceptions-in-C1-deopt-stub.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1127,6 +1130,7 @@ pushd %{top_level_dir_name}
 %patch72 -p1
 %patch73 -p1
 %patch74 -p1
+%patch75 -p1
 popd # openjdk
 
 # %patch1000
@@ -1629,6 +1633,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Tue Aug 17 2021 eapen <zhangyipeng7@huawei.com> - 1:11.0.12.7-1
+- add 8247691-Incorrect-handling-of-VM-exceptions-in-C1-deopt-stub.patch
+
 * Tue Aug 3 2021 linhaibing21 <linhaibing@huawei.com> - 1:11.0.12.7-0
 - Update to 11.0.12+7 (GA)
 - delete 8207160-ClassReader-adjustMethodParams-can-potentially-return-null-if-the-args-list-is-empty.patch
