@@ -1,9 +1,3 @@
-commit c2748cd0d7b5a92b275aff0cd1d1fa0b113ba64f
-Author: aijiaming <aijiaming1@huawei.com>
-Date:   Mon Apr 12 10:53:53 2021 +0800
-
-    fix patch
-
 diff --git a/make/launcher/Launcher-java.base.gmk b/make/launcher/Launcher-java.base.gmk
 index f6d4aa28f..d511c0be5 100644
 --- a/make/launcher/Launcher-java.base.gmk
@@ -53,7 +47,7 @@ index a93fd2a90..2e0bc7a5b 100644
      CFLAGS_release := -DPRODUCT, \
      CFLAGS_linux := -fPIC, \
 diff --git a/make/lib/Awt2dLibraries.gmk b/make/lib/Awt2dLibraries.gmk
-index 7b0441507..b334b76e4 100644
+index e8c27e902..9ebb93dcb 100644
 --- a/make/lib/Awt2dLibraries.gmk
 +++ b/make/lib/Awt2dLibraries.gmk
 @@ -35,6 +35,11 @@ LIBAWT_DEFAULT_HEADER_DIRS := \
@@ -84,7 +78,7 @@ index 7b0441507..b334b76e4 100644
      EXCLUDES := $(LIBAWT_EXCLUDES), \
      EXCLUDE_FILES := $(LIBAWT_EXFILES), \
      OPTIMIZATION := LOW, \
-@@ -431,6 +438,7 @@ endif
+@@ -430,6 +437,7 @@ endif
  $(eval $(call SetupJdkLibrary, BUILD_LIBJAVAJPEG, \
      NAME := javajpeg, \
      INCLUDE_FILES := $(BUILD_LIBJAVAJPEG_INCLUDE_FILES), \
@@ -92,7 +86,7 @@ index 7b0441507..b334b76e4 100644
      OPTIMIZATION := HIGHEST, \
      CFLAGS := $(CFLAGS_JDKLIB), \
      HEADERS_FROM_SRC := $(LIBJPEG_HEADERS_FROM_SRC), \
-@@ -921,6 +929,7 @@ ifeq ($(ENABLE_HEADLESS_ONLY), false)
+@@ -919,6 +927,7 @@ ifeq ($(ENABLE_HEADLESS_ONLY), false)
        NAME := splashscreen, \
        EXTRA_SRC := $(LIBSPLASHSCREEN_EXTRA_SRC), \
        EXCLUDE_SRC_PATTERNS := $(LIBSPLASHSCREEN_EXCLUDE_SRC_PATTERNS), \
@@ -162,7 +156,7 @@ index 226e20892..f180a28c3 100644
      CFLAGS := $(CFLAGS_JDKLIB) $(LIBJLI_CFLAGS), \
      DISABLED_WARNINGS_gcc := unused-function implicit-fallthrough, \
 diff --git a/make/lib/Lib-java.base.gmk b/make/lib/Lib-java.base.gmk
-index 880249b8a..48876b84c 100644
+index a529768f3..0c888b65c 100644
 --- a/make/lib/Lib-java.base.gmk
 +++ b/make/lib/Lib-java.base.gmk
 @@ -36,12 +36,18 @@ $(call FillFindCache, $(wildcard $(TOPDIR)/src/java.base/*/native))
@@ -185,7 +179,7 @@ index 880249b8a..48876b84c 100644
      DISABLED_WARNINGS_gcc := format-nonliteral, \
      DISABLED_WARNINGS_clang := parentheses-equality constant-logical-operand, \
 diff --git a/make/lib/Lib-java.desktop.gmk b/make/lib/Lib-java.desktop.gmk
-index 2bb02cdd7..917ab02fc 100644
+index 274df2b8e..932e0b3e8 100644
 --- a/make/lib/Lib-java.desktop.gmk
 +++ b/make/lib/Lib-java.desktop.gmk
 @@ -36,6 +36,11 @@ $(call FillFindCache, $(wildcard $(TOPDIR)/src/java.desktop/*/native))
@@ -275,7 +269,7 @@ index dfecc1d3c..4137a371d 100644
            -DMP_API_COMPATIBLE -DNSS_ECC_MORE_THAN_SUITE_B, \
        CXXFLAGS := $(BUILD_LIBSUNEC_CXXFLAGS_JDKLIB), \
 diff --git a/make/lib/Lib-jdk.hotspot.agent.gmk b/make/lib/Lib-jdk.hotspot.agent.gmk
-index 1cbae7065..1ac259517 100644
+index 2d0c36a47..ad3075f00 100644
 --- a/make/lib/Lib-jdk.hotspot.agent.gmk
 +++ b/make/lib/Lib-jdk.hotspot.agent.gmk
 @@ -27,6 +27,11 @@ include LibCommon.gmk
@@ -404,7 +398,7 @@ index d79bd1bac..eafe26906 100644
    RESTARTABLE(::stat64(fn, &st), ret);
    if (ret == -1) {
 diff --git a/src/hotspot/share/c1/c1_GraphBuilder.cpp b/src/hotspot/share/c1/c1_GraphBuilder.cpp
-index bc2561fb0..6780fe3ed 100644
+index 211c2acda..86cc0108b 100644
 --- a/src/hotspot/share/c1/c1_GraphBuilder.cpp
 +++ b/src/hotspot/share/c1/c1_GraphBuilder.cpp
 @@ -1,5 +1,5 @@
@@ -414,7 +408,7 @@ index bc2561fb0..6780fe3ed 100644
   * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
   *
   * This code is free software; you can redistribute it and/or modify it
-@@ -3784,6 +3784,23 @@ bool GraphBuilder::try_inline_full(ciMethod* callee, bool holder_known, bool ign
+@@ -3783,6 +3783,23 @@ bool GraphBuilder::try_inline_full(ciMethod* callee, bool holder_known, bool ign
      INLINE_BAILOUT("mdo allocation failed");
    }
  
@@ -438,7 +432,7 @@ index bc2561fb0..6780fe3ed 100644
    // now perform tests that are based on flag settings
    bool inlinee_by_directive = compilation()->directive()->should_inline(callee);
    if (callee->force_inline() || inlinee_by_directive) {
-@@ -3826,21 +3843,11 @@ bool GraphBuilder::try_inline_full(ciMethod* callee, bool holder_known, bool ign
+@@ -3825,21 +3842,11 @@ bool GraphBuilder::try_inline_full(ciMethod* callee, bool holder_known, bool ign
  
    BlockBegin* orig_block = block();
  
@@ -524,10 +518,10 @@ index c60609617..f0b8638c1 100644
        case NotInCSet: return "NotInCSet";
        case Young: return "Young";
 diff --git a/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp b/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp
-index 66e1b32a6..7a403c3b2 100644
+index c70d8e89a..c8a3abaf3 100644
 --- a/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp
 +++ b/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp
-@@ -541,7 +541,7 @@ public:
+@@ -542,7 +542,7 @@ public:
    // Claim the block and get the block index.
    size_t claim_and_get_block() {
      size_t block_index;
@@ -563,10 +557,10 @@ index 246e82be6..110757684 100644
    // Reset the terminator, so that it may be reused again.
    // The caller is responsible for ensuring that this is done
 diff --git a/src/hotspot/share/gc/shenandoah/shenandoahConcurrentMark.cpp b/src/hotspot/share/gc/shenandoah/shenandoahConcurrentMark.cpp
-index 5266c911e..849be8e99 100644
+index 0f3c429ed..82fde2c94 100644
 --- a/src/hotspot/share/gc/shenandoah/shenandoahConcurrentMark.cpp
 +++ b/src/hotspot/share/gc/shenandoah/shenandoahConcurrentMark.cpp
-@@ -875,7 +875,6 @@ void ShenandoahConcurrentMark::mark_loop_prework(uint w, ShenandoahTaskTerminato
+@@ -889,7 +889,6 @@ void ShenandoahConcurrentMark::mark_loop_prework(uint w, ShenandoahTaskTerminato
  
  template <class T, bool CANCELLABLE>
  void ShenandoahConcurrentMark::mark_loop_work(T* cl, ShenandoahLiveData* live_data, uint worker_id, ShenandoahTaskTerminator *terminator) {
@@ -574,7 +568,7 @@ index 5266c911e..849be8e99 100644
    uintx stride = ShenandoahMarkLoopStride;
  
    ShenandoahHeap* heap = ShenandoahHeap::heap();
-@@ -929,7 +928,7 @@ void ShenandoahConcurrentMark::mark_loop_work(T* cl, ShenandoahLiveData* live_da
+@@ -943,7 +942,7 @@ void ShenandoahConcurrentMark::mark_loop_work(T* cl, ShenandoahLiveData* live_da
      uint work = 0;
      for (uint i = 0; i < stride; i++) {
        if (q->pop(t) ||
@@ -584,7 +578,7 @@ index 5266c911e..849be8e99 100644
          work++;
        } else {
 diff --git a/src/hotspot/share/memory/heapInspection.cpp b/src/hotspot/share/memory/heapInspection.cpp
-index dbc0eb274..e612a1ff8 100644
+index dd76165a7..d492751a6 100644
 --- a/src/hotspot/share/memory/heapInspection.cpp
 +++ b/src/hotspot/share/memory/heapInspection.cpp
 @@ -746,7 +746,7 @@ class RecordInstanceClosure : public ObjectClosure {
@@ -597,7 +591,7 @@ index dbc0eb274..e612a1ff8 100644
    uintx missed_count = 0;
    bool merge_success = true;
 diff --git a/src/hotspot/share/opto/graphKit.cpp b/src/hotspot/share/opto/graphKit.cpp
-index 356bd5ccc..3e742c0ef 100644
+index 22222efbc..5849e8f86 100644
 --- a/src/hotspot/share/opto/graphKit.cpp
 +++ b/src/hotspot/share/opto/graphKit.cpp
 @@ -44,8 +44,8 @@
@@ -611,10 +605,10 @@ index 356bd5ccc..3e742c0ef 100644
  #include "gc/shenandoah/c2/shenandoahBarrierSetC2.hpp"
  #endif
 diff --git a/src/hotspot/share/opto/loopnode.cpp b/src/hotspot/share/opto/loopnode.cpp
-index c65f2f6be..621110183 100644
+index b32cd9580..1f9ebd3bd 100644
 --- a/src/hotspot/share/opto/loopnode.cpp
 +++ b/src/hotspot/share/opto/loopnode.cpp
-@@ -2730,7 +2730,7 @@ bool PhaseIdealLoop::process_expensive_nodes() {
+@@ -2794,7 +2794,7 @@ bool PhaseIdealLoop::only_has_infinite_loops() {
  //----------------------------build_and_optimize-------------------------------
  // Create a PhaseLoop.  Build the ideal Loop tree.  Map each Ideal Node to
  // its corresponding LoopNode.  If 'optimize' is true, do some loop cleanups.
@@ -623,7 +617,7 @@ index c65f2f6be..621110183 100644
    bool do_split_ifs = (mode == LoopOptsDefault || mode == LoopOptsLastRound);
    bool skip_loop_opts = (mode == LoopOptsNone);
  #if INCLUDE_SHENANDOAHGC
-@@ -2801,8 +2801,7 @@ void PhaseIdealLoop::build_and_optimize(LoopOptsMode mode, bool z_barrier_insert
+@@ -2872,8 +2872,7 @@ void PhaseIdealLoop::build_and_optimize(LoopOptsMode mode, bool z_barrier_insert
    }
  
    // Nothing to do, so get out
@@ -633,7 +627,7 @@ index c65f2f6be..621110183 100644
    bool do_expensive_nodes = C->should_optimize_expensive_nodes(_igvn);
    if (stop_early && !do_expensive_nodes) {
      _igvn.optimize();           // Cleanup NeverBranches
-@@ -2958,16 +2957,6 @@ void PhaseIdealLoop::build_and_optimize(LoopOptsMode mode, bool z_barrier_insert
+@@ -3029,16 +3028,6 @@ void PhaseIdealLoop::build_and_optimize(LoopOptsMode mode, bool z_barrier_insert
    }
  #endif
  
@@ -651,10 +645,10 @@ index c65f2f6be..621110183 100644
      // Reassociate invariants and prep for split_thru_phi
      for (LoopTreeIterator iter(_ltree_root); !iter.done(); iter.next()) {
 diff --git a/src/hotspot/share/opto/loopnode.hpp b/src/hotspot/share/opto/loopnode.hpp
-index 8bc62a89e..56b8492d3 100644
+index 74aab91f9..6cf2d2a6d 100644
 --- a/src/hotspot/share/opto/loopnode.hpp
 +++ b/src/hotspot/share/opto/loopnode.hpp
-@@ -936,7 +936,7 @@ public:
+@@ -943,7 +943,7 @@ public:
    }
  
    // build the loop tree and perform any requested optimizations
@@ -663,7 +657,7 @@ index 8bc62a89e..56b8492d3 100644
  
    // Dominators for the sea of nodes
    void Dominators();
-@@ -946,13 +946,13 @@ public:
+@@ -953,13 +953,13 @@ public:
    Node *dom_lca_internal( Node *n1, Node *n2 ) const;
  
    // Compute the Ideal Node to Loop mapping
@@ -680,10 +674,10 @@ index 8bc62a89e..56b8492d3 100644
  
    // Verify that verify_me made the same decisions as a fresh run.
 diff --git a/src/hotspot/share/prims/unsafe.cpp b/src/hotspot/share/prims/unsafe.cpp
-index f3c845772..18ea89b85 100644
+index 784dc782f..9158f6d36 100644
 --- a/src/hotspot/share/prims/unsafe.cpp
 +++ b/src/hotspot/share/prims/unsafe.cpp
-@@ -1111,9 +1111,11 @@ static JNINativeMethod jdk_internal_misc_Unsafe_methods[] = {
+@@ -1100,9 +1100,11 @@ static JNINativeMethod jdk_internal_misc_Unsafe_methods[] = {
      {CC "fullFence",          CC "()V",                  FN_PTR(Unsafe_FullFence)},
  
      {CC "isBigEndian0",       CC "()Z",                  FN_PTR(Unsafe_isBigEndian0)},
@@ -806,7 +800,7 @@ index 39a9918d4..1115c48d8 100644
          }
      }
 diff --git a/src/java.base/share/classes/sun/security/ssl/SSLContextImpl.java b/src/java.base/share/classes/sun/security/ssl/SSLContextImpl.java
-index 6068de9e7..a104a25df 100644
+index de7da5c33..e8852f6bd 100644
 --- a/src/java.base/share/classes/sun/security/ssl/SSLContextImpl.java
 +++ b/src/java.base/share/classes/sun/security/ssl/SSLContextImpl.java
 @@ -207,6 +207,10 @@ public abstract class SSLContextImpl extends SSLContextSpi {
@@ -995,15 +989,15 @@ index 000000000..66d5581f5
 +}
 +
 diff --git a/test/jdk/sun/security/lib/cacerts/VerifyCACerts.java b/test/jdk/sun/security/lib/cacerts/VerifyCACerts.java
-index 540f353e6..727b9b948 100644
+index 66ba75a10..b0e28f192 100644
 --- a/test/jdk/sun/security/lib/cacerts/VerifyCACerts.java
 +++ b/test/jdk/sun/security/lib/cacerts/VerifyCACerts.java
 @@ -53,7 +53,7 @@ public class VerifyCACerts {
              + File.separator + "security" + File.separator + "cacerts";
  
      // The numbers of certs now.
--    private static final int COUNT = 97;
-+    private static final int COUNT = 89;
+-    private static final int COUNT = 91;
++    private static final int COUNT = 88;
  
      // SHA-256 of cacerts, can be generated with
      // shasum -a 256 cacerts | sed -e 's/../&:/g' | tr '[:lower:]' '[:upper:]' | cut -c1-95
@@ -1020,23 +1014,6 @@ index 540f353e6..727b9b948 100644
              put("baltimorecybertrustca [jdk]",
                      "16:AF:57:A9:F6:76:B0:AB:12:60:95:AA:5E:BA:DE:F2:2A:B3:11:19:D6:44:AC:95:CD:4B:93:DB:F3:F2:6A:EB");
              put("digicertglobalrootca [jdk]",
-@@ -132,16 +126,6 @@ public class VerifyCACerts {
-                     "A4:31:0D:50:AF:18:A6:44:71:90:37:2A:86:AF:AF:8B:95:1F:FB:43:1D:83:7F:1E:56:88:B4:59:71:ED:15:57");
-             put("thawteprimaryrootcag3 [jdk]",
-                     "4B:03:F4:58:07:AD:70:F2:1B:FC:2C:AE:71:C9:FD:E4:60:4C:06:4C:F5:FF:B6:86:BA:E5:DB:AA:D7:FD:D3:4C");
--            put("thawtepremiumserverca [jdk]",
--                    "3F:9F:27:D5:83:20:4B:9E:09:C8:A3:D2:06:6C:4B:57:D3:A2:47:9C:36:93:65:08:80:50:56:98:10:5D:BC:E9");
--            put("verisigntsaca [jdk]",
--                    "CB:6B:05:D9:E8:E5:7C:D8:82:B1:0B:4D:B7:0D:E4:BB:1D:E4:2B:A4:8A:7B:D0:31:8B:63:5B:F6:E7:78:1A:9D");
--            put("verisignclass2g2ca [jdk]",
--                    "3A:43:E2:20:FE:7F:3E:A9:65:3D:1E:21:74:2E:AC:2B:75:C2:0F:D8:98:03:05:BC:50:2C:AF:8C:2D:9B:41:A1");
--            put("verisignclass3ca [jdk]",
--                    "A4:B6:B3:99:6F:C2:F3:06:B3:FD:86:81:BD:63:41:3D:8C:50:09:CC:4F:A3:29:C2:CC:F0:E2:FA:1B:14:03:05");
--            put("verisignclass3g2ca [jdk]",
--                    "83:CE:3C:12:29:68:8A:59:3D:48:5F:81:97:3C:0F:91:95:43:1E:DA:37:CC:5E:36:43:0E:79:C7:A8:88:63:8B");
-             put("verisignuniversalrootca [jdk]",
-                     "23:99:56:11:27:A5:71:25:DE:8C:EF:EA:61:0D:DF:2F:A0:78:B5:C8:06:7F:4E:82:82:90:BF:B8:60:E8:4B:3C");
-             put("verisignclass3g3ca [jdk]",
 diff --git a/test/jdk/sun/security/ssl/SSLContextImpl/CustomizedDTLSDefaultProtocols.java b/test/jdk/sun/security/ssl/SSLContextImpl/CustomizedDTLSDefaultProtocols.java
 index 0dc0ffac2..e4e9434f9 100644
 --- a/test/jdk/sun/security/ssl/SSLContextImpl/CustomizedDTLSDefaultProtocols.java
@@ -1303,3 +1280,6 @@ index ccfff01b6..029771541 100644
          }
  
          if (failed) {
+-- 
+2.19.0
+

@@ -1,5 +1,5 @@
 diff --git a/make/autoconf/hotspot.m4 b/make/autoconf/hotspot.m4
-index d598b98..61739b9 100644
+index d598b9897..61739b900 100644
 --- a/make/autoconf/hotspot.m4
 +++ b/make/autoconf/hotspot.m4
 @@ -367,7 +367,8 @@ AC_DEFUN_ONCE([HOTSPOT_SETUP_JVM_FEATURES],
@@ -13,7 +13,7 @@ index d598b98..61739b9 100644
    else
      DISABLED_JVM_FEATURES="$DISABLED_JVM_FEATURES zgc"
 diff --git a/src/hotspot/cpu/aarch64/aarch64.ad b/src/hotspot/cpu/aarch64/aarch64.ad
-index 890e457..0625053 100644
+index ce103dc1c..53cd702b9 100644
 --- a/src/hotspot/cpu/aarch64/aarch64.ad
 +++ b/src/hotspot/cpu/aarch64/aarch64.ad
 @@ -957,6 +957,146 @@ reg_class v3_reg(
@@ -175,7 +175,7 @@ index 890e457..0625053 100644
  
  //----------SOURCE BLOCK-------------------------------------------------------
  // This is a block of C++ code which provides values, functions, and
-@@ -4738,6 +4883,258 @@ operand vRegD_V3()
+@@ -4761,6 +4906,258 @@ operand vRegD_V3()
    interface(REG_INTER);
  %}
  
@@ -434,8 +434,8 @@ index 890e457..0625053 100644
  // Flags register, used as output of signed compare instructions
  
  // note that on AArch64 we also use this register as the output for
-@@ -17078,6 +17475,95 @@ instruct vsrl2L_imm(vecX dst, vecX src, immI shift) %{
-   ins_pipe(vshift128_imm);
+@@ -17700,6 +18097,95 @@ instruct vpopcount2I(vecD dst, vecD src) %{
+   ins_pipe(pipe_class_default);
  %}
  
 +source %{
@@ -531,10 +531,10 @@ index 890e457..0625053 100644
  // These must follow all instruction definitions as they use the names
  // defined in the instructions definitions.
 diff --git a/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp
-index fe301df..6ab944b 100644
+index 4ba97e035..96042ace5 100644
 --- a/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp
 +++ b/src/hotspot/cpu/aarch64/c1_LIRAssembler_aarch64.cpp
-@@ -1013,7 +1013,11 @@ void LIR_Assembler::mem2reg(LIR_Opr src, LIR_Opr dest, BasicType type, LIR_Patch
+@@ -1033,7 +1033,11 @@ void LIR_Assembler::mem2reg(LIR_Opr src, LIR_Opr dest, BasicType type, LIR_Patch
      if (UseCompressedOops && !wide) {
        __ decode_heap_oop(dest->as_register());
      }
@@ -547,7 +547,7 @@ index fe301df..6ab944b 100644
    } else if (type == T_ADDRESS && addr->disp() == oopDesc::klass_offset_in_bytes()) {
      if (UseCompressedClassPointers) {
        __ decode_klass_not_null(dest->as_register());
-@@ -2825,7 +2829,11 @@ void LIR_Assembler::leal(LIR_Opr addr, LIR_Opr dest, LIR_PatchCode patch_code, C
+@@ -2903,7 +2907,11 @@ void LIR_Assembler::leal(LIR_Opr addr, LIR_Opr dest, LIR_PatchCode patch_code, C
      return;
    }
  #endif
@@ -562,7 +562,7 @@ index fe301df..6ab944b 100644
  
 diff --git a/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp
 new file mode 100644
-index 0000000..90b2b4c
+index 000000000..90b2b4ca7
 --- /dev/null
 +++ b/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.cpp
 @@ -0,0 +1,408 @@
@@ -976,7 +976,7 @@ index 0000000..90b2b4c
 +}
 diff --git a/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.hpp b/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.hpp
 new file mode 100644
-index 0000000..7e8be01
+index 000000000..7e8be01cc
 --- /dev/null
 +++ b/src/hotspot/cpu/aarch64/gc/z/zBarrierSetAssembler_aarch64.hpp
 @@ -0,0 +1,92 @@
@@ -1073,10 +1073,10 @@ index 0000000..7e8be01
 +
 +#endif // CPU_AARCH64_GC_Z_ZBARRIERSETASSEMBLER_AARCH64_HPP
 diff --git a/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp b/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp
-index 89a4330..ac7eb84 100644
+index 864171278..2eee84cd9 100644
 --- a/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp
 +++ b/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp
-@@ -45,6 +45,9 @@
+@@ -47,6 +47,9 @@
  #ifdef COMPILER2
  #include "opto/runtime.hpp"
  #endif
@@ -1086,7 +1086,7 @@ index 89a4330..ac7eb84 100644
  
  // Declaration and definition of StubGenerator (no .hpp file).
  // For a more detailed description of the stub routine structure
-@@ -549,6 +552,16 @@ class StubGenerator: public StubCodeGenerator {
+@@ -551,6 +554,16 @@ class StubGenerator: public StubCodeGenerator {
      // make sure object is 'reasonable'
      __ cbz(r0, exit); // if obj is NULL it is OK
  
@@ -1104,7 +1104,7 @@ index 89a4330..ac7eb84 100644
      __ mov(c_rarg3, (intptr_t) Universe::verify_oop_mask());
      __ andr(c_rarg2, r0, c_rarg3);
 diff --git a/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp b/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp
-index d2290a6..381211e 100644
+index d2290a670..381211ecc 100644
 --- a/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp
 +++ b/src/hotspot/cpu/x86/gc/z/zBarrierSetAssembler_x86.cpp
 @@ -273,13 +273,13 @@ void ZBarrierSetAssembler::generate_c1_load_barrier_stub(LIR_Assembler* ce,
@@ -1127,7 +1127,7 @@ index d2290a6..381211e 100644
    assert_different_registers(ref, ref_addr, noreg);
 diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zAddress_linux_aarch64.inline.hpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zAddress_linux_aarch64.inline.hpp
 new file mode 100644
-index 0000000..936480c
+index 000000000..936480cb5
 --- /dev/null
 +++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zAddress_linux_aarch64.inline.hpp
 @@ -0,0 +1,31 @@
@@ -1164,7 +1164,7 @@ index 0000000..936480c
 +#endif // OS_CPU_LINUX_AARCH64_ZADDRESS_LINUX_AARCH64_INLINE_HPP
 diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.cpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.cpp
 new file mode 100644
-index 0000000..47894b5
+index 000000000..47894b5c8
 --- /dev/null
 +++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.cpp
 @@ -0,0 +1,426 @@
@@ -1596,7 +1596,7 @@ index 0000000..47894b5
 +}
 diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.hpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.hpp
 new file mode 100644
-index 0000000..032dbc1
+index 000000000..032dbc133
 --- /dev/null
 +++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingFile_linux_aarch64.hpp
 @@ -0,0 +1,63 @@
@@ -1665,7 +1665,7 @@ index 0000000..032dbc1
 +#endif // OS_CPU_LINUX_AARCH64_ZBACKINGFILE_LINUX_AARCH64_HPP
 diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingPath_linux_aarch64.cpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingPath_linux_aarch64.cpp
 new file mode 100644
-index 0000000..1adffa3
+index 000000000..1adffa32b
 --- /dev/null
 +++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingPath_linux_aarch64.cpp
 @@ -0,0 +1,149 @@
@@ -1820,7 +1820,7 @@ index 0000000..1adffa3
 +}
 diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingPath_linux_aarch64.hpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingPath_linux_aarch64.hpp
 new file mode 100644
-index 0000000..a03aaf9
+index 000000000..a03aaf960
 --- /dev/null
 +++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zBackingPath_linux_aarch64.hpp
 @@ -0,0 +1,52 @@
@@ -1878,7 +1878,7 @@ index 0000000..a03aaf9
 +#endif // OS_CPU_LINUX_AARCH64_ZBACKINGPATH_LINUX_AARCH64_HPP
 diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zGlobals_linux_aarch64.cpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zGlobals_linux_aarch64.cpp
 new file mode 100644
-index 0000000..5d24809
+index 000000000..5d2480993
 --- /dev/null
 +++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zGlobals_linux_aarch64.cpp
 @@ -0,0 +1,33 @@
@@ -1917,7 +1917,7 @@ index 0000000..5d24809
 +}
 diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zGlobals_linux_aarch64.hpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zGlobals_linux_aarch64.hpp
 new file mode 100644
-index 0000000..93c1806
+index 000000000..93c18067b
 --- /dev/null
 +++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zGlobals_linux_aarch64.hpp
 @@ -0,0 +1,88 @@
@@ -2011,7 +2011,7 @@ index 0000000..93c1806
 +#endif // OS_CPU_LINUX_AARCH64_ZGLOBALS_LINUX_AARCH64_HPP
 diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zLargePages_linux_aarch64.cpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zLargePages_linux_aarch64.cpp
 new file mode 100644
-index 0000000..c79195c
+index 000000000..c79195cd1
 --- /dev/null
 +++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zLargePages_linux_aarch64.cpp
 @@ -0,0 +1,38 @@
@@ -2055,7 +2055,7 @@ index 0000000..c79195c
 +}
 diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zNUMA_linux_aarch64.cpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zNUMA_linux_aarch64.cpp
 new file mode 100644
-index 0000000..10706fa
+index 000000000..10706fac2
 --- /dev/null
 +++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zNUMA_linux_aarch64.cpp
 @@ -0,0 +1,83 @@
@@ -2144,7 +2144,7 @@ index 0000000..10706fa
 +}
 diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zPhysicalMemoryBacking_linux_aarch64.cpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zPhysicalMemoryBacking_linux_aarch64.cpp
 new file mode 100644
-index 0000000..55c2a16
+index 000000000..55c2a16e0
 --- /dev/null
 +++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zPhysicalMemoryBacking_linux_aarch64.cpp
 @@ -0,0 +1,270 @@
@@ -2420,7 +2420,7 @@ index 0000000..55c2a16
 +}
 diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zPhysicalMemoryBacking_linux_aarch64.hpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zPhysicalMemoryBacking_linux_aarch64.hpp
 new file mode 100644
-index 0000000..c55b7b1
+index 000000000..c55b7b17c
 --- /dev/null
 +++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zPhysicalMemoryBacking_linux_aarch64.hpp
 @@ -0,0 +1,65 @@
@@ -2491,7 +2491,7 @@ index 0000000..c55b7b1
 +#endif // OS_CPU_LINUX_AARCH64_ZPHYSICALMEMORYBACKING_LINUX_AARCH64_HPP
 diff --git a/src/hotspot/os_cpu/linux_aarch64/gc/z/zVirtualMemory_linux_aarch64.cpp b/src/hotspot/os_cpu/linux_aarch64/gc/z/zVirtualMemory_linux_aarch64.cpp
 new file mode 100644
-index 0000000..68df401
+index 000000000..68df40191
 --- /dev/null
 +++ b/src/hotspot/os_cpu/linux_aarch64/gc/z/zVirtualMemory_linux_aarch64.cpp
 @@ -0,0 +1,41 @@
@@ -2537,7 +2537,7 @@ index 0000000..68df401
 +  return true;
 +}
 diff --git a/src/hotspot/share/gc/z/c1/zBarrierSetC1.cpp b/src/hotspot/share/gc/z/c1/zBarrierSetC1.cpp
-index 9f8ce74..0abd398 100644
+index 9f8ce7424..0abd3980f 100644
 --- a/src/hotspot/share/gc/z/c1/zBarrierSetC1.cpp
 +++ b/src/hotspot/share/gc/z/c1/zBarrierSetC1.cpp
 @@ -38,21 +38,15 @@ ZLoadBarrierStubC1::ZLoadBarrierStubC1(LIRAccess& access, LIR_Opr ref, address r
@@ -2569,3 +2569,6 @@ index 9f8ce74..0abd398 100644
  }
  
  DecoratorSet ZLoadBarrierStubC1::decorators() const {
+-- 
+2.19.0
+
