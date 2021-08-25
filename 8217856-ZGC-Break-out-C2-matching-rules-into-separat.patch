@@ -1,8 +1,8 @@
 diff --git a/make/hotspot/gensrc/GensrcAdlc.gmk b/make/hotspot/gensrc/GensrcAdlc.gmk
-index 6878962..bb9721c 100644
+index 687896251..a39640526 100644
 --- a/make/hotspot/gensrc/GensrcAdlc.gmk
 +++ b/make/hotspot/gensrc/GensrcAdlc.gmk
-@@ -146,6 +146,12 @@ ifeq ($(call check-jvm-feature, compiler2), true)
+@@ -140,6 +140,12 @@ ifeq ($(call check-jvm-feature, compiler2), true)
        $d/os_cpu/$(HOTSPOT_TARGET_OS)_$(HOTSPOT_TARGET_CPU_ARCH)/$(HOTSPOT_TARGET_OS)_$(HOTSPOT_TARGET_CPU_ARCH).ad \
      )))
  
@@ -16,7 +16,7 @@ index 6878962..bb9721c 100644
      AD_SRC_FILES += $(call uniq, $(wildcard $(foreach d, $(AD_SRC_ROOTS), \
          $d/cpu/$(HOTSPOT_TARGET_CPU_ARCH)/gc/shenandoah/shenandoah_$(HOTSPOT_TARGET_CPU).ad \
 diff --git a/src/hotspot/cpu/aarch64/aarch64.ad b/src/hotspot/cpu/aarch64/aarch64.ad
-index 05b36e2..18e774f 100644
+index 29f81face..ab578476a 100644
 --- a/src/hotspot/cpu/aarch64/aarch64.ad
 +++ b/src/hotspot/cpu/aarch64/aarch64.ad
 @@ -1128,13 +1128,6 @@ definitions %{
@@ -33,8 +33,8 @@ index 05b36e2..18e774f 100644
  //----------SOURCE BLOCK-------------------------------------------------------
  // This is a block of C++ code which provides values, functions, and
  // definitions necessary in the rest of the architecture description
-@@ -17488,243 +17481,6 @@ instruct vsrl2L_imm(vecX dst, vecX src, immI shift) %{
-   ins_pipe(vshift128_imm);
+@@ -18110,243 +18103,6 @@ instruct vpopcount2I(vecD dst, vecD src) %{
+   ins_pipe(pipe_class_default);
  %}
  
 -source %{
@@ -279,7 +279,7 @@ index 05b36e2..18e774f 100644
  // These must follow all instruction definitions as they use the names
 diff --git a/src/hotspot/cpu/aarch64/gc/z/z_aarch64.ad b/src/hotspot/cpu/aarch64/gc/z/z_aarch64.ad
 new file mode 100644
-index 0000000..50cc6f9
+index 000000000..50cc6f924
 --- /dev/null
 +++ b/src/hotspot/cpu/aarch64/gc/z/z_aarch64.ad
 @@ -0,0 +1,268 @@
@@ -553,7 +553,7 @@ index 0000000..50cc6f9
 +
 diff --git a/src/hotspot/cpu/x86/gc/z/z_x86_64.ad b/src/hotspot/cpu/x86/gc/z/z_x86_64.ad
 new file mode 100644
-index 0000000..38c2e92
+index 000000000..38c2e926b
 --- /dev/null
 +++ b/src/hotspot/cpu/x86/gc/z/z_x86_64.ad
 @@ -0,0 +1,168 @@
@@ -726,7 +726,7 @@ index 0000000..38c2e92
 +%}
 +
 diff --git a/src/hotspot/cpu/x86/x86_64.ad b/src/hotspot/cpu/x86/x86_64.ad
-index d127732..fce1b85 100644
+index 95a8538f3..ede4d8864 100644
 --- a/src/hotspot/cpu/x86/x86_64.ad
 +++ b/src/hotspot/cpu/x86/x86_64.ad
 @@ -538,19 +538,6 @@ reg_class int_rdi_reg(RDI);
@@ -749,7 +749,7 @@ index d127732..fce1b85 100644
  //----------SOURCE BLOCK-------------------------------------------------------
  // This is a block of C++ code which provides values, functions, and
  // definitions necessary in the rest of the architecture description
-@@ -1801,19 +1788,6 @@ const RegMask Matcher::method_handle_invoke_SP_save_mask() {
+@@ -1882,19 +1869,6 @@ const RegMask Matcher::method_handle_invoke_SP_save_mask() {
      return NO_REG_mask();
  }
  
@@ -769,7 +769,7 @@ index d127732..fce1b85 100644
  %}
  
  //----------ENCODING BLOCK-----------------------------------------------------
-@@ -12555,131 +12529,6 @@ instruct RethrowException()
+@@ -12845,131 +12819,6 @@ instruct RethrowException()
    ins_pipe(pipe_jmp);
  %}
  
@@ -901,3 +901,6 @@ index d127732..fce1b85 100644
  // ============================================================================
  // This name is KNOWN by the ADLC and cannot be changed.
  // The ADLC forces a 'TypeRawPtr::BOTTOM' output type
+-- 
+2.19.0
+
