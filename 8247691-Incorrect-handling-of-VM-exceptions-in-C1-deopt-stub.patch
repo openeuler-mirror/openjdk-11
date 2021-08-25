@@ -1,0 +1,27 @@
+From 6b8c5be412b9ae27ef3ea85b3b5dc4e58c82c3cf Mon Sep 17 00:00:00 2001
+From: miaozhuojun <mouzhuojun@huawei.com>
+Date: Tue, 11 May 2021 11:03:26 +0800
+Subject: [PATCH] Incorrect handling of VM exceptions in C1 deopt stub/traps
+
+Bug url: https://bugs.openjdk.java.net/browse/JDK-8247691
+---
+ src/hotspot/cpu/aarch64/c1_Runtime1_aarch64.cpp | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/hotspot/cpu/aarch64/c1_Runtime1_aarch64.cpp b/src/hotspot/cpu/aarch64/c1_Runtime1_aarch64.cpp
+index adaa0f1..b1daeac 100644
+--- a/src/hotspot/cpu/aarch64/c1_Runtime1_aarch64.cpp
++++ b/src/hotspot/cpu/aarch64/c1_Runtime1_aarch64.cpp
+@@ -577,7 +577,8 @@ OopMapSet* Runtime1::generate_patching(StubAssembler* sasm, address target) {
+     __ verify_not_null_oop(r0);
+ 
+     // load throwing pc: this is the return address of the stub
+-    __ mov(r3, lr);
++    // Note that lr register has been destroyed by the call.
++    __ ldr(r3, Address(rfp, wordSize));
+ 
+ #ifdef ASSERT
+     // check that fields in JavaThread for exception oop and issuing pc are empty
+-- 
+1.8.3.1
+
