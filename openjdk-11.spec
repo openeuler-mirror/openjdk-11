@@ -58,7 +58,7 @@
 
 # By default, we build a debug build during main build on JIT architectures
 %if %{with slowdebug}
-%global include_debug_build 1
+%global include_debug_build 0
 %else
 %global include_debug_build 0
 %endif
@@ -748,7 +748,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 8
+Release: 9
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -1650,6 +1650,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Mon Sep 13 2021 jiangfeilong <jiangfeilong@huawei.com> - 1:11.0.11.9-9
+- disable slowdebug build
+
 * Mon Aug 9 2021 jiangfeilong <jiangfeilong@huawei.com> - 1:11.0.11.9-8
 - add riscv64 port
 
