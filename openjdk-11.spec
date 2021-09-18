@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 2
+Release: 3
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -862,6 +862,7 @@ Patch78: create-jfr-dump-file-with-pid-or-timestamp-if-specif.patch
 Patch79: enhance-the-TimeZone-s-path-solution-on-Euler.patch
 Patch80: Add-KAE-implementation.patch
 Patch81: 8268427-Improve-AlgorithmConstraints-checkAlgorithm-.patch
+Patch82: PS-introduce-UsePSRelaxedForwardee-to-enable-using-r.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1143,6 +1144,7 @@ pushd %{top_level_dir_name}
 %patch79 -p1
 %patch80 -p1
 %patch81 -p1
+%patch82 -p1
 popd # openjdk
 
 # %patch1000
@@ -1645,6 +1647,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Sat Sep 18 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.12.7-3
+- add PS-introduce-UsePSRelaxedForwardee-to-enable-using-r.patch
+
 * Fri Sep 17 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.12.7-2
 - add Update-algorithm-annotations-for-fill_words.patch
 - add 8257145-Performance-regression-with-XX-ResizePLAB-af.patch
