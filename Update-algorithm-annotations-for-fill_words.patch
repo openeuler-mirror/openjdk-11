@@ -1,0 +1,65 @@
+From 861eff79eafc35ac88bbeb1b0edb7269c54ac807 Mon Sep 17 00:00:00 2001
+From: miaozhuojun <mouzhuojun@huawei.com>
+Date: Wed, 4 Aug 2021 15:22:25 +0800
+Subject: [PATCH 1/8] Update algorithm annotations for fill_words
+
+Summary: <JDK>: update algorithm annotations for fill_words
+LLT: NA
+Patch Type: huawei
+Bug url: NA
+---
+ .../cpu/aarch64/macroAssembler_aarch64.cpp    | 28 ++++++++++++++-----
+ 1 file changed, 21 insertions(+), 7 deletions(-)
+
+diff --git a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
+index 60dc92953..1401b8627 100644
+--- a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
++++ b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
+@@ -5658,23 +5658,37 @@ void MacroAssembler::fill_words(Register base, Register cnt, Register value)
+ {
+ //  Algorithm:
+ //
+-//    scratch1 = cnt & 7;
++//    if (cnt == 0) {
++//      return;
++//    }
++//    if ((p & 8) != 0) {
++//      *p++ = v;
++//    }
++//
++//    scratch1 = cnt & 14;
+ //    cnt -= scratch1;
+ //    p += scratch1;
+-//    switch (scratch1) {
++//    switch (scratch1 / 2) {
+ //      do {
+-//        cnt -= 8;
+-//          p[-8] = v;
++//        cnt -= 16;
++//          p[-16] = v;
++//          p[-15] = v;
+ //        case 7:
+-//          p[-7] = v;
++//          p[-14] = v;
++//          p[-13] = v;
+ //        case 6:
+-//          p[-6] = v;
++//          p[-12] = v;
++//          p[-11] = v;
+ //          // ...
+ //        case 1:
++//          p[-2] = v;
+ //          p[-1] = v;
+ //        case 0:
+-//          p += 8;
++//          p += 16;
+ //      } while (cnt);
++//    }
++//    if ((cnt & 1) == 1) {
++//      *p++ = v;
+ //    }
+ 
+   assert_different_registers(base, cnt, value, rscratch1, rscratch2);
+-- 
+2.22.0
+
