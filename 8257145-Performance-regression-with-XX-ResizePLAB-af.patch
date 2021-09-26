@@ -1,0 +1,127 @@
+From 1c751a064538c9e80b49fd0270db034ed0dcf11f Mon Sep 17 00:00:00 2001
+From: wuyan <wuyan34@huawei.com>
+Date: Thu, 5 Aug 2021 17:29:26 +0800
+Subject: [PATCH 2/8] 8257145: Performance regression with -XX:-ResizePLAB
+ after JDK-8079555
+
+Summary: <gc>: backport of JDK-8264640, Performance regression with -XX:-ResizePLAB after JDK-8079555
+LLT: NA
+Patch Type: backport
+Bug url: https://bugs.openjdk.java.net/browse/JDK-8257145
+---
+ src/hotspot/share/gc/cms/parNewGeneration.cpp        | 2 +-
+ src/hotspot/share/gc/g1/g1EvacStats.cpp              | 5 +++--
+ src/hotspot/share/gc/g1/g1EvacStats.hpp              | 2 +-
+ src/hotspot/share/gc/shared/plab.cpp                 | 3 +++
+ src/hotspot/share/gc/shared/plab.hpp                 | 6 ++++--
+ test/hotspot/jtreg/gc/g1/plab/TestPLABPromotion.java | 2 +-
+ 6 files changed, 13 insertions(+), 7 deletions(-)
+
+diff --git a/src/hotspot/share/gc/cms/parNewGeneration.cpp b/src/hotspot/share/gc/cms/parNewGeneration.cpp
+index 1b95cf52e..b1e8bde61 100644
+--- a/src/hotspot/share/gc/cms/parNewGeneration.cpp
++++ b/src/hotspot/share/gc/cms/parNewGeneration.cpp
+@@ -627,7 +627,7 @@ ParNewGeneration::ParNewGeneration(ReservedSpace rs, size_t initial_byte_size)
+   : DefNewGeneration(rs, initial_byte_size, "PCopy"),
+   _overflow_list(NULL),
+   _is_alive_closure(this),
+-  _plab_stats("Young", YoungPLABSize, PLABWeight)
++  _plab_stats("Young", YoungPLABSize, YoungPLABSize * ParallelGCThreads, PLABWeight)
+ {
+   NOT_PRODUCT(_overflow_counter = ParGCWorkQueueOverflowInterval;)
+   NOT_PRODUCT(_num_par_pushes = 0;)
+diff --git a/src/hotspot/share/gc/g1/g1EvacStats.cpp b/src/hotspot/share/gc/g1/g1EvacStats.cpp
+index 70c399691..7070e1840 100644
+--- a/src/hotspot/share/gc/g1/g1EvacStats.cpp
++++ b/src/hotspot/share/gc/g1/g1EvacStats.cpp
+@@ -28,6 +28,7 @@
+ #include "gc/shared/gcId.hpp"
+ #include "logging/log.hpp"
+ #include "memory/allocation.inline.hpp"
++#include "runtime/globals.hpp"
+ 
+ void G1EvacStats::log_plab_allocation() {
+   PLABStats::log_plab_allocation();
+@@ -89,8 +90,8 @@ size_t G1EvacStats::compute_desired_plab_sz() {
+   return cur_plab_sz;
+ }
+ 
+-G1EvacStats::G1EvacStats(const char* description, size_t desired_plab_sz_, unsigned wt) :
+-  PLABStats(description, desired_plab_sz_, wt),
++G1EvacStats::G1EvacStats(const char* description, size_t default_per_thread_plab_size, unsigned wt) :
++  PLABStats(description, default_per_thread_plab_size, default_per_thread_plab_size * ParallelGCThreads, wt),
+   _region_end_waste(0),
+   _regions_filled(0),
+   _direct_allocated(0),
+diff --git a/src/hotspot/share/gc/g1/g1EvacStats.hpp b/src/hotspot/share/gc/g1/g1EvacStats.hpp
+index 4ac6fd9f5..0baf2fc20 100644
+--- a/src/hotspot/share/gc/g1/g1EvacStats.hpp
++++ b/src/hotspot/share/gc/g1/g1EvacStats.hpp
+@@ -56,7 +56,7 @@ class G1EvacStats : public PLABStats {
+   virtual size_t compute_desired_plab_sz();
+ 
+  public:
+-  G1EvacStats(const char* description, size_t desired_plab_sz_, unsigned wt);
++  G1EvacStats(const char* description, size_t default_per_thread_plab_size, unsigned wt);
+ 
+   ~G1EvacStats();
+ 
+diff --git a/src/hotspot/share/gc/shared/plab.cpp b/src/hotspot/share/gc/shared/plab.cpp
+index 29c4cc694..0ad6dda4a 100644
+--- a/src/hotspot/share/gc/shared/plab.cpp
++++ b/src/hotspot/share/gc/shared/plab.cpp
+@@ -136,6 +136,9 @@ void PLABStats::log_sizing(size_t calculated_words, size_t net_desired_words) {
+ 
+ // Calculates plab size for current number of gc worker threads.
+ size_t PLABStats::desired_plab_sz(uint no_of_gc_workers) {
++  if (!ResizePLAB) {
++      return _default_plab_sz;
++  }
+   return align_object_size(MIN2(MAX2(min_size(), _desired_net_plab_sz / no_of_gc_workers), max_size()));
+ }
+ 
+diff --git a/src/hotspot/share/gc/shared/plab.hpp b/src/hotspot/share/gc/shared/plab.hpp
+index 608dce56c..06e9cfef3 100644
+--- a/src/hotspot/share/gc/shared/plab.hpp
++++ b/src/hotspot/share/gc/shared/plab.hpp
+@@ -151,6 +151,7 @@ class PLABStats : public CHeapObj<mtGC> {
+   size_t _wasted;             // of which wasted (internal fragmentation)
+   size_t _undo_wasted;        // of which wasted on undo (is not used for calculation of PLAB size)
+   size_t _unused;             // Unused in last buffer
++  size_t _default_plab_sz;
+   size_t _desired_net_plab_sz;// Output of filter (below), suitably trimmed and quantized
+   AdaptiveWeightedAverage
+          _filter;             // Integrator with decay
+@@ -169,13 +170,14 @@ class PLABStats : public CHeapObj<mtGC> {
+   virtual size_t compute_desired_plab_sz();
+ 
+  public:
+-  PLABStats(const char* description, size_t desired_net_plab_sz_, unsigned wt) :
++  PLABStats(const char* description, size_t default_per_thread_plab_size, size_t desired_net_plab_sz, unsigned wt) :
+     _description(description),
+     _allocated(0),
+     _wasted(0),
+     _undo_wasted(0),
+     _unused(0),
+-    _desired_net_plab_sz(desired_net_plab_sz_),
++    _default_plab_sz(default_per_thread_plab_size),
++    _desired_net_plab_sz(desired_net_plab_sz),
+     _filter(wt)
+   { }
+ 
+diff --git a/test/hotspot/jtreg/gc/g1/plab/TestPLABPromotion.java b/test/hotspot/jtreg/gc/g1/plab/TestPLABPromotion.java
+index 97f221eeb..6be46e36b 100644
+--- a/test/hotspot/jtreg/gc/g1/plab/TestPLABPromotion.java
++++ b/test/hotspot/jtreg/gc/g1/plab/TestPLABPromotion.java
+@@ -73,7 +73,7 @@ public class TestPLABPromotion {
+     private static final int PLAB_SIZE_HIGH = 65536;
+     private static final int OBJECT_SIZE_SMALL = 10;
+     private static final int OBJECT_SIZE_MEDIUM = 100;
+-    private static final int OBJECT_SIZE_HIGH = 1000;
++    private static final int OBJECT_SIZE_HIGH = 3500;
+     private static final int GC_NUM_SMALL = 1;
+     private static final int GC_NUM_MEDIUM = 3;
+     private static final int GC_NUM_HIGH = 7;
+-- 
+2.22.0
+
