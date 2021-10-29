@@ -364,39 +364,6 @@ index 267610202..f2c1dc0b9 100644
          CFLAGS := $(CFLAGS_JDKLIB), \
          EXTRA_HEADER_DIRS := \
              $(call GetJavaHeaderDir, java.base) \
-diff --git a/src/hotspot/os/linux/attachListener_linux.cpp b/src/hotspot/os/linux/attachListener_linux.cpp
-index d79bd1bac..eafe26906 100644
---- a/src/hotspot/os/linux/attachListener_linux.cpp
-+++ b/src/hotspot/os/linux/attachListener_linux.cpp
-@@ -498,12 +498,26 @@ bool AttachListener::init_at_startup() {
- // If the file .attach_pid<pid> exists in the working directory
- // or /tmp then this is the trigger to start the attach mechanism
- bool AttachListener::is_init_trigger() {
--  if (init_at_startup() || is_initialized()) {
--    return false;               // initialized at startup or already initialized
-+  if (init_at_startup()) {
-+    return false;               // initialized at startup
-   }
-+
-   char fn[PATH_MAX + 1];
-   int ret;
-   struct stat64 st;
-+
-+  // check initialized
-+  if (is_initialized()) {
-+    // check .java_pid file exists
-+    RESTARTABLE(::stat64(LinuxAttachListener::path(), &st), ret);
-+    if (ret == -1) {
-+      // shutdown attach listener thread whick is blocked in accept
-+      // function;Then attach listener thread exits.
-+      ::shutdown(LinuxAttachListener::listener(), SHUT_RDWR);
-+    }
-+    return false;
-+  }
-+
-   sprintf(fn, ".attach_pid%d", os::current_process_id());
-   RESTARTABLE(::stat64(fn, &st), ret);
-   if (ret == -1) {
 diff --git a/src/hotspot/share/c1/c1_GraphBuilder.cpp b/src/hotspot/share/c1/c1_GraphBuilder.cpp
 index 211c2acda..86cc0108b 100644
 --- a/src/hotspot/share/c1/c1_GraphBuilder.cpp
@@ -734,31 +701,6 @@ index cab1de79a..6a67574ad 100644
        }
  #endif
  
-diff --git a/src/hotspot/share/services/attachListener.cpp b/src/hotspot/share/services/attachListener.cpp
-index b0f3b2e87..dbe65922e 100644
---- a/src/hotspot/share/services/attachListener.cpp
-+++ b/src/hotspot/share/services/attachListener.cpp
-@@ -368,6 +368,7 @@ static void attach_listener_thread_entry(JavaThread* thread, TRAPS) {
-   for (;;) {
-     AttachOperation* op = AttachListener::dequeue();
-     if (op == NULL) {
-+      AttachListener::set_initialized(false);
-       return;   // dequeue failed or shutdown
-     }
- 
-diff --git a/src/hotspot/share/services/attachListener.hpp b/src/hotspot/share/services/attachListener.hpp
-index 4e13fe326..5f5ca3d0f 100644
---- a/src/hotspot/share/services/attachListener.hpp
-+++ b/src/hotspot/share/services/attachListener.hpp
-@@ -72,7 +72,7 @@ class AttachListener: AllStatic {
- 
-  public:
-   static bool is_initialized()                  { return _initialized; }
--  static void set_initialized()                 { _initialized = true; }
-+  static void set_initialized(bool init = true) { _initialized = init; }
- 
-   // indicates if this VM supports attach-on-demand
-   static bool is_attach_supported()             { return !DisableAttachMechanism; }
 diff --git a/src/java.base/share/classes/javax/net/ssl/SSLServerSocketFactory.java b/src/java.base/share/classes/javax/net/ssl/SSLServerSocketFactory.java
 index 1cbbf9cfc..ef384e609 100644
 --- a/src/java.base/share/classes/javax/net/ssl/SSLServerSocketFactory.java
@@ -988,32 +930,6 @@ index 000000000..66d5581f5
 +    }
 +}
 +
-diff --git a/test/jdk/sun/security/lib/cacerts/VerifyCACerts.java b/test/jdk/sun/security/lib/cacerts/VerifyCACerts.java
-index 66ba75a10..b0e28f192 100644
---- a/test/jdk/sun/security/lib/cacerts/VerifyCACerts.java
-+++ b/test/jdk/sun/security/lib/cacerts/VerifyCACerts.java
-@@ -53,7 +53,7 @@ public class VerifyCACerts {
-             + File.separator + "security" + File.separator + "cacerts";
- 
-     // The numbers of certs now.
--    private static final int COUNT = 91;
-+    private static final int COUNT = 88;
- 
-     // SHA-256 of cacerts, can be generated with
-     // shasum -a 256 cacerts | sed -e 's/../&:/g' | tr '[:lower:]' '[:upper:]' | cut -c1-95
-@@ -92,12 +92,6 @@ public class VerifyCACerts {
-                     "E7:93:C9:B0:2F:D8:AA:13:E2:1C:31:22:8A:CC:B0:81:19:64:3B:74:9C:89:89:64:B1:74:6D:46:C3:D4:CB:D2");
-             put("usertrusteccca [jdk]",
-                     "4F:F4:60:D5:4B:9C:86:DA:BF:BC:FC:57:12:E0:40:0D:2B:ED:3F:BC:4D:4F:BD:AA:86:E0:6A:DC:D2:A9:AD:7A");
--            put("utnuserfirstobjectca [jdk]",
--                    "6F:FF:78:E4:00:A7:0C:11:01:1C:D8:59:77:C4:59:FB:5A:F9:6A:3D:F0:54:08:20:D0:F4:B8:60:78:75:E5:8F");
--            put("addtrustexternalca [jdk]",
--                    "68:7F:A4:51:38:22:78:FF:F0:C8:B1:1F:8D:43:D5:76:67:1C:6E:B2:BC:EA:B4:13:FB:83:D9:65:D0:6D:2F:F2");
--            put("addtrustqualifiedca [jdk]",
--                    "80:95:21:08:05:DB:4B:BC:35:5E:44:28:D8:FD:6E:C2:CD:E3:AB:5F:B9:7A:99:42:98:8E:B8:F4:DC:D0:60:16");
-             put("baltimorecybertrustca [jdk]",
-                     "16:AF:57:A9:F6:76:B0:AB:12:60:95:AA:5E:BA:DE:F2:2A:B3:11:19:D6:44:AC:95:CD:4B:93:DB:F3:F2:6A:EB");
-             put("digicertglobalrootca [jdk]",
 diff --git a/test/jdk/sun/security/ssl/SSLContextImpl/CustomizedDTLSDefaultProtocols.java b/test/jdk/sun/security/ssl/SSLContextImpl/CustomizedDTLSDefaultProtocols.java
 index 0dc0ffac2..e4e9434f9 100644
 --- a/test/jdk/sun/security/ssl/SSLContextImpl/CustomizedDTLSDefaultProtocols.java
