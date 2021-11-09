@@ -114,7 +114,7 @@
 
 # New Version-String scheme-style defines
 %global majorver 11
-%global securityver 12
+%global securityver 13
 # buildjdkver is usually same as %%{majorver},
 # but in time of bootstrap of next jdk, it is majorver-1,
 # and this it is better to change it here, on single place
@@ -135,7 +135,7 @@
 
 %global project		jdk-updates
 %global repo		jdk11u
-%global revision	jdk-11.0.12-ga
+%global revision	jdk-11.0.13-ga
 %global full_revision %{project}-%{repo}-%{revision}
 # priority must be 7 digits in total
 # setting to 1, so debug ones can have 0
@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 3
+Release: 0
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -841,7 +841,6 @@ Patch59: add-SVE-backend-feature.patch
 # 11.0.10
 Patch61: downgrade-the-symver-of-log2f-posix-spawn.patch
 Patch62: 8254078-DataOutputStream-is-very-slow-post-disabling.patch
-Patch64: Fix-the-memcpy-symbol-issue-during-JDK11-x64-build.patch
 Patch65: add-LazyBox-feature.patch
 Patch66: add-G1-Full-GC-optimization.patch
 Patch67: 8214535-support-Jmap-parallel.patch
@@ -861,8 +860,9 @@ Patch77: 8257145-Performance-regression-with-XX-ResizePLAB-af.patch
 Patch78: create-jfr-dump-file-with-pid-or-timestamp-if-specif.patch
 Patch79: enhance-the-TimeZone-s-path-solution-on-Euler.patch
 Patch80: Add-KAE-implementation.patch
-Patch81: 8268427-Improve-AlgorithmConstraints-checkAlgorithm-.patch
 Patch82: PS-introduce-UsePSRelaxedForwardee-to-enable-using-r.patch
+
+# 11.0.13
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1127,7 +1127,6 @@ pushd %{top_level_dir_name}
 %patch59 -p1
 %patch61 -p1
 %patch62 -p1
-%patch64 -p1
 %patch65 -p1
 %patch66 -p1
 %patch67 -p1
@@ -1143,7 +1142,6 @@ pushd %{top_level_dir_name}
 %patch78 -p1
 %patch79 -p1
 %patch80 -p1
-%patch81 -p1
 %patch82 -p1
 popd # openjdk
 
@@ -1647,6 +1645,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Tue Oct 26 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.13.7-0
+- Update to 11.0.13+7 (GA)
+
 * Sat Sep 18 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.12.7-3
 - add PS-introduce-UsePSRelaxedForwardee-to-enable-using-r.patch
 
@@ -1656,7 +1657,6 @@ require "copy_jdk_configs.lua"
 - add create-jfr-dump-file-with-pid-or-timestamp-if-specif.patch
 - add enhance-the-TimeZone-s-path-solution-on-Euler.patch
 - add Add-KAE-implementation.patch
-- add 8268427-Improve-AlgorithmConstraints-checkAlgorithm-.patch
 
 * Tue Aug 17 2021 eapen <zhangyipeng7@huawei.com> - 1:11.0.12.7-1
 - add 8247691-Incorrect-handling-of-VM-exceptions-in-C1-deopt-stub.patch
@@ -1712,7 +1712,6 @@ require "copy_jdk_configs.lua"
 - add downgrade-the-symver-of-log2f-posix-spawn.patch
 - add 8254078-DataOutputStream-is-very-slow-post-disabling.patch
 - add 8217918-C2-XX-AggressiveUnboxing-is-broken.patch
-- add Fix-the-memcpy-symbol-issue-during-JDK11-x64-build.patch
 
 * Sun Feb 7 2021 jdkboy <ge.guo@huawei.com> - 1:11.0.10.9-2
 - remove redundant file info
