@@ -4471,7 +4471,7 @@ index 69f8a3c..5ee23f7 100644
  macro(Loop)
  macro(LoopLimit)
 diff --git a/src/hotspot/share/opto/compile.cpp b/src/hotspot/share/opto/compile.cpp
-index 45e2d11..e5559a2 100644
+index 8c23b304d..3e45813d7 100644
 --- a/src/hotspot/share/opto/compile.cpp
 +++ b/src/hotspot/share/opto/compile.cpp
 @@ -79,9 +79,6 @@
@@ -4484,16 +4484,17 @@ index 45e2d11..e5559a2 100644
  #if INCLUDE_SHENANDOAHGC
  #include "gc/shenandoah/c2/shenandoahBarrierSetC2.hpp"
  #endif
-@@ -639,16 +636,12 @@ debug_only( int Compile::_debug_idx = 100000; )
- Compile::Compile( ciEnv* ci_env, C2Compiler* compiler, ciMethod* target, int osr_bci,
-                   bool subsume_loads, bool do_escape_analysis, bool eliminate_boxing, DirectiveSet* directive)
+@@ -647,9 +644,6 @@ Compile::Compile( ciEnv* ci_env, C2Compiler* compiler, ciMethod* target, int osr
+                   bool subsume_loads, bool do_escape_analysis, bool eliminate_boxing,
+                   bool do_locks_coarsening, DirectiveSet* directive)
                  : Phase(Compiler),
 -                  _env(ci_env),
 -                  _directive(directive),
 -                  _log(ci_env->log()),
                    _compile_id(ci_env->compile_id()),
                    _save_argument_registers(false),
-                   _stub_name(NULL),
+                   _do_locks_coarsening(do_locks_coarsening),
+@@ -657,7 +651,6 @@ Compile::Compile( ciEnv* ci_env, C2Compiler* compiler, ciMethod* target, int osr
                    _stub_function(NULL),
                    _stub_entry_point(NULL),
                    _method(target),
@@ -4501,16 +4502,16 @@ index 45e2d11..e5559a2 100644
                    _entry_bci(osr_bci),
                    _initial_gvn(NULL),
                    _for_igvn(NULL),
-@@ -668,8 +661,6 @@ Compile::Compile( ciEnv* ci_env, C2Compiler* compiler, ciMethod* target, int osr
-                   _inner_loops(0),
+@@ -678,8 +671,6 @@ Compile::Compile( ciEnv* ci_env, C2Compiler* compiler, ciMethod* target, int osr
                    _scratch_const_size(-1),
                    _in_scratch_emit_size(false),
+                   _coarsened_locks   (comp_arena(), 8, 0, NULL),
 -                  _dead_node_list(comp_arena()),
 -                  _dead_node_count(0),
  #ifndef PRODUCT
                    _trace_opto_output(directive->TraceOptoOutputOption),
                    _in_dump_cnt(0),
-@@ -677,9 +668,15 @@ Compile::Compile( ciEnv* ci_env, C2Compiler* compiler, ciMethod* target, int osr
+@@ -687,9 +678,15 @@ Compile::Compile( ciEnv* ci_env, C2Compiler* compiler, ciMethod* target, int osr
  #endif
                    _congraph(NULL),
                    _comp_arena(mtCompiler),
@@ -4526,7 +4527,7 @@ index 45e2d11..e5559a2 100644
                    _replay_inline_data(NULL),
                    _late_inlines(comp_arena(), 2, 0, NULL),
                    _string_late_inlines(comp_arena(), 2, 0, NULL),
-@@ -962,9 +959,6 @@ Compile::Compile( ciEnv* ci_env,
+@@ -972,9 +969,6 @@ Compile::Compile( ciEnv* ci_env,
                    bool return_pc,
                    DirectiveSet* directive)
    : Phase(Compiler),
@@ -4535,8 +4536,8 @@ index 45e2d11..e5559a2 100644
 -    _log(ci_env->log()),
      _compile_id(0),
      _save_argument_registers(save_arg_registers),
-     _method(NULL),
-@@ -994,6 +988,10 @@ Compile::Compile( ciEnv* ci_env,
+     _do_locks_coarsening(false),
+@@ -1005,6 +999,10 @@ Compile::Compile( ciEnv* ci_env,
      _printer(NULL),
  #endif
      _comp_arena(mtCompiler),
@@ -4547,21 +4548,21 @@ index 45e2d11..e5559a2 100644
      _node_arena(mtCompiler),
      _old_arena(mtCompiler),
      _Compile_types(mtCompiler),
-@@ -2408,13 +2406,6 @@ void Compile::Optimize() {
-   bs->verify_gc_barriers(false);
- #endif
+@@ -2427,13 +2425,6 @@ void Compile::Optimize() {
+     igvn.optimize();
+   }
  
--  bs->barrier_insertion_phase(C, igvn);
--  if (failing())  return;
--
 -#ifdef ASSERT
 -  bs->verify_gc_barriers(false);
 -#endif
 -
-   {
-     TracePhase tp("macroExpand", &timers[_t_macroExpand]);
-     PhaseMacroExpand  mex(igvn);
-@@ -2996,29 +2987,6 @@ void Compile::final_graph_reshaping_impl( Node *n, Final_Reshape_Counts &frc) {
+-  bs->barrier_insertion_phase(C, igvn);
+-  if (failing())  return;
+-
+ #ifdef ASSERT
+   bs->verify_gc_barriers(false);
+ #endif
+@@ -3019,29 +3010,6 @@ void Compile::final_graph_reshaping_impl( Node *n, Final_Reshape_Counts &frc) {
      break;
    }
  
