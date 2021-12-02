@@ -1210,8 +1210,8 @@ export ARCH_DATA_MODEL=64
 # We use ourcppflags because the OpenJDK build seems to
 # pass EXTRA_CFLAGS to the HotSpot C++ compiler...
 # Explicitly set the C++ standard as the default has changed on GCC >= 6
-EXTRA_CFLAGS="%ourcppflags -Wno-error"
-EXTRA_CPP_FLAGS="%ourcppflags -Wno-error"
+EXTRA_CFLAGS="%ourcppflags -Wno-error -fstack-protector-all"
+EXTRA_CPP_FLAGS="%ourcppflags -Wno-error -fstack-protector-all"
 
 export EXTRA_CFLAGS
 
