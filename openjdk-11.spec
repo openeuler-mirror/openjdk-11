@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 0
+Release: 1
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -1645,6 +1645,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Fri Dec 3 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.13.7-1
+- correct spec file release number typo
+
 * Tue Oct 26 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.13.7-0
 - Update to 11.0.13+7 (GA)
 
