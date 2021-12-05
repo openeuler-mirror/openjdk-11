@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 0
+Release: 1
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -1210,8 +1210,8 @@ export ARCH_DATA_MODEL=64
 # We use ourcppflags because the OpenJDK build seems to
 # pass EXTRA_CFLAGS to the HotSpot C++ compiler...
 # Explicitly set the C++ standard as the default has changed on GCC >= 6
-EXTRA_CFLAGS="%ourcppflags -Wno-error"
-EXTRA_CPP_FLAGS="%ourcppflags -Wno-error"
+EXTRA_CFLAGS="%ourcppflags -Wno-error -fstack-protector-all"
+EXTRA_CPP_FLAGS="%ourcppflags -Wno-error -fstack-protector-all"
 
 export EXTRA_CFLAGS
 
@@ -1645,6 +1645,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Fri Dec 3 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.13.7-1
+- correct spec file release number typo
+
 * Tue Oct 26 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.13.7-0
 - Update to 11.0.13+7 (GA)
 
