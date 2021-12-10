@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 2
+Release: 3
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -864,6 +864,7 @@ Patch82: PS-introduce-UsePSRelaxedForwardee-to-enable-using-r.patch
 
 # 11.0.13
 Patch83: 8273111-Default-timezone-should-return-zone-ID-if-locatiome-is-valid-but-not-canonicalization-on-linux.patch
+Patch84: fix-memcpy-compile-warning-when-building-on-linux-x86.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1145,6 +1146,7 @@ pushd %{top_level_dir_name}
 %patch80 -p1
 %patch82 -p1
 %patch83 -p1
+%patch84 -p1
 popd # openjdk
 
 # %patch1000
@@ -1647,6 +1649,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Fri Dec 10 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.13.7-3
+- add fix-memcpy-compile-warning-when-building-on-linux-x86.patch
+
 * Fri Dec 10 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.13.7-2
 - add 8273111-Default-timezone-should-return-zone-ID-if-locatiome-is-valid-but-not-canonicalization-on-linux.patch
 
