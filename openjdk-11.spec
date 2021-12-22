@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 5
+Release: 6
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -1218,8 +1218,8 @@ export ARCH_DATA_MODEL=64
 # We use ourcppflags because the OpenJDK build seems to
 # pass EXTRA_CFLAGS to the HotSpot C++ compiler...
 # Explicitly set the C++ standard as the default has changed on GCC >= 6
-EXTRA_CFLAGS="%ourcppflags -Wno-error -fstack-protector-all"
-EXTRA_CPP_FLAGS="%ourcppflags -Wno-error -fstack-protector-all"
+EXTRA_CFLAGS="%ourcppflags -Wno-error"
+EXTRA_CPP_FLAGS="%ourcppflags -Wno-error"
 
 export EXTRA_CFLAGS
 
@@ -1653,6 +1653,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Tue Dec 21 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.13.7-6
+- delete stack protection
+
 * Thu Dec 16 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.13.7-5
 - add Delete-expired-certificate-globalsignr2ca.patch
 
