@@ -1,0 +1,190 @@
+diff --git a/src/java.base/share/classes/java/io/ObjectInputStream.java b/src/java.base/share/classes/java/io/ObjectInputStream.java
+index 78008081f..a77a5d5b6 100644
+--- a/src/java.base/share/classes/java/io/ObjectInputStream.java
++++ b/src/java.base/share/classes/java/io/ObjectInputStream.java
+@@ -306,6 +306,23 @@ public class ObjectInputStream
+             filterLogger = (filterLog.isLoggable(Logger.Level.DEBUG)
+                     || filterLog.isLoggable(Logger.Level.TRACE)) ? filterLog : null;
+         }
++
++        /*
++         * Logger for FastSerializer.
++         * Setup the FastSerializer logger if it is set to DEBUG.
++         * (Assuming it will not change).
++         */
++        static final System.Logger fastSerLogger;
++
++        static {
++            if (printFastSerializer) {
++                Logger fastSerLog = System.getLogger("fastSerializer");
++                fastSerLogger = (fastSerLog.isLoggable(Logger.Level.DEBUG))
++                        ? fastSerLog : null;
++            } else {
++                fastSerLogger = null;
++            }
++        }
+     }
+ 
+     /** filter stream for handling block data conversion */
+@@ -366,6 +383,14 @@ public class ObjectInputStream
+             new sun.security.action.GetBooleanAction(
+                     "fastSerializerEscapeMode")).booleanValue();
+ 
++    /**
++     *  value of  "printFastSerializer" property,
++     *  as true or false for printing FastSerializer logs.
++     */
++    private static final boolean printFastSerializer = java.security.AccessController.doPrivileged(
++            new sun.security.action.GetBooleanAction(
++                    "printFastSerializer")).booleanValue();
++
+     /**
+      * Creates an ObjectInputStream that reads from the specified InputStream.
+      * A serialization stream header is read from the stream and verified.
+@@ -988,7 +1013,7 @@ public class ObjectInputStream
+             if (s0 != STREAM_MAGIC_FAST || s1 != STREAM_VERSION) {
+                 if (s0 != STREAM_MAGIC) {
+                     throw new StreamCorruptedException(
+-                            String.format("invalid stream header: %04X%04X", s0, s1));
++                            String.format("invalid stream header: %04X%04X, and FastSerializer is activated", s0, s1));
+                 }
+ 
+                 if (!fastSerializerEscapeMode) {
+@@ -999,10 +1024,18 @@ public class ObjectInputStream
+ 
+                 // Escape to default serialization
+                 useFastSerializer = false;
++                if (Logging.fastSerLogger != null) {
++                    Logging.fastSerLogger.log(Logger.Level.DEBUG, "[Deserialize]: Escape and disable FastSerializer");
++                }
+             }
+         } else if (s0 != STREAM_MAGIC || s1 != STREAM_VERSION) {
++            if (s0 == STREAM_MAGIC_FAST && s1 == STREAM_VERSION) {
++                throw new StreamCorruptedException(
++                        String.format("invalid stream header: %04X%04X, and it is a FastSerializer stream", s0, s1));
++            } else {
+                 throw new StreamCorruptedException(
+                         String.format("invalid stream header: %04X%04X", s0, s1));
++            }
+         }
+     }
+ 
+@@ -2129,6 +2162,12 @@ public class ObjectInputStream
+         handles.finish(descHandle);
+         passHandle = descHandle;
+ 
++        if (Logging.fastSerLogger != null) {
++            Logging.fastSerLogger.log(Logger.Level.DEBUG,
++                "[Deserialize] useFastSerializer:{0}, Class name:{1}, SerialVersionUID:{2}, flags:{3}",
++                useFastSerializer, desc.getName(), desc.getSerialVersionUID(), desc.getFlags(this));
++        }
++
+         return desc;
+     }
+ 
+diff --git a/src/java.base/share/classes/java/io/ObjectOutputStream.java b/src/java.base/share/classes/java/io/ObjectOutputStream.java
+index 044924593..8935e61dc 100644
+--- a/src/java.base/share/classes/java/io/ObjectOutputStream.java
++++ b/src/java.base/share/classes/java/io/ObjectOutputStream.java
+@@ -175,6 +175,25 @@ public class ObjectOutputStream
+             new ReferenceQueue<>();
+     }
+ 
++    private static class Logging {
++        /*
++         * Logger for FastSerializer.
++         * Setup the FastSerializer logger if it is set to DEBUG.
++         * (Assuming it will not change).
++         */
++        static final System.Logger fastSerLogger;
++
++        static {
++            if (printFastSerializer) {
++                System.Logger fastSerLog = System.getLogger("fastSerializer");
++                fastSerLogger = (fastSerLog.isLoggable(System.Logger.Level.DEBUG))
++                        ? fastSerLog : null;
++            } else {
++                fastSerLogger = null;
++            }
++        }
++    }
++
+     /** filter stream for handling block data conversion */
+     private final BlockDataOutputStream bout;
+     /** obj -> wire handle map */
+@@ -223,6 +242,14 @@ public class ObjectOutputStream
+      */
+     private static final boolean useFastSerializer = UNSAFE.getUseFastSerializer();
+ 
++    /**
++     *  value of  "printFastSerializer" property,
++     *  as true or false for printing FastSerializer logs.
++     */
++    private static final boolean printFastSerializer = java.security.AccessController.doPrivileged(
++            new sun.security.action.GetBooleanAction(
++                    "printFastSerializer")).booleanValue();
++
+     /**
+      * Creates an ObjectOutputStream that writes to the specified OutputStream.
+      * This constructor writes the serialization stream header to the
+@@ -1301,6 +1328,12 @@ public class ObjectOutputStream
+         bout.writeByte(TC_CLASSDESC);
+         handles.assign(unshared ? null : desc);
+ 
++        if (Logging.fastSerLogger != null) {
++            Logging.fastSerLogger.log(System.Logger.Level.DEBUG,
++            "[Serialize]   useFastSerializer:{0}, Class name:{1}, SerialVersionUID:{2}, flags:{3}, protocol:{4}",
++            useFastSerializer, desc.getName(), desc.getSerialVersionUID(), desc.getFlags(this), protocol);
++        }
++
+         if (protocol == PROTOCOL_VERSION_1) {
+             // do not invoke class descriptor write hook with old protocol
+             if (useFastSerializer) {
+diff --git a/src/java.base/share/classes/java/io/ObjectStreamClass.java b/src/java.base/share/classes/java/io/ObjectStreamClass.java
+index ac3a92bef..a5d7d2d75 100644
+--- a/src/java.base/share/classes/java/io/ObjectStreamClass.java
++++ b/src/java.base/share/classes/java/io/ObjectStreamClass.java
+@@ -270,6 +270,40 @@ public class ObjectStreamClass implements Serializable {
+         return suid.longValue();
+     }
+ 
++    /**
++     * Return the flags for this class described by this descriptor. The flags
++     * means a set of bit masks for ObjectStreamClass, which indicate the status
++     * of SC_WRITE_METHOD, SC_SERIALIZABLE, SC_EXTERNALIZABLE, SC_BLOCK_DATA and
++     * SC_ENUM.
++     *
++     * @param serialStream ObjectOutputStream or ObjectInputStream
++     *
++     * @return the flags for this class described by this descriptor
++     */
++    public byte getFlags(Object serialStream) {
++        byte flags = 0;
++        if (externalizable) {
++            flags |= ObjectStreamConstants.SC_EXTERNALIZABLE;
++            if (serialStream instanceof ObjectOutputStream) {
++                int protocol = ((ObjectOutputStream)serialStream).getProtocolVersion();
++                if (protocol != ObjectStreamConstants.PROTOCOL_VERSION_1) {
++                    flags |= ObjectStreamConstants.SC_BLOCK_DATA;
++                }
++            } else if (serialStream instanceof ObjectInputStream) {
++                flags |= ObjectStreamConstants.SC_BLOCK_DATA;
++            }
++        } else if (serializable) {
++            flags |= ObjectStreamConstants.SC_SERIALIZABLE;
++        }
++        if (hasWriteObjectData) {
++            flags |= ObjectStreamConstants.SC_WRITE_METHOD;
++        }
++        if (isEnum) {
++            flags |= ObjectStreamConstants.SC_ENUM;
++        }
++        return flags;
++    }
++
+     /**
+      * Return the class in the local VM that this version is mapped to.  Null
+      * is returned if there is no corresponding local class.
+-- 
+2.19.0
+

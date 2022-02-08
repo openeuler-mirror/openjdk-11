@@ -1,0 +1,266 @@
+diff --git a/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp b/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp
+index 820b4bef9..db5c41cd3 100644
+--- a/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp
++++ b/src/hotspot/share/gc/parallel/parallelScavengeHeap.cpp
+@@ -525,6 +525,72 @@ void ParallelScavengeHeap::object_iterate(ObjectClosure* cl) {
+ }
+ 
+ 
++// The HeapBlockClaimer is used during parallel iteration over the heap,
++// allowing workers to claim heap areas ("blocks"), gaining exclusive rights to these.
++// The eden and survivor spaces are treated as single blocks as it is hard to divide
++// these spaces.
++// The old space is divided into fixed-size blocks.
++class HeapBlockClaimer : public StackObj {
++  size_t _claimed_index;
++
++public:
++  static const size_t InvalidIndex = SIZE_MAX;
++  static const size_t EdenIndex = 0;
++  static const size_t SurvivorIndex = 1;
++  static const size_t NumNonOldGenClaims = 2;
++
++  HeapBlockClaimer() : _claimed_index(EdenIndex) { }
++  // Claim the block and get the block index.
++  size_t claim_and_get_block() {
++    size_t block_index;
++    block_index = Atomic::add(1u, &_claimed_index) - 1;
++
++    PSOldGen* old_gen = ParallelScavengeHeap::heap()->old_gen();
++    size_t num_claims = old_gen->num_iterable_blocks() + NumNonOldGenClaims;
++
++    return block_index < num_claims ? block_index : InvalidIndex;
++  }
++};
++
++void ParallelScavengeHeap::object_iterate_parallel(ObjectClosure* cl,
++                                                   HeapBlockClaimer* claimer) {
++  size_t block_index = claimer->claim_and_get_block();
++  // Iterate until all blocks are claimed
++  if (block_index == HeapBlockClaimer::EdenIndex) {
++    young_gen()->eden_space()->object_iterate(cl);
++    block_index = claimer->claim_and_get_block();
++  }
++  if (block_index == HeapBlockClaimer::SurvivorIndex) {
++    young_gen()->from_space()->object_iterate(cl);
++    young_gen()->to_space()->object_iterate(cl);
++    block_index = claimer->claim_and_get_block();
++  }
++  while (block_index != HeapBlockClaimer::InvalidIndex) {
++    old_gen()->object_iterate_block(cl, block_index - HeapBlockClaimer::NumNonOldGenClaims);
++    block_index = claimer->claim_and_get_block();
++  }
++}
++
++class PSScavengeParallelObjectIterator : public ParallelObjectIterator {
++private:
++  ParallelScavengeHeap*  _heap;
++  HeapBlockClaimer      _claimer;
++
++public:
++  PSScavengeParallelObjectIterator() :
++    _heap(ParallelScavengeHeap::heap()),
++    _claimer() {}
++
++  virtual void object_iterate(ObjectClosure* cl, uint worker_id) {
++    _heap->object_iterate_parallel(cl, &_claimer);
++  }
++};
++
++ParallelObjectIterator* ParallelScavengeHeap::parallel_object_iterator(uint thread_num) {
++  return new PSScavengeParallelObjectIterator();
++}
++
++
+ HeapWord* ParallelScavengeHeap::block_start(const void* addr) const {
+   if (young_gen()->is_in_reserved(addr)) {
+     assert(young_gen()->is_in(addr),
+diff --git a/src/hotspot/share/gc/parallel/parallelScavengeHeap.hpp b/src/hotspot/share/gc/parallel/parallelScavengeHeap.hpp
+index 82aeba67a..b7c481949 100644
+--- a/src/hotspot/share/gc/parallel/parallelScavengeHeap.hpp
++++ b/src/hotspot/share/gc/parallel/parallelScavengeHeap.hpp
+@@ -44,6 +44,7 @@
+ class AdjoiningGenerations;
+ class GCHeapSummary;
+ class GCTaskManager;
++class HeapBlockClaimer;
+ class MemoryManager;
+ class MemoryPool;
+ class PSAdaptiveSizePolicy;
+@@ -80,6 +81,8 @@ class ParallelScavengeHeap : public CollectedHeap {
+   MemoryPool* _survivor_pool;
+   MemoryPool* _old_pool;
+ 
++  WorkGang _workers;
++
+   virtual void initialize_serviceability();
+ 
+   void trace_heap(GCWhen::Type when, const GCTracer* tracer);
+@@ -94,7 +97,20 @@ class ParallelScavengeHeap : public CollectedHeap {
+ 
+  public:
+   ParallelScavengeHeap(GenerationSizer* policy) :
+-    CollectedHeap(), _collector_policy(policy), _death_march_count(0) { }
++    CollectedHeap(),
++    _collector_policy(policy),
++    _death_march_count(0),
++    _young_manager(NULL),
++    _old_manager(NULL),
++    _eden_pool(NULL),
++    _survivor_pool(NULL),
++    _old_pool(NULL),
++    _workers("GC Thread",
++            ParallelGCThreads,
++            true /* are_GC_task_threads */,
++            false /* are_ConcurrentGC_threads */) {
++    _workers.initialize_workers();
++  }
+ 
+   // For use by VM operations
+   enum CollectionType {
+@@ -218,6 +234,8 @@ class ParallelScavengeHeap : public CollectedHeap {
+ 
+   void object_iterate(ObjectClosure* cl);
+   void safe_object_iterate(ObjectClosure* cl) { object_iterate(cl); }
++  void object_iterate_parallel(ObjectClosure* cl, HeapBlockClaimer* claimer);
++  virtual ParallelObjectIterator* parallel_object_iterator(uint thread_num);
+ 
+   HeapWord* block_start(const void* addr) const;
+   size_t block_size(const HeapWord* addr) const;
+@@ -232,6 +250,7 @@ class ParallelScavengeHeap : public CollectedHeap {
+   virtual void print_gc_threads_on(outputStream* st) const;
+   virtual void gc_threads_do(ThreadClosure* tc) const;
+   virtual void print_tracing_info() const;
++  virtual WorkGang* get_safepoint_workers() { return &_workers; }
+ 
+   void verify(VerifyOption option /* ignored */);
+ 
+diff --git a/src/hotspot/share/gc/parallel/psOldGen.cpp b/src/hotspot/share/gc/parallel/psOldGen.cpp
+index 486bb7c87..830b1b758 100644
+--- a/src/hotspot/share/gc/parallel/psOldGen.cpp
++++ b/src/hotspot/share/gc/parallel/psOldGen.cpp
+@@ -213,6 +213,38 @@ HeapWord* PSOldGen::allocate(size_t word_size) {
+   return res;
+ }
+ 
++size_t PSOldGen::num_iterable_blocks() const {
++  return (object_space()->used_in_bytes() + IterateBlockSize - 1) / IterateBlockSize;
++}
++
++void PSOldGen::object_iterate_block(ObjectClosure* cl, size_t block_index) {
++  size_t block_word_size = IterateBlockSize / HeapWordSize;
++  assert((block_word_size % (ObjectStartArray::block_size)) == 0,
++         "Block size not a multiple of start_array block");
++
++  MutableSpace *space = object_space();
++
++  HeapWord* begin = space->bottom() + block_index * block_word_size;
++  HeapWord* end = MIN2(space->top(), begin + block_word_size);
++
++  if (!start_array()->object_starts_in_range(begin, end)) {
++    return;
++  }
++
++  // Get object starting at or reaching into this block.
++  HeapWord* start = start_array()->object_start(begin);
++  if (start < begin) {
++    start += oop(start)->size();
++  }
++  assert(start >= begin,
++         "Object address" PTR_FORMAT " must be larger or equal to block address at " PTR_FORMAT,
++         p2i(start), p2i(begin));
++  // Iterate all objects until the end.
++  for (HeapWord* p = start; p < end; p += oop(p)->size()) {
++    cl->do_object(oop(p));
++  }
++}
++
+ HeapWord* PSOldGen::expand_and_allocate(size_t word_size) {
+   expand(word_size*HeapWordSize);
+   if (GCExpandToAllocateDelayMillis > 0) {
+diff --git a/src/hotspot/share/gc/parallel/psOldGen.hpp b/src/hotspot/share/gc/parallel/psOldGen.hpp
+index fa27f5a04..fa6e4849b 100644
+--- a/src/hotspot/share/gc/parallel/psOldGen.hpp
++++ b/src/hotspot/share/gc/parallel/psOldGen.hpp
+@@ -59,6 +59,9 @@ class PSOldGen : public CHeapObj<mtGC> {
+   const size_t _min_gen_size;
+   const size_t _max_gen_size;
+ 
++  // Block size for parallel iteration
++  static const size_t IterateBlockSize = 1024 * 1024;
++
+   // Used when initializing the _name field.
+   static inline const char* select_name();
+ 
+@@ -195,6 +198,14 @@ class PSOldGen : public CHeapObj<mtGC> {
+   void oop_iterate(OopIterateClosure* cl) { object_space()->oop_iterate(cl); }
+   void object_iterate(ObjectClosure* cl) { object_space()->object_iterate(cl); }
+ 
++  // Number of blocks to be iterated over in the used part of old gen.
++  size_t num_iterable_blocks() const;
++  // Iterate the objects starting in block block_index within [bottom, top) of the
++  // old gen. The object just reaching into this block is not iterated over.
++  // A block is an evenly sized non-overlapping part of the old gen of
++  // IterateBlockSize bytes.
++  void object_iterate_block(ObjectClosure* cl, size_t block_index);
++
+   // Debugging - do not use for time critical operations
+   virtual void print() const;
+   virtual void print_on(outputStream* st) const;
+diff --git a/test/jdk/sun/tools/jmap/BasicJMapTest.java b/test/jdk/sun/tools/jmap/BasicJMapTest.java
+index ad890f880..8658e6e5a 100644
+--- a/test/jdk/sun/tools/jmap/BasicJMapTest.java
++++ b/test/jdk/sun/tools/jmap/BasicJMapTest.java
+@@ -46,6 +46,34 @@ import jdk.testlibrary.ProcessTools;
+  * @run main/timeout=240 BasicJMapTest
+  */
+ 
++/*
++ * @test id=Parallel
++ * @summary Unit test for jmap utility (Parallel GC)
++ * @key intermittent
++ * @library /lib/testlibrary
++ * @library /test/lib
++ * @build jdk.testlibrary.*
++ * @build jdk.test.lib.hprof.*
++ * @build jdk.test.lib.hprof.model.*
++ * @build jdk.test.lib.hprof.parser.*
++ * @build jdk.test.lib.hprof.util.*
++ * @run main/othervm/timeout=240 -XX:+UseParallelGC BasicJMapTest
++ */
++
++/*
++ * @test id=G1
++ * @summary Unit test for jmap utility (G1 GC)
++ * @key intermittent
++ * @library /lib/testlibrary
++ * @library /test/lib
++ * @build jdk.testlibrary.*
++ * @build jdk.test.lib.hprof.*
++ * @build jdk.test.lib.hprof.model.*
++ * @build jdk.test.lib.hprof.parser.*
++ * @build jdk.test.lib.hprof.util.*
++ * @run main/othervm/timeout=240 -XX:+UseG1GC BasicJMapTest
++ */
++
+ /*
+  * @test id=CMS
+  * @summary Unit test for jmap utility (CMS GC)
+@@ -98,6 +126,17 @@ public class BasicJMapTest {
+         output.shouldHaveExitValue(0);
+     }
+ 
++    private static void testHistoMultipleParameters() throws Exception {
++        OutputAnalyzer output = jmap("-histo:parallel=2,live");
++        output.shouldHaveExitValue(0);
++        output = jmap("-histo:live,parallel=2");
++        output.shouldHaveExitValue(0);
++        output = jmap("-histo:parallel=2,all");
++        output.shouldHaveExitValue(0);
++        output = jmap("-histo:all,parallel=2");
++        output.shouldHaveExitValue(0);
++    }
++
+     private static void testFinalizerInfo() throws Exception {
+         OutputAnalyzer output = jmap("-finalizerinfo");
+         output.shouldHaveExitValue(0);
