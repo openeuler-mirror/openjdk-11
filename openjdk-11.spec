@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 0
+Release: 1
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -871,6 +871,7 @@ Patch85: 8239017-cmp-baseline-fails-because-of-differences-in-TimeZoneNames_kea.
 # 11.0.14
 Patch86: 8252103-support-Jmap-parallel-heap-inspection.patch
 Patch87: fix_macroAssembler_missing_matcher_header_file_causing_build_failure.patch
+Patch88: fix-error-in-build-core-variants.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1158,6 +1159,7 @@ pushd %{top_level_dir_name}
 %patch85 -p1
 %patch86 -p1
 %patch87 -p1
+%patch88 -p1
 popd # openjdk
 
 # %patch1000
@@ -1660,6 +1662,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Wed Feb 9 2022 kuenking111 <wangkun49@huawei.com> - 1:11.0.14.9-1
+- add fix-error-in-build-core-variants.patch
+
 * Tue Feb 8 2022 kuenking111 <wangkun49@huawei.com> - 1:11.0.14.9-0
 - Update to 11.0.14+9 (GA)
 
