@@ -998,44 +998,28 @@ index 279ff79..f9b2b3b 100644
  void MacroAssembler::verify_heapbase(const char* msg) {
  #if 0
 diff --git a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp
-index af8056b..44497ea 100644
+index edcfd9ceb..60b728e94 100644
 --- a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp
 +++ b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp
-@@ -440,12 +440,18 @@ private:
+@@ -462,12 +462,18 @@ private:
    int push(unsigned int bitset, Register stack);
    int pop(unsigned int bitset, Register stack);
- 
+
 +  int push_fp(unsigned int bitset, Register stack);
 +  int pop_fp(unsigned int bitset, Register stack);
 +
    void mov(Register dst, Address a);
- 
+
  public:
    void push(RegSet regs, Register stack) { if (regs.bits()) push(regs.bits(), stack); }
    void pop(RegSet regs, Register stack) { if (regs.bits()) pop(regs.bits(), stack); }
- 
+
 +  void push_fp(RegSet regs, Register stack) { if (regs.bits()) push_fp(regs.bits(), stack); }
 +  void pop_fp(RegSet regs, Register stack) { if (regs.bits()) pop_fp(regs.bits(), stack); }
 +
+   static RegSet call_clobbered_registers();
+
    // Push and pop everything that might be clobbered by a native
-   // runtime call except rscratch1 and rscratch2.  (They are always
-   // scratch, so we don't have to protect them.)  Only save the lower
-diff --git a/src/hotspot/cpu/aarch64/register_aarch64.hpp b/src/hotspot/cpu/aarch64/register_aarch64.hpp
-index 8cda52a..5f7662c 100644
---- a/src/hotspot/cpu/aarch64/register_aarch64.hpp
-+++ b/src/hotspot/cpu/aarch64/register_aarch64.hpp
-@@ -230,6 +230,11 @@ public:
-     return *this;
-   }
- 
-+  RegSet &operator-=(const RegSet aSet) {
-+    *this = *this - aSet;
-+    return *this;
-+  }
-+
-   static RegSet of(Register r1) {
-     return RegSet(r1);
-   }
 diff --git a/src/hotspot/cpu/aarch64/templateInterpreterGenerator_aarch64.cpp b/src/hotspot/cpu/aarch64/templateInterpreterGenerator_aarch64.cpp
 index c162024..6e4eb1a 100644
 --- a/src/hotspot/cpu/aarch64/templateInterpreterGenerator_aarch64.cpp
@@ -4695,29 +4679,10 @@ index 05ec9fa..16b80bf 100644
      case Op_LoadS:
      case Op_LoadKlass:
 diff --git a/src/hotspot/share/opto/loopnode.cpp b/src/hotspot/share/opto/loopnode.cpp
-index 6aff3d5..38f0449 100644
+index d7eb3996b..366d0f378 100644
 --- a/src/hotspot/share/opto/loopnode.cpp
 +++ b/src/hotspot/share/opto/loopnode.cpp
-@@ -1005,18 +1005,6 @@ void LoopNode::verify_strip_mined(int expect_skeleton) const {
-       }
-     }
- 
--    if (UseZGC && !inner_out->in(0)->is_CountedLoopEnd()) {
--      // In some very special cases there can be a load that has no other uses than the
--      // counted loop safepoint. Then its loadbarrier will be placed between the inner
--      // loop exit and the safepoint. This is very rare
--
--      Node* ifnode = inner_out->in(1)->in(0);
--      // Region->IfTrue->If == Region->Iffalse->If
--      if (ifnode == inner_out->in(2)->in(0)) {
--        inner_out = ifnode->in(0);
--      }
--    }
--
-     CountedLoopEndNode* cle = inner_out->in(0)->as_CountedLoopEnd();
-     assert(cle == inner->loopexit_or_null(), "mismatch");
-     bool has_skeleton = outer_le->in(1)->bottom_type()->singleton() && outer_le->in(1)->bottom_type()->is_int()->get_con() == 0;
-@@ -4273,7 +4261,6 @@ void PhaseIdealLoop::build_loop_late_post( Node *n ) {
+@@ -4300,7 +4300,6 @@ void PhaseIdealLoop::build_loop_late_post( Node *n ) {
      case Op_LoadL:
      case Op_LoadS:
      case Op_LoadP:

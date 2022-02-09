@@ -114,7 +114,7 @@
 
 # New Version-String scheme-style defines
 %global majorver 11
-%global securityver 13
+%global securityver 14
 # buildjdkver is usually same as %%{majorver},
 # but in time of bootstrap of next jdk, it is majorver-1,
 # and this it is better to change it here, on single place
@@ -135,7 +135,7 @@
 
 %global project		jdk-updates
 %global repo		jdk11u
-%global revision	jdk-11.0.13-ga
+%global revision	jdk-11.0.14-ga
 %global full_revision %{project}-%{repo}-%{revision}
 # priority must be 7 digits in total
 # setting to 1, so debug ones can have 0
@@ -506,7 +506,7 @@ exit 0
 %dir %{etcjavadir -- %{?1}}/conf/security/policy/limited
 %dir %{etcjavadir -- %{?1}}/conf/security/policy/unlimited
 %config(noreplace) %{etcjavadir -- %{?1}}/lib/security/default.policy
-%config(noreplace) %{etcjavadir -- %{?1}}/lib/security/blacklisted.certs
+%config(noreplace) %{etcjavadir -- %{?1}}/lib/security/blocked.certs
 %config(noreplace) %{etcjavadir -- %{?1}}/lib/security/public_suffix_list.dat
 %config(noreplace) %{etcjavadir -- %{?1}}/conf/security/policy/limited/exempt_local.policy
 %config(noreplace) %{etcjavadir -- %{?1}}/conf/security/policy/limited/default_local.policy
@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 6
+Release: 0
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -825,7 +825,8 @@ Patch35: NUMA-Aware-Implementation-humongous-region.patch
 Patch36: ZGC-in-c1-load-barrier-d0-and-d1-registers-miss-restoring.patch
 Patch37: fix-compile-error-without-disable-precompiled-headers.patch
 Patch38: fast-serializer-jdk11.patch
-Patch39: fix-jck-failure-on-FastSerializer.patch
+Patch39: dfx-enhancement-of-FastSerializer.patch
+Patch40: fix-jck-failure-on-FastSerializer.patch
 Patch42: 8229496-SIGFPE-division-by-zero-in-C2-OSR-compiled-method.patch
 Patch45: leaf-optimize-in-ParallelScanvageGC.patch
 Patch46: ZGC-correct-free-heap-size-excluding-waste-in-rule_allocation_rate.patch
@@ -834,16 +835,17 @@ Patch48: 8205921-Optimizing-best_of_2-work-stealing-queue-selection.patch
 
 # 11.0.9
 Patch55: 8215047-Task-terminators-do-not-complete-termination-in-consistent-state.patch
-Patch57: add-zgc-parameter-adaptation-feature.patch
-Patch58: add-integerCache-feature.patch
-Patch59: add-SVE-backend-feature.patch
+Patch56: add-zgc-parameter-adaptation-feature.patch
+Patch57: add-integerCache-feature.patch
+Patch58: 8231441-1-AArch64-Initial-SVE-backend-support.patch
+Patch59: 8231441-2-AArch64-Initial-SVE-backend-support.patch
+Patch60: 8231441-3-AArch64-Initial-SVE-backend-support.patch
 
 # 11.0.10
 Patch61: downgrade-the-symver-of-log2f-posix-spawn.patch
 Patch62: 8254078-DataOutputStream-is-very-slow-post-disabling.patch
 Patch65: add-LazyBox-feature.patch
 Patch66: add-G1-Full-GC-optimization.patch
-Patch67: 8214535-support-Jmap-parallel.patch
 Patch68: src-openeuler-openjdk-11-resolve-code-inconsistencies.patch 
 Patch69: G1-iterate-region-by-bitmap-rather-than-obj-size-in.patch
 
@@ -866,7 +868,9 @@ Patch82: PS-introduce-UsePSRelaxedForwardee-to-enable-using-r.patch
 Patch83: 8273111-Default-timezone-should-return-zone-ID-if-locatiome-is-valid-but-not-canonicalization-on-linux.patch
 Patch84: fix-memcpy-compile-warning-when-building-on-linux-x86.patch
 Patch85: 8239017-cmp-baseline-fails-because-of-differences-in-TimeZoneNames_kea.patch
-Patch86: Delete-expired-certificate-globalsignr2ca.patch
+# 11.0.14
+Patch86: 8252103-support-Jmap-parallel-heap-inspection.patch
+Patch87: fix_macroAssembler_missing_matcher_header_file_causing_build_failure.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1120,20 +1124,22 @@ pushd %{top_level_dir_name}
 %patch37 -p1
 %patch38 -p1
 %patch39 -p1
+%patch40 -p1
 %patch42 -p1
 %patch45 -p1
 %patch46 -p1
 %patch47 -p1
 %patch48 -p1
 %patch55 -p1
+%patch56 -p1
 %patch57 -p1
 %patch58 -p1
 %patch59 -p1
+%patch60 -p1
 %patch61 -p1
 %patch62 -p1
 %patch65 -p1
 %patch66 -p1
-%patch67 -p1
 %patch68 -p1
 %patch69 -p1
 %patch71 -p1
@@ -1151,6 +1157,7 @@ pushd %{top_level_dir_name}
 %patch84 -p1
 %patch85 -p1
 %patch86 -p1
+%patch87 -p1
 popd # openjdk
 
 # %patch1000
@@ -1653,6 +1660,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Tue Feb 8 2022 kuenking111 <wangkun49@huawei.com> - 1:11.0.14.9-0
+- Update to 11.0.14+9 (GA)
+
 * Tue Dec 21 2021 kuenking111 <wangkun49@huawei.com> - 1:11.0.13.7-6
 - delete stack protection
 
