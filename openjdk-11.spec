@@ -1,4 +1,4 @@
-# RPM conditionals so as to be able to dynamically produce
+# RPM conditionals so as to be able to dynamically producef
 
 # slowdebug/release builds. See:
 # http://rpm.org/user_doc/conditional_builds.html
@@ -1752,10 +1752,10 @@ require "copy_jdk_configs.lua"
 * Sun Feb 7 2021 jdkboy <ge.guo@huawei.com> - 1:11.0.10.9-2
 - remove redundant file info
 
-* Thu Feb 5 2021 eapen <zhangyipeng7@huawei.com> - 1:11.0.10.9-1
+* Fri Feb 5 2021 eapen <zhangyipeng7@huawei.com> - 1:11.0.10.9-1
 - add 8240353.patch
 
-* Thu Feb 5 2021 eapen <zhangyipeng7@huawei.com> - 1:11.0.10.9-0
+* Fri Feb 5 2021 eapen <zhangyipeng7@huawei.com> - 1:11.0.10.9-0
 - update to 11.0.10+9(GA)
 - use system harfbuzz now this is supported
 
@@ -1820,7 +1820,7 @@ require "copy_jdk_configs.lua"
 * Mon Sep 7 2020 noah <hedongbo@huawei.com> - 1:11.0.8.10-5
 - Delete some file header information
 
-* Tue Aug 31 2020 jdkboy <guoge1@huawei.com> - 1:11.0.8.10-4
+* Mon Aug 31 2020 jdkboy <guoge1@huawei.com> - 1:11.0.8.10-4
 - Add 8210473-JEP-345-NUMA-Aware-Memory-Allocation-for-G1.patch
 - Add 8210461-AArch64-Math.cos-intrinsic-gives-incorrect-results.patch
 - Add NUMA-Aware-Implementation-humongous-region.patch
@@ -1844,13 +1844,13 @@ require "copy_jdk_configs.lua"
 * Sat Jul 18 2020 jvmboy <hedongbo@huawei.com> - 1:11.0.8.10-0
 - Update to 11.0.8+10 (GA)
 
-* Thu Jun 9 2020 jdkboy <guoge1@huawei.com> - 1:11.0.7.10-5
+* The Jun 9 2020 jdkboy <guoge1@huawei.com> - 1:11.0.7.10-5
 - Version support fulljavaver.buildver
 - Judge with_systemtap
 - 8228407: JVM crashes with shared archive file mismatch
 - Remove javadoc-slowdebug
 
-* Thu May 25 2020 noah <hedongbo@huawei.com> - 1:11.0.7.10-4
+* Mon May 25 2020 noah <hedongbo@huawei.com> - 1:11.0.7.10-4
 - Support nss, systemtap and desktop
 
 * Thu May 21 2020 jdkboy <guoge1@huawei.com> - 1:11.0.7.10-3
