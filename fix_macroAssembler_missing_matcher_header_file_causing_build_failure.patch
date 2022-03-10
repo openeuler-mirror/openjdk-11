@@ -1,0 +1,15 @@
+diff --git a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
+index b6b070e62..60dc92953 100644
+--- a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
++++ b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
+@@ -50,6 +50,7 @@
+ #include "c1/c1_LIRAssembler.hpp"
+ #endif
+ #ifdef COMPILER2
++#include "opto/matcher.hpp"
+ #include "oops/oop.hpp"
+ #include "opto/compile.hpp"
+ #include "opto/intrinsicnode.hpp"
+-- 
+2.19.0
+
