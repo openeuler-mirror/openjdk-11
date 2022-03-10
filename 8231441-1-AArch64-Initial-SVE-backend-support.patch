@@ -1,0 +1,523 @@
+diff --git a/src/hotspot/cpu/aarch64/assembler_aarch64.hpp b/src/hotspot/cpu/aarch64/assembler_aarch64.hpp
+index 0824ca393..228b82660 100644
+--- a/src/hotspot/cpu/aarch64/assembler_aarch64.hpp
++++ b/src/hotspot/cpu/aarch64/assembler_aarch64.hpp
+@@ -2670,15 +2670,28 @@ public:
+ #undef INSN
+ 
+ void ext(FloatRegister Vd, SIMD_Arrangement T, FloatRegister Vn, FloatRegister Vm, int index)
+-  {
+-    starti;
+-    assert(T == T8B || T == T16B, "invalid arrangement");
+-    assert((T == T8B && index <= 0b0111) || (T == T16B && index <= 0b1111), "Invalid index value");
+-    f(0, 31), f((int)T & 1, 30), f(0b101110000, 29, 21);
+-    rf(Vm, 16), f(0, 15), f(index, 14, 11);
+-    f(0, 10), rf(Vn, 5), rf(Vd, 0);
++{
++  starti;
++  assert(T == T8B || T == T16B, "invalid arrangement");
++  assert((T == T8B && index <= 0b0111) || (T == T16B && index <= 0b1111), "Invalid index value");
++  f(0, 31), f((int)T & 1, 30), f(0b101110000, 29, 21);
++  rf(Vm, 16), f(0, 15), f(index, 14, 11);
++  f(0, 10), rf(Vn, 5), rf(Vd, 0);
++}
++
++// SVE inc/dec register by element count
++#define INSN(NAME, op) \
++  void NAME(Register Xdn, SIMD_RegVariant T, unsigned imm4 = 1, int pattern = 0b11111) { \
++    starti;                                                                              \
++    assert(T != Q, "invalid size");                                                      \
++    f(0b00000100,31, 24), f(T, 23, 22), f(0b11, 21, 20);                                 \
++    f(imm4 - 1, 19, 16), f(0b11100, 15, 11), f(op, 10), f(pattern, 9, 5), rf(Xdn, 0);    \
+   }
+ 
++  INSN(sve_inc, 0);
++  INSN(sve_dec, 1);
++#undef INSN
++
+   Assembler(CodeBuffer* code) : AbstractAssembler(code) {
+   }
+ 
+diff --git a/src/hotspot/cpu/aarch64/globals_aarch64.hpp b/src/hotspot/cpu/aarch64/globals_aarch64.hpp
+index 071845e5b..f26ea2a8b 100644
+--- a/src/hotspot/cpu/aarch64/globals_aarch64.hpp
++++ b/src/hotspot/cpu/aarch64/globals_aarch64.hpp
+@@ -112,6 +112,9 @@ define_pd_global(intx, InlineSmallCode,          1000);
+           "Avoid generating unaligned memory accesses")                 \
+   product(bool, UseLSE, false,                                          \
+           "Use LSE instructions")                                       \
++  product(uint, UseSVE, 0,                                              \
++          "Highest supported SVE instruction set version")              \
++          range(0, 2)                                                   \
+   product(bool, UseBlockZeroing, true,                                  \
+           "Use DC ZVA for block zeroing")                               \
+   product(intx, BlockZeroingLowLimit, 256,                              \
+diff --git a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
+index aecab30c1..5d10c08a6 100644
+--- a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
++++ b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
+@@ -5879,3 +5879,14 @@ void MacroAssembler::get_thread(Register dst) {
+ 
+   pop(saved_regs, sp);
+ }
++
++void MacroAssembler::verify_sve_vector_length() {
++  Label verify_ok;
++  assert(UseSVE > 0, "should only be used for SVE");
++  movw(rscratch1, zr);
++  sve_inc(rscratch1, B);
++  subsw(zr, rscratch1, VM_Version::get_initial_sve_vector_length());
++  br(EQ, verify_ok);
++  stop("Error: SVE vector length has changed since jvm startup");
++  bind(verify_ok);
++}
+diff --git a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp
+index 85fdc0c88..1e7a7401f 100644
+--- a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp
++++ b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp
+@@ -938,6 +938,7 @@ public:
+ 
+   Address argument_address(RegisterOrConstant arg_slot, int extra_slot_offset = 0);
+ 
++  void verify_sve_vector_length();
+ 
+   // Debugging
+ 
+diff --git a/src/hotspot/cpu/aarch64/sharedRuntime_aarch64.cpp b/src/hotspot/cpu/aarch64/sharedRuntime_aarch64.cpp
+index 3d3cc3a1e..dbad48582 100644
+--- a/src/hotspot/cpu/aarch64/sharedRuntime_aarch64.cpp
++++ b/src/hotspot/cpu/aarch64/sharedRuntime_aarch64.cpp
+@@ -1829,6 +1829,11 @@ nmethod* SharedRuntime::generate_native_wrapper(MacroAssembler* masm,
+     __ strw(rscratch1, Address(rthread, JavaThread::thread_state_offset()));
+   }
+ 
++  if (UseSVE > 0) {
++    // Make sure that jni code does not change SVE vector length.
++    __ verify_sve_vector_length();
++  }
++
+   // check for safepoint operation in progress and/or pending suspend requests
+   Label safepoint_in_progress, safepoint_in_progress_done;
+   {
+diff --git a/src/hotspot/cpu/aarch64/templateInterpreterGenerator_aarch64.cpp b/src/hotspot/cpu/aarch64/templateInterpreterGenerator_aarch64.cpp
+index 03d7a6e2d..42f301531 100644
+--- a/src/hotspot/cpu/aarch64/templateInterpreterGenerator_aarch64.cpp
++++ b/src/hotspot/cpu/aarch64/templateInterpreterGenerator_aarch64.cpp
+@@ -1377,6 +1377,11 @@ address TemplateInterpreterGenerator::generate_native_entry(bool synchronized) {
+   __ push(dtos);
+   __ push(ltos);
+ 
++  if (UseSVE > 0) {
++    // Make sure that jni code does not change SVE vector length.
++    __ verify_sve_vector_length();
++  }
++
+   // change thread state
+   __ mov(rscratch1, _thread_in_native_trans);
+   __ lea(rscratch2, Address(rthread, JavaThread::thread_state_offset()));
+diff --git a/src/hotspot/cpu/aarch64/vm_version_aarch64.cpp b/src/hotspot/cpu/aarch64/vm_version_aarch64.cpp
+index 0136f24f4..f9696fd08 100644
+--- a/src/hotspot/cpu/aarch64/vm_version_aarch64.cpp
++++ b/src/hotspot/cpu/aarch64/vm_version_aarch64.cpp
+@@ -40,6 +40,7 @@ int VM_Version::_model2;
+ int VM_Version::_variant;
+ int VM_Version::_revision;
+ int VM_Version::_stepping;
++int VM_Version::_initial_sve_vector_length;
+ 
+ int VM_Version::_zva_length;
+ int VM_Version::_dcache_line_size;
+@@ -177,6 +178,8 @@ void VM_Version::initialize() {
+   if (_features & CPU_SHA1)  strcat(buf, ", sha1");
+   if (_features & CPU_SHA2)  strcat(buf, ", sha256");
+   if (_features & CPU_LSE)   strcat(buf, ", lse");
++  if (_features & CPU_SVE) strcat(buf, ", sve");
++  if (_features & CPU_SVE2) strcat(buf, ", sve2");
+ 
+   _features_string = os::strdup(buf);
+ 
+@@ -312,6 +315,18 @@ void VM_Version::initialize() {
+     FLAG_SET_DEFAULT(UseBlockZeroing, false);
+   }
+ 
++  if (_features & CPU_SVE) {
++    if (FLAG_IS_DEFAULT(UseSVE)) {
++      FLAG_SET_DEFAULT(UseSVE, (_features & CPU_SVE2) ? 2 : 1);
++    }
++    if (UseSVE > 0) {
++      _initial_sve_vector_length = get_current_sve_vector_length();
++    }
++  } else if (UseSVE > 0) {
++    warning("UseSVE specified, but not supported on current CPU. Disabling SVE.");
++    FLAG_SET_DEFAULT(UseSVE, 0);
++  }
++
+   // This machine allows unaligned memory accesses
+   if (FLAG_IS_DEFAULT(UseUnalignedAccesses)) {
+     FLAG_SET_DEFAULT(UseUnalignedAccesses, true);
+@@ -345,6 +360,50 @@ void VM_Version::initialize() {
+     UseMontgomerySquareIntrinsic = true;
+   }
+ 
++  if (UseSVE > 0) {
++    if (FLAG_IS_DEFAULT(MaxVectorSize)) {
++      MaxVectorSize = _initial_sve_vector_length;
++    } else if (MaxVectorSize < 16) {
++      warning("SVE does not support vector length less than 16 bytes. Disabling SVE.");
++      UseSVE = 0;
++    } else if ((MaxVectorSize % 16) == 0 && is_power_of_2(MaxVectorSize)) {
++      int new_vl = set_and_get_current_sve_vector_length(MaxVectorSize);
++      _initial_sve_vector_length = new_vl;
++      // If MaxVectorSize is larger than system largest supported SVE vector length, above prctl()
++      // call will set task vector length to the system largest supported value. So, we also update
++      // MaxVectorSize to that largest supported value.
++      if (new_vl < 0) {
++        vm_exit_during_initialization(
++          err_msg("Current system does not support SVE vector length for MaxVectorSize: %d",
++                  (int)MaxVectorSize));
++      } else if (new_vl != MaxVectorSize) {
++        warning("Current system only supports max SVE vector length %d. Set MaxVectorSize to %d",
++                new_vl, new_vl);
++      }
++      MaxVectorSize = new_vl;
++    } else {
++      vm_exit_during_initialization(err_msg("Unsupported MaxVectorSize: %d", (int)MaxVectorSize));
++    }
++  }
++
++  if (UseSVE == 0) {  // NEON
++    int min_vector_size = 8;
++    int max_vector_size = 16;
++    if (!FLAG_IS_DEFAULT(MaxVectorSize)) {
++      if (!is_power_of_2(MaxVectorSize)) {
++        vm_exit_during_initialization(err_msg("Unsupported MaxVectorSize: %d", (int)MaxVectorSize));
++      } else if (MaxVectorSize < min_vector_size) {
++        warning("MaxVectorSize must be at least %i on this platform", min_vector_size);
++        FLAG_SET_DEFAULT(MaxVectorSize, min_vector_size);
++      } else if (MaxVectorSize > max_vector_size) {
++        warning("MaxVectorSize must be at most %i on this platform", max_vector_size);
++        FLAG_SET_DEFAULT(MaxVectorSize, max_vector_size);
++      }
++    } else {
++      FLAG_SET_DEFAULT(MaxVectorSize, 16);
++    }
++  }
++
+   if (FLAG_IS_DEFAULT(OptoScheduling)) {
+     OptoScheduling = true;
+   }
+diff --git a/src/hotspot/os_cpu/linux_aarch64/vm_version_linux_aarch64.cpp b/src/hotspot/os_cpu/linux_aarch64/vm_version_linux_aarch64.cpp
+index 5d943ff38..2763c1c6a 100644
+--- a/src/hotspot/os_cpu/linux_aarch64/vm_version_linux_aarch64.cpp
++++ b/src/hotspot/os_cpu/linux_aarch64/vm_version_linux_aarch64.cpp
+@@ -55,9 +55,35 @@
+ #define HWCAP_ATOMICS (1<<8)
+ #endif
+ 
++#ifndef HWCAP_SVE
++#define HWCAP_SVE (1 << 22)
++#endif
++
++#ifndef HWCAP2_SVE2
++#define HWCAP2_SVE2 (1 << 1)
++#endif
++
++#ifndef PR_SVE_GET_VL
++// For old toolchains which do not have SVE related macros defined.
++#define PR_SVE_SET_VL   50
++#define PR_SVE_GET_VL   51
++#endif
++
++int VM_Version::get_current_sve_vector_length() {
++  assert(_features & CPU_SVE, "should not call this");
++  return prctl(PR_SVE_GET_VL);
++}
++
++int VM_Version::set_and_get_current_sve_vector_length(int length) {
++  assert(_features & CPU_SVE, "should not call this");
++  int new_length = prctl(PR_SVE_SET_VL, length);
++  return new_length;
++}
++
+ void VM_Version::get_os_cpu_info() {
+ 
+   uint64_t auxv = getauxval(AT_HWCAP);
++  unsigned long auxv2 = getauxval(AT_HWCAP2);
+ 
+   STATIC_ASSERT(CPU_FP      == HWCAP_FP);
+   STATIC_ASSERT(CPU_ASIMD   == HWCAP_ASIMD);
+@@ -68,6 +94,8 @@ void VM_Version::get_os_cpu_info() {
+   STATIC_ASSERT(CPU_SHA2    == HWCAP_SHA2);
+   STATIC_ASSERT(CPU_CRC32   == HWCAP_CRC32);
+   STATIC_ASSERT(CPU_LSE     == HWCAP_ATOMICS);
++  STATIC_ASSERT(CPU_SVE     == HWCAP_SVE);
++
+   _features = auxv & (
+       HWCAP_FP      |
+       HWCAP_ASIMD   |
+@@ -77,7 +105,10 @@ void VM_Version::get_os_cpu_info() {
+       HWCAP_SHA1    |
+       HWCAP_SHA2    |
+       HWCAP_CRC32   |
+-      HWCAP_ATOMICS);
++      HWCAP_ATOMICS |
++      HWCAP_SVE);
++
++  if (auxv2 & HWCAP2_SVE2) _features |= CPU_SVE2;
+ 
+   uint64_t ctr_el0;
+   uint64_t dczid_el0;
+diff --git a/src/hotspot/cpu/aarch64/vm_version_aarch64.hpp b/src/hotspot/cpu/aarch64/vm_version_aarch64.hpp
+index 643e3d564..82e615241 100644
+--- a/src/hotspot/cpu/aarch64/vm_version_aarch64.hpp
++++ b/src/hotspot/cpu/aarch64/vm_version_aarch64.hpp
+@@ -40,6 +40,7 @@ protected:
+   static int _variant;
+   static int _revision;
+   static int _stepping;
++  static int _initial_sve_vector_length;
+ 
+   static int _zva_length;
+   static int _dcache_line_size;
+@@ -48,6 +49,13 @@ protected:
+   // Read additional info using OS-specific interfaces
+   static void get_os_cpu_info();
+ 
++
++  // Sets the SVE length and returns a new actual value or negative on error.
++  // If the len is larger than the system largest supported SVE vector length,
++  // the function sets the largest supported value.
++  static int set_and_get_current_sve_vector_length(int len);
++  static int get_current_sve_vector_length();
++
+ public:
+   // Initialization
+   static void initialize();
+@@ -91,6 +99,8 @@ public:
+     CPU_SHA2         = (1<<6),
+     CPU_CRC32        = (1<<7),
+     CPU_LSE          = (1<<8),
++    CPU_SVE          = (1<<22),
++    CPU_SVE2         = (1<<28),
+     // flags above must follow Linux HWCAP
+     CPU_STXR_PREFETCH= (1 << 29),
+     CPU_A53MAC       = (1 << 30),
+@@ -102,6 +112,7 @@ public:
+   static int cpu_model2()                     { return _model2; }
+   static int cpu_variant()                    { return _variant; }
+   static int cpu_revision()                   { return _revision; }
++  static int get_initial_sve_vector_length()  { return _initial_sve_vector_length; };
+ 
+   static bool is_zva_enabled() { return 0 <= _zva_length; }
+   static int zva_length() {
+diff --git a/test/hotspot/jtreg/compiler/c2/aarch64/TestSVEWithJNI.java b/test/hotspot/jtreg/compiler/c2/aarch64/TestSVEWithJNI.java
+new file mode 100644
+index 000000000..dc15ca800
+--- /dev/null
++++ b/test/hotspot/jtreg/compiler/c2/aarch64/TestSVEWithJNI.java
+@@ -0,0 +1,128 @@
++/*
++* Copyright (c) 2020, Oracle and/or its affiliates. All rights reserved.
++* Copyright (c) 2020, Arm Limited. All rights reserved.
++* DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++*
++* This code is free software; you can redistribute it and/or modify it
++* under the terms of the GNU General Public License version 2 only, as
++* published by the Free Software Foundation.
++*
++* This code is distributed in the hope that it will be useful, but WITHOUT
++* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++* FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++* version 2 for more details (a copy is included in the LICENSE file that
++* accompanied this code).
++*
++* You should have received a copy of the GNU General Public License version
++* 2 along with this work; if not, write to the Free Software Foundation,
++* Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++*
++* Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++* or visit www.oracle.com if you need additional information or have any
++* questions.
++*
++*/
++
++/**
++ * @test
++ *
++ * @requires os.arch == "aarch64" & vm.compiler2.enabled
++ * @summary Verify VM SVE checking behavior
++ * @library /test/lib
++ * @run main/othervm/native compiler.c2.aarch64.TestSVEWithJNI
++ *
++ */
++
++package compiler.c2.aarch64;
++
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.List;
++import jdk.test.lib.process.ProcessTools;
++import jdk.test.lib.process.OutputAnalyzer;
++
++public class TestSVEWithJNI {
++    static {
++        System.loadLibrary("TestSVEWithJNI");
++    }
++
++    static final int EXIT_CODE = 99;
++    // Returns a nonnegative on success, or a negative value on error.
++    public static native int setVectorLength(int arg);
++    // Returns a nonnegative value on success, or a negative value on error.
++    public static native int getVectorLength();
++
++    public static final String MSG = "Current Vector Size: ";
++    public static void testNormal() {
++        int vlen = getVectorLength();
++        System.out.println(MSG + vlen);
++        // Should be fine if no vector length changed.
++        if (setVectorLength(vlen) < 0) {
++            throw new Error("Error in setting vector length.");
++        }
++    }
++
++    public static void testAbort() {
++        int vlen = getVectorLength();
++        if (vlen <= 16) {
++            throw new Error("Error: unsupported vector length.");
++        }
++        if (setVectorLength(16) < 0) {
++            throw new Error("Error: setting vector length failed.");
++        }
++    }
++
++    public static ProcessBuilder createProcessBuilder(String [] args, String mode) {
++        List<String> vmopts = new ArrayList<>();
++        String testjdkPath = System.getProperty("test.jdk");
++        Collections.addAll(vmopts, "-Dtest.jdk=" + testjdkPath);
++        Collections.addAll(vmopts, args);
++        Collections.addAll(vmopts, TestSVEWithJNI.class.getName(), mode);
++        return ProcessTools.createJavaProcessBuilder(vmopts.toArray(new String[vmopts.size()]));
++    }
++
++    public static void main(String [] args) throws Exception {
++        if (args.length == 0) {
++            int vlen = getVectorLength();
++            if (vlen < 0) {
++                return;
++            }
++            String [][] testOpts = {
++                {"-Xint", "-XX:UseSVE=1"},
++                {"-Xcomp", "-XX:UseSVE=1"},
++            };
++            ProcessBuilder pb;
++            OutputAnalyzer output;
++            for (String [] opts : testOpts) {
++                pb = createProcessBuilder(opts, "normal");
++                output = new OutputAnalyzer(pb.start());
++                output.shouldHaveExitValue(EXIT_CODE);
++
++                pb = createProcessBuilder(opts, "abort");
++                output = new OutputAnalyzer(pb.start());
++                output.shouldNotHaveExitValue(EXIT_CODE);
++                output.shouldMatch("(error|Error|ERROR)");
++            }
++
++            // Verify MaxVectorSize
++
++            // Any SVE architecture should support 128-bit vector size.
++            pb = createProcessBuilder(new String []{"-XX:UseSVE=1", "-XX:MaxVectorSize=16"}, "normal");
++            output = new OutputAnalyzer(pb.start());
++            output.shouldHaveExitValue(EXIT_CODE);
++            output.shouldContain(MSG + 16);
++
++            // An unsupported large vector size value.
++            pb = createProcessBuilder(new String []{"-XX:UseSVE=1", "-XX:MaxVectorSize=512"}, "normal");
++            output = new OutputAnalyzer(pb.start());
++            output.shouldHaveExitValue(EXIT_CODE);
++            output.shouldContain("warning");
++        } else if (args[0].equals("normal")) {
++            testNormal();
++            System.exit(EXIT_CODE);
++        } else if (args[0].equals("abort")) {
++            testAbort();
++            System.exit(EXIT_CODE);
++        }
++    }
++}
+diff --git a/test/hotspot/jtreg/compiler/c2/aarch64/libTestSVEWithJNI.c b/test/hotspot/jtreg/compiler/c2/aarch64/libTestSVEWithJNI.c
+new file mode 100644
+index 000000000..0cb3ab0b5
+--- /dev/null
++++ b/test/hotspot/jtreg/compiler/c2/aarch64/libTestSVEWithJNI.c
+@@ -0,0 +1,68 @@
++/*
++* Copyright (c) 2020, Oracle and/or its affiliates. All rights reserved.
++* Copyright (c) 2020, Arm Limited. All rights reserved.
++* DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++*
++* This code is free software; you can redistribute it and/or modify it
++* under the terms of the GNU General Public License version 2 only, as
++* published by the Free Software Foundation.
++*
++* This code is distributed in the hope that it will be useful, but WITHOUT
++* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++* FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++* version 2 for more details (a copy is included in the LICENSE file that
++* accompanied this code).
++*
++* You should have received a copy of the GNU General Public License version
++* 2 along with this work; if not, write to the Free Software Foundation,
++* Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++*
++* Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++* or visit www.oracle.com if you need additional information or have any
++* questions.
++*
++*/
++
++#ifdef __aarch64__
++
++#include <jni.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <sys/prctl.h>
++#include <unistd.h>
++
++#ifndef PR_SVE_GET_VL
++// For old toolchains which do not have SVE related macros defined.
++#define PR_SVE_SET_VL   50
++#define PR_SVE_GET_VL   51
++#endif
++
++int get_current_thread_vl() {
++  return prctl(PR_SVE_GET_VL);
++}
++
++int set_current_thread_vl(unsigned long arg) {
++  return prctl(PR_SVE_SET_VL, arg);
++}
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++JNIEXPORT jint JNICALL Java_compiler_c2_aarch64_TestSVEWithJNI_setVectorLength
++(JNIEnv * env, jclass clz, jint length) {
++  return set_current_thread_vl(length);
++}
++
++JNIEXPORT jint JNICALL Java_compiler_c2_aarch64_TestSVEWithJNI_getVectorLength
++(JNIEnv *env, jclass clz) {
++  return get_current_thread_vl();
++}
++
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+-- 
+2.19.0
+

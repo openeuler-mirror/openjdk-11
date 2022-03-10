@@ -172,13 +172,14 @@ index 4f272394b..9e93fefac 100644
    bool refs_discovery_is_mt()     const {
      // Note: CMS does MT-discovery during the parallel-remark
 diff --git a/test/jdk/sun/tools/jmap/BasicJMapTest.java b/test/jdk/sun/tools/jmap/BasicJMapTest.java
-index 960705e24..f87774f93 100644
+index 327feb25d..ad890f880 100644
 --- a/test/jdk/sun/tools/jmap/BasicJMapTest.java
 +++ b/test/jdk/sun/tools/jmap/BasicJMapTest.java
-@@ -74,6 +74,20 @@ import jdk.testlibrary.ProcessTools;
-  * @run main/othervm/timeout=240 -XX:+UseG1GC BasicJMapTest
+@@ -45,6 +45,21 @@ import jdk.testlibrary.ProcessTools;
+  * @build jdk.test.lib.hprof.util.*
+  * @run main/timeout=240 BasicJMapTest
   */
- 
++
 +/*
 + * @test id=CMS
 + * @summary Unit test for jmap utility (CMS GC)
