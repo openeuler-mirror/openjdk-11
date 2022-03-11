@@ -1,34 +1,20 @@
-From cd63946e80ceb3f9de8a1ee02b38548c06cf532a Mon Sep 17 00:00:00 2001
-Date: Thu, 23 Jul 2020 16:40:31 +0800
-Subject: [PATCH] fix jck failure on FastSerializer
-
-Summary: <core-libs>: <fix jck failure on FastSerializer>
-LLT: jck
-Bug url: NA
----
- src/java.base/share/classes/java/io/ObjectInputStream.java     | 7 ++++++-
- src/java.base/share/classes/java/io/ObjectOutputStream.java    | 5 +++++
- src/java.base/share/classes/java/io/ObjectStreamClass.java     | 2 +-
- src/java.base/share/classes/java/io/ObjectStreamConstants.java | 5 -----
- 4 files changed, 12 insertions(+), 7 deletions(-)
-
 diff --git a/src/java.base/share/classes/java/io/ObjectInputStream.java b/src/java.base/share/classes/java/io/ObjectInputStream.java
-index d71d44a..a48e50c 100644
+index a77a5d5b6..f2791a4cb 100644
 --- a/src/java.base/share/classes/java/io/ObjectInputStream.java
 +++ b/src/java.base/share/classes/java/io/ObjectInputStream.java
-@@ -381,6 +381,11 @@ public class ObjectInputStream
+@@ -391,6 +391,11 @@ public class ObjectInputStream
+             new sun.security.action.GetBooleanAction(
                      "printFastSerializer")).booleanValue();
  
-     /**
++    /**
 +     * Magic number that is written to the stream header when using fastserilizer.
 +     */
 +    private static final short STREAM_MAGIC_FAST = (short)0xdeca;
 +
-+    /**
+     /**
       * Creates an ObjectInputStream that reads from the specified InputStream.
       * A serialization stream header is read from the stream and verified.
-      * This constructor will block until the corresponding ObjectOutputStream
-@@ -752,7 +757,7 @@ public class ObjectInputStream
+@@ -763,7 +768,7 @@ public class ObjectInputStream
       * Cache the class meta during serialization.
       * Only used in FastSerilizer.
       */
@@ -38,23 +24,23 @@ index d71d44a..a48e50c 100644
      /**
       * Load the local class equivalent of the specified stream class
 diff --git a/src/java.base/share/classes/java/io/ObjectOutputStream.java b/src/java.base/share/classes/java/io/ObjectOutputStream.java
-index 8935e61..0e54763 100644
+index 8935e61dc..0e5476395 100644
 --- a/src/java.base/share/classes/java/io/ObjectOutputStream.java
 +++ b/src/java.base/share/classes/java/io/ObjectOutputStream.java
-@@ -251,6 +251,11 @@ public class ObjectOutputStream
+@@ -250,6 +250,11 @@ public class ObjectOutputStream
+             new sun.security.action.GetBooleanAction(
                      "printFastSerializer")).booleanValue();
  
-     /**
++    /**
 +     * Magic number that is written to the stream header when using fastserilizer.
 +     */
 +    private static final short STREAM_MAGIC_FAST = (short)0xdeca;
 +
-+    /**
+     /**
       * Creates an ObjectOutputStream that writes to the specified OutputStream.
       * This constructor writes the serialization stream header to the
-      * underlying stream; callers may wish to flush the stream immediately to
 diff --git a/src/java.base/share/classes/java/io/ObjectStreamClass.java b/src/java.base/share/classes/java/io/ObjectStreamClass.java
-index a5d7d2d..e37a784 100644
+index a5d7d2d75..e37a7841e 100644
 --- a/src/java.base/share/classes/java/io/ObjectStreamClass.java
 +++ b/src/java.base/share/classes/java/io/ObjectStreamClass.java
 @@ -280,7 +280,7 @@ public class ObjectStreamClass implements Serializable {
@@ -67,22 +53,21 @@ index a5d7d2d..e37a784 100644
          if (externalizable) {
              flags |= ObjectStreamConstants.SC_EXTERNALIZABLE;
 diff --git a/src/java.base/share/classes/java/io/ObjectStreamConstants.java b/src/java.base/share/classes/java/io/ObjectStreamConstants.java
-index 9615778..43a480c 100644
+index 96157782a..43a480ce4 100644
 --- a/src/java.base/share/classes/java/io/ObjectStreamConstants.java
 +++ b/src/java.base/share/classes/java/io/ObjectStreamConstants.java
-@@ -39,11 +39,6 @@ public interface ObjectStreamConstants {
+@@ -38,11 +38,6 @@ public interface ObjectStreamConstants {
+      */
      static final short STREAM_MAGIC = (short)0xaced;
  
-     /**
+-    /**
 -     * Magic number that is written to the stream header when using fastserilizer.
 -     */
 -    static final short STREAM_MAGIC_FAST = (short)0xdeca;
 -
--    /**
+     /**
       * Version number that is written to the stream header.
       */
-     static final short STREAM_VERSION = 5;
 -- 
-1.8.3.1
-
+2.19.0
 
