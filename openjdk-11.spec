@@ -1,4 +1,4 @@
-# RPM conditionals so as to be able to dynamically producef
+# RPM conditionals so as to be able to dynamically produce
 
 # slowdebug/release builds. See:
 # http://rpm.org/user_doc/conditional_builds.html
