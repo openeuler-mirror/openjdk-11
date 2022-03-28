@@ -651,7 +651,7 @@ Requires: lksctp-tools%{?_isa}
 # tool to copy jdk's configs - should be Recommends only, but then only dnf/yum enforce it,
 # not rpm transaction and so no configs are persisted when pure rpm -u is run. It may be
 # considered as regression
-Requires: copy-jdk-configs >= 3.3
+Requires: copy-jdk-configs >= 3.9
 OrderWithRequires: copy-jdk-configs
 # for printing support
 Requires: cups-libs
@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 1
+Release: 2
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -1507,7 +1507,13 @@ done
 -- whether copy-jdk-configs is installed or not. If so, then configs are copied
 -- (copy_jdk_configs from %%{_libexecdir} used) or not copied at all
 local posix = require "posix"
-local debug = false
+
+if (os.getenv("debug") == "true") then
+  debug = true;
+  print("cjc: in spec debug is on")
+else
+  debug = false;
+end
 
 SOURCE1 = "%{rpm_state_dir}/copy_jdk_configs.lua"
 SOURCE2 = "%{_libexecdir}/copy_jdk_configs.lua"
@@ -1536,8 +1542,9 @@ else
   end
 end
 -- run content of included file with fake args
+cjc = require "copy_jdk_configs.lua"
 arg = {"--currentjvm", "%{uniquesuffix %{nil}}", "--jvmdir", "%{_jvmdir %{nil}}", "--origname", "%{name}", "--origjavaver", "%{javaver}", "--arch", "%{_arch}", "--temp", "%{rpm_state_dir}/%{name}.%{_arch}"}
-require "copy_jdk_configs.lua"
+cjc.mainProgram(arg)
 
 %post
 %{post_script %{nil}}
@@ -1662,6 +1669,9 @@ require "copy_jdk_configs.lua"
 
 
 %changelog
+* Fri May 25 2022 eapen <zhangyipeng7@huawei.com> - 1:11.0.14.9-2
+- adapted to newst cjc to fix issue with rpm 4.17
+
 * Wed Feb 9 2022 kuenking111 <wangkun49@huawei.com> - 1:11.0.14.9-1
 - add fix-error-in-build-core-variants.patch
 
