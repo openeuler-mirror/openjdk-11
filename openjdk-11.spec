@@ -740,7 +740,7 @@ Provides: java-src%{?1} = %{epoch}:%{version}-%{release}
 
 Name:    java-%{javaver}-%{origin}
 Version: %{newjavaver}.%{buildver}
-Release: 2
+Release: 3
 # java-1.5.0-ibm from jpackage.org set Epoch to 1 for unknown reasons
 # and this change was brought into RHEL-4. java-1.5.0-ibm packages
 # also included the epoch in their virtual provides. This created a
@@ -866,12 +866,12 @@ Patch82: PS-introduce-UsePSRelaxedForwardee-to-enable-using-r.patch
 
 # 11.0.13
 Patch83: 8273111-Default-timezone-should-return-zone-ID-if-locatiome-is-valid-but-not-canonicalization-on-linux.patch
-Patch84: fix-memcpy-compile-warning-when-building-on-linux-x86.patch
 Patch85: 8239017-cmp-baseline-fails-because-of-differences-in-TimeZoneNames_kea.patch
 # 11.0.14
 Patch86: 8252103-support-Jmap-parallel-heap-inspection.patch
 Patch87: fix_macroAssembler_missing_matcher_header_file_causing_build_failure.patch
 Patch88: fix-error-in-build-core-variants.patch
+Patch89: downgrade-the-symver-of-memcpy-GLIBC_2.14-on-x86.patch
 
 BuildRequires: autoconf
 BuildRequires: alsa-lib-devel
@@ -1155,11 +1155,11 @@ pushd %{top_level_dir_name}
 %patch80 -p1
 %patch82 -p1
 %patch83 -p1
-%patch84 -p1
 %patch85 -p1
 %patch86 -p1
 %patch87 -p1
 %patch88 -p1
+%patch89 -p1
 popd # openjdk
 
 # %patch1000
@@ -1669,6 +1669,9 @@ cjc.mainProgram(arg)
 
 
 %changelog
+* Sat May 26 2022 eapen <zhangyipeng7@huawei.com> - 1:11.0.14.9-3
+- reconstruct applying of memcpy.o used by lib compilations
+
 * Fri May 25 2022 eapen <zhangyipeng7@huawei.com> - 1:11.0.14.9-2
 - adapted to newst cjc to fix issue with rpm 4.17
 
