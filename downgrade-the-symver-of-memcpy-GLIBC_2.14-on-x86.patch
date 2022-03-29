@@ -1,0 +1,80 @@
+From cb846e5c0f8063054d4188b2aa833e20bce72530 Mon Sep 17 00:00:00 2001
+From: zhangyipeng <zhangyipeng7@huawei.com>
+Date: Fri, 18 Mar 2022 16:55:46 +0800
+Subject: [PATCH] [Huawei]downgrade the symver of memcpy@GLIBC_2.14 on x64
+
+Signed-off-by: Sun Jianye <sunjianye@huawei.com>
+---
+ make/common/NativeCompilation.gmk    |  9 +++++++++
+ make/hotspot/lib/CompileJvm.gmk      |  7 +++++++
+ src/hotspot/share/runtime/memcpy.cpp | 20 ++++++++++++++++++++
+ 3 files changed, 36 insertions(+)
+ create mode 100644 src/hotspot/share/runtime/memcpy.cpp
+
+diff --git a/make/common/NativeCompilation.gmk b/make/common/NativeCompilation.gmk
+index 490a7f4..6a9209d 100644
+--- a/make/common/NativeCompilation.gmk
++++ b/make/common/NativeCompilation.gmk
+@@ -1132,6 +1132,15 @@ define SetupNativeCompilationBody
+       endif
+     endif
+ 
++    # if ldflags contain --wrap=memcpy, add memcpy.o to OBJS
++    ifneq ($$(findstring wrap=memcpy, $$($1_LDFLAGS)$$($1_EXTRA_LDFLAGS)),)
++      ifeq ($$(findstring memcpy$(OBJ_SUFFIX), $$($1_ALL_OBJS)),)
++        $$($1_BUILD_INFO):
++	    $(ECHO) 'Adding $(SUPPORT_OUTPUTDIR)/memcpy/memcpy$(OBJ_SUFFIX) to $1_ALL_OBJS'
++        $1_ALL_OBJS += $(SUPPORT_OUTPUTDIR)/memcpy/memcpy$(OBJ_SUFFIX)
++      endif
++    endif
++
+     $1_VARDEPS := $$($1_LD) $$($1_SYSROOT_LDFLAGS) $$($1_LDFLAGS) $$($1_EXTRA_LDFLAGS) \
+         $$(GLOBAL_LIBS) $$($1_LIBS) $$($1_EXTRA_LIBS) $$($1_MT) \
+         $$($1_CREATE_DEBUGINFO_CMDS) $$($1_MANIFEST_VERSION) \
+diff --git a/make/hotspot/lib/CompileJvm.gmk b/make/hotspot/lib/CompileJvm.gmk
+index 5942540..0e7f42f 100644
+--- a/make/hotspot/lib/CompileJvm.gmk
++++ b/make/hotspot/lib/CompileJvm.gmk
+@@ -179,6 +179,13 @@ $(eval $(call SetupNativeCompilation, BUILD_LIBJVM, \
+     PRECOMPILED_HEADER_EXCLUDE := $(JVM_PRECOMPILED_HEADER_EXCLUDE), \
+ ))
+ 
++MEMCPY_OBJECT_FILE := $(JVM_OUTPUTDIR)/objs/memcpy$(OBJ_SUFFIX)
++$(eval $(call SetupCopyFiles, COPY_MEMCPY_OBJECT_FILE, \
++          DEST := $(SUPPORT_OUTPUTDIR)/memcpy, \
++          FILES :=$(MEMCPY_OBJECT_FILE), \
++))
++TARGETS += $(COPY_MEMCPY_OBJECT_FILE)
++
+ # Always recompile abstract_vm_version.cpp if libjvm needs to be relinked. This ensures
+ # that the internal vm version is updated as it relies on __DATE__ and __TIME__
+ # macros.
+diff --git a/src/hotspot/share/runtime/memcpy.cpp b/src/hotspot/share/runtime/memcpy.cpp
+new file mode 100644
+index 0000000..0fe4fa3
+--- /dev/null
++++ b/src/hotspot/share/runtime/memcpy.cpp
+@@ -0,0 +1,20 @@
++/*
++ * Copyright (c) Huawei Technologies Co., Ltd. 2018-2021. All rights reserved.
++ */
++
++#if defined( __GNUC__ ) && \
++(__GNUC__ >= 5  ||  (__GNUC__ == 4  &&  __GNUC_MINOR__ >= 7)) 
++#include <string.h>
++
++#if (defined AMD64) || (defined amd64)
++/* some systems do not have newest memcpy@@GLIBC_2.14 - stay with old good one */
++asm (".symver memcpy, memcpy@GLIBC_2.2.5");
++
++extern "C"{
++  void *__wrap_memcpy(void *dest, const void *src, size_t n)
++  {
++    return memcpy(dest, src, n);
++  }
++}
++#endif
++#endif
+-- 
+1.8.3.1
+
